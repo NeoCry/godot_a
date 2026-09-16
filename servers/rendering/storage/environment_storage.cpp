@@ -765,6 +765,39 @@ float RendererEnvironmentStorage::environment_get_ssao_ao_channel_affect(RID p_e
 	return env->ssao_ao_channel_affect;
 }
 
+// SSCS (screen space contact shadows)
+
+void RendererEnvironmentStorage::environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+#ifdef DEBUG_ENABLED
+	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
+		WARN_PRINT_ONCE_ED("Screen-space shadows are only available when using the Forward+ renderer.");
+	}
+#endif
+	env->sscs_enabled = p_enable;
+	env->sscs_length = p_length;
+	env->sscs_surface_thickness = p_surface_thickness;
+}
+
+bool RendererEnvironmentStorage::environment_get_sscs_enabled(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, false);
+	return env->sscs_enabled;
+}
+
+RSE::ScreenSpaceContactShadowsLength RendererEnvironmentStorage::environment_get_sscs_length(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM);
+	return env->sscs_length;
+}
+
+float RendererEnvironmentStorage::environment_get_sscs_surface_thickness(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.01);
+	return env->sscs_surface_thickness;
+}
+
 // SSIL
 
 void RendererEnvironmentStorage::environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection) {

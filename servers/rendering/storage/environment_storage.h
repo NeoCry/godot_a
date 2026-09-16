@@ -153,6 +153,11 @@ private:
 		float ssao_direct_light_affect = 0.0;
 		float ssao_ao_channel_affect = 0.0;
 
+		// SSCS (screen space contact shadows)
+		bool sscs_enabled = false;
+		RSE::ScreenSpaceContactShadowsLength sscs_length = RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM;
+		float sscs_surface_thickness = 0.01;
+
 		// SSIL
 		bool ssil_enabled = false;
 		float ssil_radius = 5.0;
@@ -302,6 +307,12 @@ public:
 	float environment_get_ssao_sharpness(RID p_env) const;
 	float environment_get_ssao_direct_light_affect(RID p_env) const;
 	float environment_get_ssao_ao_channel_affect(RID p_env) const;
+
+	// SSCS (screen space contact shadows)
+	void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness);
+	bool environment_get_sscs_enabled(RID p_env) const;
+	RSE::ScreenSpaceContactShadowsLength environment_get_sscs_length(RID p_env) const;
+	float environment_get_sscs_surface_thickness(RID p_env) const;
 
 	// SSIL
 	void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection);

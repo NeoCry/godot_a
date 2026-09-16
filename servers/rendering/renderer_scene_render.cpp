@@ -512,6 +512,24 @@ float RendererSceneRender::environment_get_ssao_ao_channel_affect(RID p_env) con
 	return environment_storage.environment_get_ssao_ao_channel_affect(p_env);
 }
 
+// SSCS (screen space contact shadows)
+
+void RendererSceneRender::environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) {
+	environment_storage.environment_set_sscs(p_env, p_enable, p_length, p_surface_thickness);
+}
+
+bool RendererSceneRender::environment_get_sscs_enabled(RID p_env) const {
+	return environment_storage.environment_get_sscs_enabled(p_env);
+}
+
+RSE::ScreenSpaceContactShadowsLength RendererSceneRender::environment_get_sscs_length(RID p_env) const {
+	return environment_storage.environment_get_sscs_length(p_env);
+}
+
+float RendererSceneRender::environment_get_sscs_surface_thickness(RID p_env) const {
+	return environment_storage.environment_get_sscs_surface_thickness(p_env);
+}
+
 // SSIL
 
 void RendererSceneRender::environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection) {

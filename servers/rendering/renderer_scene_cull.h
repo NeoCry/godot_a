@@ -1335,6 +1335,13 @@ public:
 
 	PASS6(environment_set_ssao_quality, RSE::EnvironmentSSAOQuality, bool, float, int, float, float)
 
+	// SSCS (screen space contact shadows)
+	PASS4(environment_set_sscs, RID, bool, RSE::ScreenSpaceContactShadowsLength, float)
+
+	PASS1RC(bool, environment_get_sscs_enabled, RID)
+	PASS1RC(RSE::ScreenSpaceContactShadowsLength, environment_get_sscs_length, RID)
+	PASS1RC(float, environment_get_sscs_surface_thickness, RID)
+
 	// SSIL
 	PASS6(environment_set_ssil, RID, bool, float, float, float, float)
 
