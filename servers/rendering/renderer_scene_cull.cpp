@@ -1336,6 +1336,13 @@ void RendererSceneCull::instance_geometry_set_flag(RID p_instance, RSE::Instance
 				}
 			}
 		} break;
+		case RSE::INSTANCE_FLAG_IGNORE_SCREEN_SPACE_SHADOWS: {
+			if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
+				InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
+				ERR_FAIL_NULL(geom->geometry_instance);
+				geom->geometry_instance->set_ignore_screen_space_shadows(p_enabled);
+			}
+		} break;
 		default: {
 		}
 	}

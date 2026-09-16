@@ -514,6 +514,15 @@ bool GeometryInstance3D::is_ignoring_occlusion_culling() {
 	return ignore_occlusion_culling;
 }
 
+void GeometryInstance3D::set_ignore_screen_space_shadows(bool p_enabled) {
+	ignore_screen_space_shadows = p_enabled;
+	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RSE::INSTANCE_FLAG_IGNORE_SCREEN_SPACE_SHADOWS, ignore_screen_space_shadows);
+}
+
+bool GeometryInstance3D::is_ignoring_screen_space_shadows() const {
+	return ignore_screen_space_shadows;
+}
+
 Ref<TriangleMesh> GeometryInstance3D::generate_triangle_mesh() const {
 	return Ref<TriangleMesh>();
 }
@@ -601,6 +610,9 @@ void GeometryInstance3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_ignore_occlusion_culling", "ignore_culling"), &GeometryInstance3D::set_ignore_occlusion_culling);
 	ClassDB::bind_method(D_METHOD("is_ignoring_occlusion_culling"), &GeometryInstance3D::is_ignoring_occlusion_culling);
 
+	ClassDB::bind_method(D_METHOD("set_ignore_screen_space_shadows", "ignore"), &GeometryInstance3D::set_ignore_screen_space_shadows);
+	ClassDB::bind_method(D_METHOD("is_ignoring_screen_space_shadows"), &GeometryInstance3D::is_ignoring_screen_space_shadows);
+
 	ClassDB::bind_method(D_METHOD("set_custom_aabb", "aabb"), &GeometryInstance3D::set_custom_aabb);
 	ClassDB::bind_method(D_METHOD("get_custom_aabb"), &GeometryInstance3D::get_custom_aabb);
 
@@ -613,6 +625,7 @@ void GeometryInstance3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::AABB, "custom_aabb", PROPERTY_HINT_NONE, "suffix:m"), "set_custom_aabb", "get_custom_aabb");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_bias", PROPERTY_HINT_RANGE, "0.001,128,0.001"), "set_lod_bias", "get_lod_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ignore_occlusion_culling"), "set_ignore_occlusion_culling", "is_ignoring_occlusion_culling");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ignore_screen_space_shadows"), "set_ignore_screen_space_shadows", "is_ignoring_screen_space_shadows");
 
 	ADD_GROUP("Global Illumination", "gi_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");

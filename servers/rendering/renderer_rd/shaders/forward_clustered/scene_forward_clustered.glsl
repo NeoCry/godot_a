@@ -2626,7 +2626,7 @@ void fragment_shader(in SceneData scene_data) {
 #undef BIAS_FUNC
 
 					//process sscs
-					if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS) && directional_lights.data[i].sscs_index != 0xFFFFFFFF) {
+					if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS) && directional_lights.data[i].sscs_index != 0xFFFFFFFF && !bool(instances.data[instance_index].flags & INSTANCE_FLAGS_IGNORE_SSCS)) {
 #ifdef USE_MULTIVIEW
 						float sscs_layer = float(directional_lights.data[i].sscs_index * 2u + uint(ViewIndex));
 #else

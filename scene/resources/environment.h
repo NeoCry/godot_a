@@ -89,6 +89,12 @@ public:
 		GLOW_BLEND_MODE_MIX,
 	};
 
+	enum SSCSLength {
+		SSCS_LENGTH_SHORT,
+		SSCS_LENGTH_MEDIUM,
+		SSCS_LENGTH_LONG,
+	};
+
 private:
 	RID environment;
 
@@ -139,6 +145,12 @@ private:
 	float ssao_direct_light_affect = 0.0;
 	float ssao_ao_channel_affect = 0.0;
 	void _update_ssao();
+
+	// SSCS (screen space shadows)
+	bool sscs_enabled = false;
+	SSCSLength sscs_length = SSCS_LENGTH_MEDIUM;
+	float sscs_surface_thickness = 0.01;
+	void _update_sscs();
 
 	// SSIL
 	bool ssil_enabled = false;
@@ -311,6 +323,14 @@ public:
 	void set_ssao_ao_channel_affect(float p_ao_channel_affect);
 	float get_ssao_ao_channel_affect() const;
 
+	// SSCS (screen space shadows)
+	void set_sscs_enabled(bool p_enabled);
+	bool is_sscs_enabled() const;
+	void set_sscs_length(SSCSLength p_length);
+	SSCSLength get_sscs_length() const;
+	void set_sscs_surface_thickness(float p_surface_thickness);
+	float get_sscs_surface_thickness() const;
+
 	// SSIL
 	void set_ssil_enabled(bool p_enabled);
 	bool is_ssil_enabled() const;
@@ -460,3 +480,4 @@ VARIANT_ENUM_CAST(Environment::ToneMapper)
 VARIANT_ENUM_CAST(Environment::SDFGIYScale)
 VARIANT_ENUM_CAST(Environment::GlowBlendMode)
 VARIANT_ENUM_CAST(Environment::FogMode)
+VARIANT_ENUM_CAST(Environment::SSCSLength)

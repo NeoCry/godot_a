@@ -54,6 +54,10 @@
 			If [code]true[/code], disables occlusion culling for this instance. Useful for gizmos that must be rendered even when occlusion culling is in use.
 			[b]Note:[/b] [member ignore_occlusion_culling] does not affect frustum culling (which is what happens when an object is not visible given the camera's angle). To avoid frustum culling, set [member custom_aabb] to a very large AABB that covers your entire game world such as [code]AABB(-10000, -10000, -10000, 20000, 20000, 20000)[/code].
 		</member>
+		<member name="ignore_screen_space_shadows" type="bool" setter="set_ignore_screen_space_shadows" getter="is_ignoring_screen_space_shadows" default="false">
+			If [code]true[/code], this instance will not receive screen-space (contact) shadows. This is useful for objects that shouldn't participate in the screen-space shadow pass, for example due to visual artifacts, while leaving screen-space shadows enabled for the rest of the scene.
+			[b]Note:[/b] This only affects screen-space shadows (see [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] and [member Environment.sscs_enabled]). Regular shadow map shadows are unaffected and are controlled independently using [member GeometryInstance3D.cast_shadow].
+		</member>
 		<member name="lod_bias" type="float" setter="set_lod_bias" getter="get_lod_bias" default="1.0">
 			Changes how quickly the mesh transitions to a lower level of detail. A value of 0 will force the mesh to its lowest level of detail, a value of 1 will use the default settings, and larger values will keep the mesh in a higher level of detail at farther distances.
 			Useful for testing level of detail transitions in the editor.

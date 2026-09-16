@@ -1498,6 +1498,16 @@
 				Sets the quality level of the screen-space ambient occlusion (SSAO) post-process effect. See [Environment] for more details.
 			</description>
 		</method>
+		<method name="environment_set_sscs">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="length" type="int" enum="RenderingServer.ScreenSpaceContactShadowsLength" />
+			<param index="3" name="surface_thickness" type="float" />
+			<description>
+				Sets whether screen-space shadows are force-enabled for this [param env], overriding [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled], along with the ray length and assumed surface thickness to use for them. See [Environment] for more details.
+			</description>
+		</method>
 		<method name="environment_set_ssil_quality">
 			<return type="void" />
 			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentSSILQuality" />
@@ -5868,6 +5878,15 @@
 		<constant name="ENV_SSAO_QUALITY_ULTRA" value="4" enum="EnvironmentSSAOQuality">
 			Highest quality screen-space ambient occlusion. Uses the adaptive target setting which can be dynamically adjusted to smoothly balance performance and visual quality.
 		</constant>
+		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT" value="0" enum="ScreenSpaceContactShadowsLength">
+			Cast shorter screen-space shadow rays. Fastest option, but the effect will not be able to reach as far.
+		</constant>
+		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM" value="1" enum="ScreenSpaceContactShadowsLength">
+			Cast medium-length screen-space shadow rays. Default option, provides a balance between performance and effect reach.
+		</constant>
+		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_LONG" value="2" enum="ScreenSpaceContactShadowsLength">
+			Cast longer screen-space shadow rays. Slowest option, but the effect will be able to reach further.
+		</constant>
 		<constant name="ENV_SSIL_QUALITY_VERY_LOW" value="0" enum="EnvironmentSSILQuality">
 			Lowest quality of screen-space indirect lighting.
 		</constant>
@@ -6045,7 +6064,10 @@
 		<constant name="INSTANCE_FLAG_IGNORE_OCCLUSION_CULLING" value="3" enum="InstanceFlags">
 			Always draw, even if the instance would be culled by occlusion culling. Does not affect view frustum culling.
 		</constant>
-		<constant name="INSTANCE_FLAG_MAX" value="4" enum="InstanceFlags">
+		<constant name="INSTANCE_FLAG_IGNORE_SCREEN_SPACE_SHADOWS" value="4" enum="InstanceFlags">
+			If set, this instance will not receive screen-space (contact) shadows, even if [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] or a per-[Environment] override is enabled. This does not affect regular shadow map shadows.
+		</constant>
+		<constant name="INSTANCE_FLAG_MAX" value="5" enum="InstanceFlags">
 			Represents the size of the [enum InstanceFlags] enum.
 		</constant>
 		<constant name="SHADOW_CASTING_SETTING_OFF" value="0" enum="ShadowCastingSetting">

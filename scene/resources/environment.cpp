@@ -412,6 +412,43 @@ void Environment::_update_ssao() {
 			ssao_ao_channel_affect);
 }
 
+// SSCS (screen space shadows)
+
+void Environment::set_sscs_enabled(bool p_enabled) {
+	sscs_enabled = p_enabled;
+	_update_sscs();
+}
+
+bool Environment::is_sscs_enabled() const {
+	return sscs_enabled;
+}
+
+void Environment::set_sscs_length(SSCSLength p_length) {
+	sscs_length = p_length;
+	_update_sscs();
+}
+
+Environment::SSCSLength Environment::get_sscs_length() const {
+	return sscs_length;
+}
+
+void Environment::set_sscs_surface_thickness(float p_surface_thickness) {
+	sscs_surface_thickness = p_surface_thickness;
+	_update_sscs();
+}
+
+float Environment::get_sscs_surface_thickness() const {
+	return sscs_surface_thickness;
+}
+
+void Environment::_update_sscs() {
+	RS::get_singleton()->environment_set_sscs(
+			environment,
+			sscs_enabled,
+			RSE::ScreenSpaceContactShadowsLength(sscs_length),
+			sscs_surface_thickness);
+}
+
 // SSIL
 
 void Environment::set_ssil_enabled(bool p_enabled) {
@@ -1368,6 +1405,19 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_light_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_ssao_direct_light_affect", "get_ssao_direct_light_affect");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_ao_channel_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_ssao_ao_channel_affect", "get_ssao_ao_channel_affect");
 
+	// SSCS (screen space shadows)
+	ClassDB::bind_method(D_METHOD("set_sscs_enabled", "enabled"), &Environment::set_sscs_enabled);
+	ClassDB::bind_method(D_METHOD("is_sscs_enabled"), &Environment::is_sscs_enabled);
+	ClassDB::bind_method(D_METHOD("set_sscs_length", "length"), &Environment::set_sscs_length);
+	ClassDB::bind_method(D_METHOD("get_sscs_length"), &Environment::get_sscs_length);
+	ClassDB::bind_method(D_METHOD("set_sscs_surface_thickness", "surface_thickness"), &Environment::set_sscs_surface_thickness);
+	ClassDB::bind_method(D_METHOD("get_sscs_surface_thickness"), &Environment::get_sscs_surface_thickness);
+
+	ADD_GROUP("Screen Space Shadows", "sscs_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sscs_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_sscs_enabled", "is_sscs_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "sscs_length", PROPERTY_HINT_ENUM, "Short (Fast),Medium (Average),Long (Slow)"), "set_sscs_length", "get_sscs_length");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sscs_surface_thickness", PROPERTY_HINT_RANGE, "0.001,0.1,0.001"), "set_sscs_surface_thickness", "get_sscs_surface_thickness");
+
 	// SSIL
 	ClassDB::bind_method(D_METHOD("set_ssil_enabled", "enabled"), &Environment::set_ssil_enabled);
 	ClassDB::bind_method(D_METHOD("is_ssil_enabled"), &Environment::is_ssil_enabled);
@@ -1629,6 +1679,10 @@ void Environment::_bind_methods() {
 	BIND_ENUM_CONSTANT(FOG_MODE_EXPONENTIAL);
 	BIND_ENUM_CONSTANT(FOG_MODE_DEPTH);
 
+	BIND_ENUM_CONSTANT(SSCS_LENGTH_SHORT);
+	BIND_ENUM_CONSTANT(SSCS_LENGTH_MEDIUM);
+	BIND_ENUM_CONSTANT(SSCS_LENGTH_LONG);
+
 	BIND_ENUM_CONSTANT(SDFGI_Y_SCALE_50_PERCENT);
 	BIND_ENUM_CONSTANT(SDFGI_Y_SCALE_75_PERCENT);
 	BIND_ENUM_CONSTANT(SDFGI_Y_SCALE_100_PERCENT);
@@ -1652,6 +1706,7 @@ Environment::Environment() {
 	_update_tonemap();
 	_update_ssr();
 	_update_ssao();
+	_update_sscs();
 	_update_ssil();
 	_update_sdfgi();
 	_update_glow();

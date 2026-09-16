@@ -226,6 +226,12 @@ public:
 
 	virtual void environment_set_ssao_quality(RSE::EnvironmentSSAOQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) = 0;
 
+	// SSCS (screen space contact shadows)
+	void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness);
+	bool environment_get_sscs_enabled(RID p_env) const;
+	RSE::ScreenSpaceContactShadowsLength environment_get_sscs_length(RID p_env) const;
+	float environment_get_sscs_surface_thickness(RID p_env) const;
+
 	// SSIL
 	void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection);
 	bool environment_get_ssil_enabled(RID p_env) const;
