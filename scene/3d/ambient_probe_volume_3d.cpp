@@ -31,6 +31,7 @@
 #include "ambient_probe_volume_3d.h"
 
 #include "core/math/face3.h"
+#include "core/object/class_db.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/main/scene_tree.h"
