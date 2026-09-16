@@ -34,6 +34,7 @@
 #include "core/object/class_db.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/visual_instance_3d.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/mesh.h"
 
@@ -102,13 +103,22 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_occluder_root", "path"), &AmbientProbeVolume3D::set_occluder_root);
 	ClassDB::bind_method(D_METHOD("get_occluder_root"), &AmbientProbeVolume3D::get_occluder_root);
 
+	ClassDB::bind_method(D_METHOD("set_apply_target", "path"), &AmbientProbeVolume3D::set_apply_target);
+	ClassDB::bind_method(D_METHOD("get_apply_target"), &AmbientProbeVolume3D::get_apply_target);
+
+	ClassDB::bind_method(D_METHOD("set_apply_shader_parameter", "name"), &AmbientProbeVolume3D::set_apply_shader_parameter);
+	ClassDB::bind_method(D_METHOD("get_apply_shader_parameter"), &AmbientProbeVolume3D::get_apply_shader_parameter);
+
 	ClassDB::bind_method(D_METHOD("bake_ao"), &AmbientProbeVolume3D::bake_ao);
 	ClassDB::bind_method(D_METHOD("clear_ao"), &AmbientProbeVolume3D::clear_ao);
 	ClassDB::bind_method(D_METHOD("is_baked"), &AmbientProbeVolume3D::is_baked);
 	ClassDB::bind_method(D_METHOD("get_ao_at", "world_position"), &AmbientProbeVolume3D::get_ao_at);
+	ClassDB::bind_method(D_METHOD("get_probe_ao", "x", "y", "z"), &AmbientProbeVolume3D::get_probe_ao);
+	ClassDB::bind_method(D_METHOD("apply_to_instances"), &AmbientProbeVolume3D::apply_to_instances);
 
 	ClassDB::bind_method(D_METHOD("get_bake_button"), &AmbientProbeVolume3D::_get_bake_button);
 	ClassDB::bind_method(D_METHOD("get_clear_button"), &AmbientProbeVolume3D::_get_clear_button);
+	ClassDB::bind_method(D_METHOD("get_apply_button"), &AmbientProbeVolume3D::_get_apply_button);
 
 	ClassDB::bind_method(D_METHOD("_set_baked_ao", "data"), &AmbientProbeVolume3D::_set_baked_ao);
 	ClassDB::bind_method(D_METHOD("_get_baked_ao"), &AmbientProbeVolume3D::_get_baked_ao);
@@ -123,10 +133,15 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_strength", PROPERTY_HINT_RANGE, "0,4,0.01"), "set_ao_strength", "get_ao_strength");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "occluder_root", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Node3D"), "set_occluder_root", "get_occluder_root");
 
+	ADD_GROUP("Apply", "");
+	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "apply_target", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Node3D"), "set_apply_target", "get_apply_target");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "apply_shader_parameter"), "set_apply_shader_parameter", "get_apply_shader_parameter");
+
 	ADD_GROUP("", "");
 	ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "baked_ao", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_INTERNAL), "_set_baked_ao", "_get_baked_ao");
 	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "bake_ao_button", PROPERTY_HINT_TOOL_BUTTON, "Bake AO", PROPERTY_USAGE_EDITOR), "", "get_bake_button");
 	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "clear_ao_button", PROPERTY_HINT_TOOL_BUTTON, "Clear AO", PROPERTY_USAGE_EDITOR), "", "get_clear_button");
+	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "apply_to_instances_button", PROPERTY_HINT_TOOL_BUTTON, "Apply To Instances", PROPERTY_USAGE_EDITOR), "", "get_apply_button");
 }
 
 Callable AmbientProbeVolume3D::_get_bake_button() const {
@@ -135,6 +150,10 @@ Callable AmbientProbeVolume3D::_get_bake_button() const {
 
 Callable AmbientProbeVolume3D::_get_clear_button() const {
 	return Callable(const_cast<AmbientProbeVolume3D *>(this), "clear_ao");
+}
+
+Callable AmbientProbeVolume3D::_get_apply_button() const {
+	return Callable(const_cast<AmbientProbeVolume3D *>(this), "apply_to_instances");
 }
 
 void AmbientProbeVolume3D::set_size(const Vector3 &p_size) {
@@ -196,6 +215,22 @@ NodePath AmbientProbeVolume3D::get_occluder_root() const {
 	return occluder_root;
 }
 
+void AmbientProbeVolume3D::set_apply_target(const NodePath &p_path) {
+	apply_target = p_path;
+}
+
+NodePath AmbientProbeVolume3D::get_apply_target() const {
+	return apply_target;
+}
+
+void AmbientProbeVolume3D::set_apply_shader_parameter(const StringName &p_name) {
+	apply_shader_parameter = p_name;
+}
+
+StringName AmbientProbeVolume3D::get_apply_shader_parameter() const {
+	return apply_shader_parameter;
+}
+
 Vector3 AmbientProbeVolume3D::get_local_probe_position(int p_x, int p_y, int p_z) const {
 	const Vector3 half = size * 0.5;
 	const float fx = probe_counts.x > 1 ? float(p_x) / float(probe_counts.x - 1) : 0.5f;
@@ -205,6 +240,17 @@ Vector3 AmbientProbeVolume3D::get_local_probe_position(int p_x, int p_y, int p_z
 			Math::lerp(-half.x, half.x, fx),
 			Math::lerp(-half.y, half.y, fy),
 			Math::lerp(-half.z, half.z, fz));
+}
+
+float AmbientProbeVolume3D::get_probe_ao(int p_x, int p_y, int p_z) const {
+	if (baked_ao.is_empty()) {
+		return 1.0f;
+	}
+	if (p_x < 0 || p_x >= probe_counts.x || p_y < 0 || p_y >= probe_counts.y || p_z < 0 || p_z >= probe_counts.z) {
+		return 1.0f;
+	}
+	const int i = p_x + probe_counts.x * (p_y + probe_counts.y * p_z);
+	return baked_ao[i];
 }
 
 void AmbientProbeVolume3D::_set_baked_ao(const PackedFloat32Array &p_data) {
@@ -288,6 +334,33 @@ void AmbientProbeVolume3D::bake_ao() {
 	update_configuration_warnings();
 }
 
+void AmbientProbeVolume3D::_apply_to_instances(Node *p_node) {
+	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
+	if (gi != nullptr) {
+		gi->set_instance_shader_parameter(apply_shader_parameter, get_ao_at(gi->get_global_position()));
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_apply_to_instances(p_node->get_child(i));
+	}
+}
+
+void AmbientProbeVolume3D::apply_to_instances() {
+	ERR_FAIL_COND_MSG(!is_inside_tree(), "AmbientProbeVolume3D must be inside the SceneTree to apply, since it needs to scan the scene for GeometryInstance3D nodes.");
+	ERR_FAIL_COND_MSG(!is_baked(), "AmbientProbeVolume3D has not been baked yet; press Bake AO first.");
+
+	Node *root = apply_target.is_empty() ? nullptr : get_node_or_null(apply_target);
+	if (root == nullptr) {
+		root = get_tree()->get_edited_scene_root();
+	}
+	if (root == nullptr) {
+		root = get_tree()->get_current_scene();
+	}
+	ERR_FAIL_NULL_MSG(root, "AmbientProbeVolume3D could not find a scene root to apply to. Set Apply Target explicitly.");
+
+	_apply_to_instances(root);
+}
+
 float AmbientProbeVolume3D::get_ao_at(const Vector3 &p_world_position) const {
 	if (baked_ao.is_empty()) {
 		return 1.0f;
@@ -348,6 +421,24 @@ PackedStringArray AmbientProbeVolume3D::get_configuration_warnings() const {
 
 	if (!is_baked()) {
 		warnings.push_back(RTR("Not baked yet. Press Bake AO after placing the occluding geometry it should test against."));
+	} else {
+		bool any_occlusion = false;
+		for (int64_t i = 0; i < baked_ao.size(); i++) {
+			if (baked_ao[i] < 0.999f) {
+				any_occlusion = true;
+				break;
+			}
+		}
+		if (!any_occlusion) {
+			warnings.push_back(RTR("The last bake found no occlusion at all (every probe is fully lit). This usually means Occluder Root doesn't point to a Node3D containing visible MeshInstance3D geometry, or Max Distance/the probe grid don't reach close enough to that geometry. It does not mean nothing is receiving the baked data — see the class description for how baked AO needs to be applied (e.g. FoliageSpawner3D.ambient_occlusion_volume, or Apply To Instances)."));
+		}
+	}
+
+	if (!apply_target.is_empty()) {
+		Node *target = is_inside_tree() ? get_node_or_null(apply_target) : nullptr;
+		if (target == nullptr) {
+			warnings.push_back(RTR("Apply Target does not point to a valid node. Assign one, or clear the path."));
+		}
 	}
 
 	return warnings;

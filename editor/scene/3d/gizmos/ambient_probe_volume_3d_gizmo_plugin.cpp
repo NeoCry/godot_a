@@ -30,6 +30,7 @@
 
 #include "ambient_probe_volume_3d_gizmo_plugin.h"
 
+#include "core/templates/local_vector.h"
 #include "editor/scene/3d/gizmos/gizmo_3d_helper.h"
 #include "editor/settings/editor_settings.h"
 #include "scene/3d/ambient_probe_volume_3d.h"
@@ -42,6 +43,18 @@ AmbientProbeVolume3DGizmoPlugin::AmbientProbeVolume3DGizmoPlugin() {
 	create_material("shape_material_internal", gizmo_color);
 
 	create_handle_material("handles");
+
+	probe_size = EDITOR_GET("editors/3d_gizmos/gizmo_settings/ambient_probe_volume_probe_size");
+
+	// Baked probes are previewed as small solid spheres tinted by their baked AO
+	// (white = fully lit, black = fully occluded), similar to how Unity visualizes
+	// light probes, so it's obvious at a glance whether baking actually did anything.
+	Ref<StandardMaterial3D> probe_mat = memnew(StandardMaterial3D);
+	probe_mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
+	probe_mat->set_flag(StandardMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+	probe_mat->set_flag(StandardMaterial3D::FLAG_SRGB_VERTEX_COLOR, false);
+	probe_mat->set_flag(StandardMaterial3D::FLAG_DISABLE_FOG, true);
+	add_material("probe_material", probe_mat);
 }
 
 bool AmbientProbeVolume3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
@@ -111,27 +124,103 @@ void AmbientProbeVolume3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	p_gizmo->add_collision_segments(lines);
 	p_gizmo->add_handles(handles, handles_material);
 
-	// Small crosses previewing where "Bake AO" will sample each probe.
-	// Kept out of the collision segments above so they don't interfere with picking the volume.
-	Vector<Vector3> probe_lines;
 	const Vector3i counts = volume->get_probe_counts();
 	// Skip the per-probe preview for very dense grids: drawing tens of thousands of
-	// crosses every redraw would noticeably slow down the editor viewport for no benefit,
+	// shapes every redraw would noticeably slow down the editor viewport for no benefit,
 	// the box outline above is enough feedback for those cases.
 	const int64_t total_probes = int64_t(counts.x) * int64_t(counts.y) * int64_t(counts.z);
-	const float cross_size = MIN(aabb.size.x, MIN(aabb.size.y, aabb.size.z)) * 0.02 + 0.02;
-	for (int xi = 0; total_probes <= 4096 && xi < counts.x; xi++) {
-		for (int yi = 0; yi < counts.y; yi++) {
+	if (total_probes > 4096) {
+		return;
+	}
+
+	if (volume->is_baked()) {
+		// Baked: draw each probe as a small sphere tinted by its baked AO value, so it's
+		// obvious whether baking actually produced any variation (as opposed to every
+		// probe silently staying at the default "fully lit" value).
+		const int stack_count = 6;
+		const int sector_count = 8;
+		const float sector_step = (Math::PI * 2.0) / sector_count;
+		const float stack_step = Math::PI / stack_count;
+		const float radius = probe_size * 0.5f;
+
+		if (!Math::is_zero_approx(radius)) {
+			LocalVector<Vector3> vertices;
+			LocalVector<Color> colors;
+			LocalVector<int> indices;
+
 			for (int zi = 0; zi < counts.z; zi++) {
-				const Vector3 p = volume->get_local_probe_position(xi, yi, zi);
-				probe_lines.push_back(p - Vector3(cross_size, 0, 0));
-				probe_lines.push_back(p + Vector3(cross_size, 0, 0));
-				probe_lines.push_back(p - Vector3(0, cross_size, 0));
-				probe_lines.push_back(p + Vector3(0, cross_size, 0));
-				probe_lines.push_back(p - Vector3(0, 0, cross_size));
-				probe_lines.push_back(p + Vector3(0, 0, cross_size));
+				for (int yi = 0; yi < counts.y; yi++) {
+					for (int xi = 0; xi < counts.x; xi++) {
+						const Vector3 center = volume->get_local_probe_position(xi, yi, zi);
+						const float ao = volume->get_probe_ao(xi, yi, zi);
+						const Color color(ao, ao, ao, 1.0);
+						const int vertex_base = vertices.size();
+
+						for (int i = 0; i <= stack_count; i++) {
+							const float stack_angle = Math::PI / 2 - i * stack_step;
+							const float xy = radius * Math::cos(stack_angle);
+							const float z = radius * Math::sin(stack_angle);
+
+							for (int j = 0; j <= sector_count; j++) {
+								const float sector_angle = j * sector_step;
+								const float x = xy * Math::cos(sector_angle);
+								const float y = xy * Math::sin(sector_angle);
+								vertices.push_back(center + Vector3(x, z, y));
+								colors.push_back(color);
+							}
+						}
+
+						for (int i = 0; i < stack_count; i++) {
+							int k1 = i * (sector_count + 1);
+							int k2 = k1 + sector_count + 1;
+							for (int j = 0; j < sector_count; j++, k1++, k2++) {
+								if (i != 0) {
+									indices.push_back(vertex_base + k1);
+									indices.push_back(vertex_base + k2);
+									indices.push_back(vertex_base + k1 + 1);
+								}
+								if (i != (stack_count - 1)) {
+									indices.push_back(vertex_base + k1 + 1);
+									indices.push_back(vertex_base + k2);
+									indices.push_back(vertex_base + k2 + 1);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			Array array;
+			array.resize(Mesh::ARRAY_MAX);
+			array[Mesh::ARRAY_VERTEX] = Vector<Vector3>(vertices);
+			array[Mesh::ARRAY_INDEX] = Vector<int>(indices);
+			array[Mesh::ARRAY_COLOR] = Vector<Color>(colors);
+
+			Ref<ArrayMesh> mesh;
+			mesh.instantiate();
+			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, array, Array(), Dictionary(), 0); // No compression.
+			mesh->surface_set_material(0, get_material("probe_material", p_gizmo));
+
+			p_gizmo->add_mesh(mesh);
+		}
+	} else {
+		// Not baked yet: small crosses previewing where "Bake AO" will sample each probe.
+		// Kept out of the collision segments above so they don't interfere with picking the volume.
+		Vector<Vector3> probe_lines;
+		const float cross_size = MIN(aabb.size.x, MIN(aabb.size.y, aabb.size.z)) * 0.02 + 0.02;
+		for (int xi = 0; xi < counts.x; xi++) {
+			for (int yi = 0; yi < counts.y; yi++) {
+				for (int zi = 0; zi < counts.z; zi++) {
+					const Vector3 p = volume->get_local_probe_position(xi, yi, zi);
+					probe_lines.push_back(p - Vector3(cross_size, 0, 0));
+					probe_lines.push_back(p + Vector3(cross_size, 0, 0));
+					probe_lines.push_back(p - Vector3(0, cross_size, 0));
+					probe_lines.push_back(p + Vector3(0, cross_size, 0));
+					probe_lines.push_back(p - Vector3(0, 0, cross_size));
+					probe_lines.push_back(p + Vector3(0, 0, cross_size));
+				}
 			}
 		}
+		p_gizmo->add_lines(probe_lines, material);
 	}
-	p_gizmo->add_lines(probe_lines, material);
 }
