@@ -32,20 +32,30 @@
 
 #include "scene/3d/node_3d.h"
 
-// Fills a configurable box volume with a regular grid of LightmapProbe children,
-// so large-scale, baked ambient-occlusion/indirect-light coverage (e.g. for shading
-// vegetation that doesn't carry its own lightmap) can be authored declaratively
-// instead of hand-placing every LightmapProbe. The probes themselves are baked by
-// a LightmapGI node exactly like any other LightmapProbe: this node only automates
-// their placement within its bounds.
+// Bakes large-scale ambient occlusion into a grid of probes filling a box volume,
+// entirely on the CPU and independent of LightmapGI: it raycasts against the
+// triangle geometry of nearby MeshInstance3D nodes (no UV2, lightmap texel bake,
+// or LightmapProbe/LightmapGI involvement whatsoever), and stores one AO value
+// per probe. Meant for shading things that don't carry (and don't want) their own
+// lightmap, such as vegetation: read back baked values with get_ao_at(), e.g. to
+// tint MultiMesh instances, or sample the raw data from a script/shader as needed.
 class AmbientProbeVolume3D : public Node3D {
 	GDCLASS(AmbientProbeVolume3D, Node3D);
 
 	Vector3 size = Vector3(20, 10, 20);
 	Vector3i probe_counts = Vector3i(6, 3, 6);
+	int ray_count = 48;
+	float max_distance = 8.0;
+	float ao_strength = 1.0;
+	NodePath occluder_root;
 
-	Callable _get_generate_button() const;
+	PackedFloat32Array baked_ao;
+
+	Callable _get_bake_button() const;
 	Callable _get_clear_button() const;
+
+	void _set_baked_ao(const PackedFloat32Array &p_data);
+	PackedFloat32Array _get_baked_ao() const;
 
 protected:
 	static void _bind_methods();
@@ -57,13 +67,30 @@ public:
 	void set_probe_counts(const Vector3i &p_counts);
 	Vector3i get_probe_counts() const;
 
+	void set_ray_count(int p_ray_count);
+	int get_ray_count() const;
+
+	void set_max_distance(float p_max_distance);
+	float get_max_distance() const;
+
+	void set_ao_strength(float p_strength);
+	float get_ao_strength() const;
+
+	void set_occluder_root(const NodePath &p_path);
+	NodePath get_occluder_root() const;
+
 	// Local-space position of probe (p_x, p_y, p_z) in the [0, probe_counts) grid;
-	// used both to generate LightmapProbe children and by the editor gizmo preview.
+	// used both to bake and by the editor gizmo preview.
 	Vector3 get_local_probe_position(int p_x, int p_y, int p_z) const;
 
-	void generate_probes();
-	void clear_probes();
-	int get_generated_probe_count() const;
+	void bake_ao();
+	void clear_ao();
+	bool is_baked() const;
+
+	// Trilinearly sampled ambient occlusion (1.0 = fully lit, 0.0 = fully occluded)
+	// at a world-space position. Returns 1.0 if this volume hasn't been baked yet,
+	// or if p_world_position falls outside its box.
+	float get_ao_at(const Vector3 &p_world_position) const;
 
 	PackedStringArray get_configuration_warnings() const override;
 
