@@ -597,4 +597,11 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 }
 
 FoliageSpawner3D::FoliageSpawner3D() {
+	// Baked global illumination (LightmapGI probes, VoxelGI, SDFGI) is generally
+	// not worth its cost for grass and other small scattered foliage: the visual
+	// difference is minor at that scale, LightmapGI would otherwise try to lightmap
+	// every scattered instance, and dynamic per-instance GI probe lookups add up
+	// with thousands of MultiMesh instances. Users who do want it can still switch
+	// GI Mode back on in the inspector.
+	set_gi_mode(GI_MODE_DISABLED);
 }
