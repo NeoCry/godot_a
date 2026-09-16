@@ -6065,7 +6065,7 @@
 			Always draw, even if the instance would be culled by occlusion culling. Does not affect view frustum culling.
 		</constant>
 		<constant name="INSTANCE_FLAG_IGNORE_SCREEN_SPACE_SHADOWS" value="4" enum="InstanceFlags">
-			If set, this instance will not receive screen-space (contact) shadows, even if [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] or a per-[Environment] override is enabled. This does not affect regular shadow map shadows.
+			If set, this instance will not cast screen-space (contact) shadows onto other surfaces, even if [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] or a per-[Environment] override is enabled. The instance's own shading and regular shadow map shadows are unaffected, and it still receives screen-space shadows cast by other objects.
 		</constant>
 		<constant name="INSTANCE_FLAG_MAX" value="5" enum="InstanceFlags">
 			Represents the size of the [enum InstanceFlags] enum.

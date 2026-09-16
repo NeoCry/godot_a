@@ -992,9 +992,6 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 		if (inst->non_uniform_scale) {
 			flags |= INSTANCE_DATA_FLAGS_NON_UNIFORM_SCALE;
 		}
-		if (inst->data->ignore_screen_space_shadows) {
-			flags |= INSTANCE_DATA_FLAG_IGNORE_SSCS;
-		}
 		bool uses_lightmap = false;
 		bool uses_lightmap_specular = false;
 		bool uses_gi = false;
@@ -1539,7 +1536,7 @@ void RenderForwardClustered::_process_ssr(Ref<RenderSceneBuffersRD> p_render_buf
 	ss_effects->screen_space_reflection(p_render_buffers, rb_data->ss_effects_data.ssr, p_normal_slices, environment_get_ssr_max_steps(p_environment), environment_get_ssr_fade_in(p_environment), environment_get_ssr_fade_out(p_environment), environment_get_ssr_depth_tolerance(p_environment), p_projections, reprojections, p_eye_offsets, *copy_effects);
 }
 
-void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, RID p_environment, const float p_taa_frame_count) {
+void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const LocalVector<Vector4> &p_exclusion_rects, RID p_environment, const float p_taa_frame_count) {
 	ERR_FAIL_NULL(ss_effects);
 	ERR_FAIL_COND(p_render_buffers.is_null());
 
@@ -1564,6 +1561,7 @@ void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_bu
 
 	Transform3D inverse_transform = p_transform.affine_inverse();
 
+	ss_effects->sscs_set_exclusion_rects(p_exclusion_rects.ptr(), p_exclusion_rects.size());
 	ss_effects->sscs_allocate_buffers(p_render_buffers, rb_data->ss_effects_data.sscs, p_contact_shadow_lights.size());
 
 	for (uint32_t i = 0; i < p_contact_shadow_lights.size(); i++) {
@@ -1643,6 +1641,67 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			if (light_storage->light_get_allow_contact_shadows(base)) {
 				p_render_data->contact_shadow_lights.push_back(li);
 			}
+		}
+	}
+
+	p_render_data->sscs_exclusion_rects.clear();
+
+	if (rb_data.is_valid() && ss_effects && p_render_data->instances) {
+		// Approximate per-object exclusion from casting screen space shadows: project the
+		// world-space AABB of each opted-out instance (GeometryInstance3D.ignore_screen_space_shadows)
+		// to a screen-space UV rect. The SSCS ray march (screen_space_contact_shadows.glsl) skips
+		// samples that fall within these rects, so the instance no longer occludes screen space
+		// shadows for other surfaces. This is an approximation of the instance's silhouette (a
+		// screen-space bounding rect), not a pixel-perfect exclusion.
+		Transform3D inverse_cam_transform = p_render_data->scene_data->cam_transform.affine_inverse();
+		const Projection &cam_projection = p_render_data->scene_data->cam_projection;
+
+		for (int i = 0; i < (int)p_render_data->instances->size() && p_render_data->sscs_exclusion_rects.size() < RendererRD::SSEffects::SSCS_MAX_EXCLUSION_RECTS; i++) {
+			GeometryInstanceForwardClustered *gi = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
+			if (!gi->data->ignore_screen_space_shadows) {
+				continue;
+			}
+
+			Vector2 uv_min(1.0, 1.0);
+			Vector2 uv_max(0.0, 0.0);
+			bool any_in_front = false;
+			bool any_behind = false;
+
+			for (int c = 0; c < 8; c++) {
+				Vector3 world_corner = gi->transformed_aabb.get_endpoint(c);
+				Vector3 view_pos = inverse_cam_transform.xform(world_corner);
+				Vector4 clip = cam_projection.xform(Vector4(view_pos.x, view_pos.y, view_pos.z, 1.0));
+
+				if (clip.w <= 0.00001) {
+					any_behind = true;
+					continue;
+				}
+				any_in_front = true;
+
+				Vector2 uv = (Vector2(clip.x, clip.y) / clip.w) * 0.5 + Vector2(0.5, 0.5);
+				uv_min = uv_min.min(uv);
+				uv_max = uv_max.max(uv);
+			}
+
+			if (any_behind) {
+				if (!any_in_front) {
+					// Entirely behind the camera; nothing on screen to exclude.
+					continue;
+				}
+				// The AABB straddles the camera's near plane: conservatively exclude the whole
+				// screen for this instance rather than risk an incorrect (or inverted) rect.
+				uv_min = Vector2(0.0, 0.0);
+				uv_max = Vector2(1.0, 1.0);
+			}
+
+			uv_min = uv_min.clamp(Vector2(0.0, 0.0), Vector2(1.0, 1.0));
+			uv_max = uv_max.clamp(Vector2(0.0, 0.0), Vector2(1.0, 1.0));
+			if (uv_min.x >= uv_max.x || uv_min.y >= uv_max.y) {
+				// Fully off-screen.
+				continue;
+			}
+
+			p_render_data->sscs_exclusion_rects.push_back(Vector4(uv_min.x, uv_min.y, uv_max.x, uv_max.y));
 		}
 	}
 
@@ -1739,7 +1798,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		}
 
 		if (p_use_sscs) {
-			_process_sscs(rb, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, p_render_data->contact_shadow_lights, p_render_data->environment, p_render_data->scene_data->taa_frame_count);
+			_process_sscs(rb, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, p_render_data->contact_shadow_lights, p_render_data->sscs_exclusion_rects, p_render_data->environment, p_render_data->scene_data->taa_frame_count);
 		}
 
 		if (p_use_ssr) {

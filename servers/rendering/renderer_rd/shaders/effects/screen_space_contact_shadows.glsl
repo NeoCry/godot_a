@@ -9,6 +9,17 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform sampler2D depth_buffer;
 layout(r8, set = 0, binding = 1) uniform restrict writeonly image2D output_shadow;
 
+#define SSCS_MAX_EXCLUSION_RECTS 32
+
+// Screen-space (UV) rects of GeometryInstance3D objects that opted out of casting screen space
+// shadows (GeometryInstance3D.ignore_screen_space_shadows). Each rect is
+// vec4(min_x, min_y, max_x, max_y) in [0, 1] UV space, approximating the instance's on-screen
+// bounding box. Samples that fall inside a rect are treated as non-occluding.
+layout(set = 0, binding = 2, std140) uniform ExclusionRects {
+	vec4 rects[SSCS_MAX_EXCLUSION_RECTS];
+}
+exclusion_rects;
+
 layout(push_constant, std430) uniform Params {
 	ivec2 screen_size;
 	ivec2 light_offset;
@@ -17,6 +28,7 @@ layout(push_constant, std430) uniform Params {
 	float opacity;
 	float blur;
 	float taa_frame_count;
+	uint exclusion_rect_count;
 }
 params;
 
@@ -174,6 +186,16 @@ void main() {
 
 		if (i != 0) {
 			stored_depth = sample_distance[i] > 0.0 ? stored_depth : 1e10;
+		}
+
+		// Instances that opt out of casting screen space shadows don't contribute occlusion:
+		// treat this ray sample as if there was no surface there.
+		for (uint r = 0u; r < params.exclusion_rect_count; r++) {
+			vec4 rect = exclusion_rects.rects[r];
+			if (all(greaterThanEqual(uv, rect.xy)) && all(lessThanEqual(uv, rect.zw))) {
+				stored_depth = 1e10;
+				break;
+			}
 		}
 
 		int idx = (i * WAVE_SIZE) + thread_id;
