@@ -5,14 +5,25 @@
 	</brief_description>
 	<description>
 		[AmbientProbeVolume3D] computes ambient occlusion (how exposed a point is to the sky/ambient light versus blocked by nearby geometry) at a regular grid of points filling the box defined by [member size] (centered on the node's origin), and stores one value per point. Pressing the [b]Bake AO[/b] button in the Inspector (or calling [method bake_ao]) does this entirely on the CPU by raycasting against the triangle geometry of every visible [MeshInstance3D] found under [member occluder_root] (or the current scene root if left unset): for each probe, [member ray_count] rays are cast up to [member max_distance] in roughly uniform directions around the sphere, and the fraction that hit something becomes that probe's occlusion.
-		This is intentionally independent of [LightmapGI]/[LightmapProbe]: no mesh needs lightmap UV2s, nothing gets a baked lightmap texture, and no separate bake step for direct/indirect light is involved. It only ever produces ambient occlusion, which keeps baking fast and avoids forcing UV2 unwrapping (or lightmap texel budgeting) onto meshes—like scattered vegetation—that would be impractical to lightmap. If baked, indirect [i]light[/i] (not just occlusion) is also wanted for some objects, use [LightmapGI]/[LightmapProbe] for those instead; the two systems don't conflict and can be used side by side.
-		Read the baked result back with [method get_ao_at], which trilinearly samples the grid at any world-space position (returning [code]1.0[/code], i.e. fully lit, outside the box or before baking). This node does not shade anything by itself: apply the value however fits the object, for example [FoliageSpawner3D] can sample it directly into its generated [MultiMesh]'s per-instance custom data via [member FoliageSpawner3D.ambient_occlusion_volume] (read back in the mesh's shader), or a script can call [method get_ao_at] to darken a [Light3D]'s energy, a [MeshInstance3D]'s per-instance shader parameter, etc. Since nothing receives this data unless it is explicitly wired up this way, there's no separate "opt-out" needed for objects that shouldn't be affected (e.g. small props): simply don't sample it for them.
-		[b]VoxelGI vs. this node for large-scale ambient occlusion:[/b] [VoxelGI] voxelizes one fixed-resolution 3D texture (up to 256 per axis) across its whole box and updates in real time, which makes it a poor fit for very large or open outdoor areas: covering more world space either coarsens every voxel or spends a lot of GPU memory and bake/update time on a single volume, and its effect fades out near the box's edges. This node's probes are just points, placed wherever needed at whatever spacing is useful, with no such resolution-vs-coverage trade-off, and they cost nothing at runtime beyond [method get_ao_at]'s trilinear lookup (or, if pre-applied like [FoliageSpawner3D] does, nothing at all). The trade-off is that baked data doesn't react to moving lights or geometry. For large, mostly-static outdoor scenes, prefer this node for ambient occlusion on vegetation and similar objects; reserve [VoxelGI] for smaller, bounded areas (e.g. a single interior or a gameplay-relevant room) where real-time reaction to moving lights matters. [SDFGI] (via [member Environment.sdfgi_enabled]) is usually a better real-time alternative to [VoxelGI] for large open worlds, since it works from cascades around the camera instead of a single fixed volume, but still costs GPU time every frame that baked data does not.
-		[b]Note:[/b] [method bake_ao] requires the node to be inside the [SceneTree], since it scans the scene for occluding geometry.
+		This is intentionally independent of [LightmapGI]/[LightmapProbe]: no mesh needs lightmap UV2s, nothing gets a baked lightmap texture, and no separate bake step for direct/indirect light is involved. It only ever produces ambient occlusion, which keeps baking fast and avoids forcing UV2 unwrapping (or lightmap texel budgeting) onto meshes—like scattered vegetation—that would be impractical to lightmap. If baked indirect [i]light[/i] (not just occlusion) is also wanted for some objects, use [LightmapGI]/[LightmapProbe] for those instead; the two systems don't conflict and can be used side by side.
+		[b]Baking alone does not shade anything.[/b] This is the most common point of confusion: after [method bake_ao] runs, nothing in the scene looks any different yet, because nothing has been told to read the baked data. There are three ways to actually use it, in increasing order of manual effort:
+		- Point [member FoliageSpawner3D.ambient_occlusion_volume] at this node. Its [method FoliageSpawner3D.regenerate] then samples [method get_ao_at] per instance and stores it in the generated [MultiMesh]'s per-instance custom data — but the mesh's shader still needs to read [code]INSTANCE_CUSTOM.r[/code] and use it (e.g. multiply it into [code]ALBEDO[/code] or [code]ALPHA[/code]); a default/[StandardMaterial3D] will not do this on its own.
+		- Call [method apply_to_instances] (or press [b]Apply To Instances[/b] in the Inspector). This walks [member apply_target] (or the current scene root) and sets the [member apply_shader_parameter] per-instance shader parameter on every [GeometryInstance3D] found, to that instance's [method get_ao_at]. Just like above, this only has a visible effect on meshes whose own shader declares a matching [code]instance uniform float ambient_occlusion : hint_range(0, 1) = 1.0;[/code] and multiplies it into the shading somewhere; it does nothing by itself for a mesh using an unmodified [StandardMaterial3D].
+		- Call [method get_ao_at] directly from a script or a custom shader's own code for any other use (darkening a light's energy, driving a particle system, etc).
+		In every case, some other code has to explicitly read [method get_ao_at] (or the data it feeds, such as [code]INSTANCE_CUSTOM[/code] or an instance shader parameter) and act on it — there is no project setting or material flag that makes arbitrary existing meshes pick this up automatically, unlike [VoxelGI], [SDFGI], or [LightmapGI], which the built-in [BaseMaterial3D]/[member Environment] rendering pipeline already knows how to sample. Consequently, there's also no separate "opt-out" needed for objects that shouldn't be affected (e.g. small props): simply don't apply it to them.
+		To check whether a bake actually found any occlusion (as opposed to a setup issue, such as [member occluder_root] pointing at the wrong node, or [member max_distance] being too short to reach nearby geometry) without writing any code, select this node after baking: probes are drawn in the 3D viewport as small spheres tinted from white (fully lit) to black (fully occluded), similar to how Unity visualizes light probes. If every sphere stays white, nothing was actually occluded by the bake and the value is not the problem — see [method get_configuration_warnings] for a specific diagnosis. Before baking, the same probes are instead drawn as small crosses previewing where they will be placed.
+		[b]VoxelGI vs. this node for large-scale ambient occlusion:[/b] [VoxelGI] voxelizes one fixed-resolution 3D texture (up to 256 per axis) across its whole box and updates in real time, which makes it a poor fit for very large or open outdoor areas: covering more world space either coarsens every voxel or spends a lot of GPU memory and bake/update time on a single volume, and its effect fades out near the box's edges. This node's probes are just points, placed wherever needed at whatever spacing is useful, with no such resolution-vs-coverage trade-off, and they cost nothing at runtime beyond [method get_ao_at]'s trilinear lookup (or, if pre-applied like [FoliageSpawner3D] and [method apply_to_instances] do, nothing at all). The trade-off is that baked data doesn't react to moving lights or geometry. For large, mostly-static outdoor scenes, prefer this node for ambient occlusion on vegetation and similar objects; reserve [VoxelGI] for smaller, bounded areas (e.g. a single interior or a gameplay-relevant room) where real-time reaction to moving lights matters. [SDFGI] (via [member Environment.sdfgi_enabled]) is usually a better real-time alternative to [VoxelGI] for large open worlds, since it works from cascades around the camera instead of a single fixed volume, but still costs GPU time every frame that baked data does not.
+		[b]Note:[/b] [method bake_ao] and [method apply_to_instances] both require the node to be inside the [SceneTree], since they scan the scene tree.
 	</description>
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="apply_to_instances">
+			<return type="void" />
+			<description>
+				Recursively walks [member apply_target] (or the current scene root if unset), and for every [GeometryInstance3D] found, sets its instance shader parameter named [member apply_shader_parameter] to [method get_ao_at] evaluated at that instance's position. See the class description for what the target's shader needs to declare for this to have any visible effect. Requires the volume to already be baked (see [method bake_ao]).
+			</description>
+		</method>
 		<method name="bake_ao">
 			<return type="void" />
 			<description>
@@ -32,6 +43,15 @@
 				Returns the baked ambient occlusion at [param world_position], trilinearly interpolated between the nearest probes ([code]1.0[/code] = fully lit, [code]0.0[/code] = fully occluded). Returns [code]1.0[/code] if [param world_position] is outside [member size], or if this volume hasn't been baked yet.
 			</description>
 		</method>
+		<method name="get_probe_ao" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="y" type="int" />
+			<param index="2" name="z" type="int" />
+			<description>
+				Returns the raw baked ambient occlusion of the probe at grid coordinates ([param x], [param y], [param z]) (each in the [code][0, probe_counts - 1][/code] range for the corresponding axis of [member probe_counts]), with no interpolation. Returns [code]1.0[/code] if the coordinates are out of range or this volume hasn't been baked yet. Mainly useful for inspecting or visualizing the bake directly (this is what the editor gizmo's probe spheres use); for shading, [method get_ao_at] is usually more convenient since it takes a world position.
+			</description>
+		</method>
 		<method name="is_baked" qualifiers="const">
 			<return type="bool" />
 			<description>
@@ -42,6 +62,15 @@
 	<members>
 		<member name="ao_strength" type="float" setter="set_ao_strength" getter="get_ao_strength" default="1.0">
 			Multiplies how strongly hits reduce a probe's ambient occlusion during [method bake_ao]. Values above [code]1.0[/code] exaggerate occlusion (a probe can go fully dark from partial occlusion); [code]0.0[/code] disables the effect entirely (everything stays fully lit).
+		</member>
+		<member name="apply_shader_parameter" type="StringName" setter="set_apply_shader_parameter" getter="get_apply_shader_parameter" default="&quot;ambient_occlusion&quot;">
+			The name of the instance shader parameter that [method apply_to_instances] sets on every [GeometryInstance3D] it finds. A target's shader needs to declare a matching [code]instance uniform float [/code][i]name[/i][code] : hint_range(0, 1) = 1.0;[/code] to be affected.
+		</member>
+		<member name="apply_target" type="NodePath" setter="set_apply_target" getter="get_apply_target" default="NodePath(&quot;&quot;)">
+			The root node that [method apply_to_instances] scans (recursively) for [GeometryInstance3D] nodes. If left empty, the current scene root is used (the edited scene root in the editor).
+		</member>
+		<member name="apply_to_instances_button" type="Callable" setter="" getter="get_apply_button">
+			Pressing this button in the Inspector calls [method apply_to_instances]. It is not meant to be read or assigned from code; use [method apply_to_instances] directly instead.
 		</member>
 		<member name="bake_ao_button" type="Callable" setter="" getter="get_bake_button">
 			Pressing this button in the Inspector calls [method bake_ao]. It is not meant to be read or assigned from code; use [method bake_ao] directly instead.

@@ -49,10 +49,16 @@ class AmbientProbeVolume3D : public Node3D {
 	float ao_strength = 1.0;
 	NodePath occluder_root;
 
+	NodePath apply_target;
+	StringName apply_shader_parameter = StringName("ambient_occlusion");
+
 	PackedFloat32Array baked_ao;
 
 	Callable _get_bake_button() const;
 	Callable _get_clear_button() const;
+	Callable _get_apply_button() const;
+
+	void _apply_to_instances(Node *p_node);
 
 	void _set_baked_ao(const PackedFloat32Array &p_data);
 	PackedFloat32Array _get_baked_ao() const;
@@ -79,13 +85,34 @@ public:
 	void set_occluder_root(const NodePath &p_path);
 	NodePath get_occluder_root() const;
 
+	void set_apply_target(const NodePath &p_path);
+	NodePath get_apply_target() const;
+
+	void set_apply_shader_parameter(const StringName &p_name);
+	StringName get_apply_shader_parameter() const;
+
 	// Local-space position of probe (p_x, p_y, p_z) in the [0, probe_counts) grid;
 	// used both to bake and by the editor gizmo preview.
 	Vector3 get_local_probe_position(int p_x, int p_y, int p_z) const;
 
+	// Baked ambient occlusion at probe (p_x, p_y, p_z) in the [0, probe_counts) grid
+	// (1.0 = fully lit, 0.0 = fully occluded). Returns 1.0 if out of range or not baked
+	// yet. For an arbitrary world-space position, use get_ao_at() instead, which
+	// interpolates between the probes surrounding it.
+	float get_probe_ao(int p_x, int p_y, int p_z) const;
+
 	void bake_ao();
 	void clear_ao();
 	bool is_baked() const;
+
+	// Recursively walks apply_target (or the current scene root if unset), and for
+	// every GeometryInstance3D found, sets its instance shader parameter named
+	// apply_shader_parameter to get_ao_at() at that instance's position. This is how
+	// baked AO actually reaches a mesh's shading: nothing samples it automatically,
+	// so the mesh's shader must declare a matching "instance uniform float
+	// <apply_shader_parameter> : hint_range(0, 1) = 1.0;" and use it (e.g. multiply
+	// it into ALBEDO or ALPHA). Requires the volume to be baked and inside the tree.
+	void apply_to_instances();
 
 	// Trilinearly sampled ambient occlusion (1.0 = fully lit, 0.0 = fully occluded)
 	// at a world-space position. Returns 1.0 if this volume hasn't been baked yet,
