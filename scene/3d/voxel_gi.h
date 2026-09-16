@@ -50,8 +50,10 @@ class VoxelGIData : public Resource {
 	float dynamic_range = 2.0;
 	float energy = 1.0;
 	float bias = 1.5;
+	float reflection_bias = 1.5;
 	float normal_bias = 0.0;
 	float propagation = 0.5;
+	float anisotropic_strength = 0.0;
 	bool interior = false;
 	bool use_two_bounces = true;
 
@@ -80,8 +82,14 @@ public:
 	void set_bias(float p_bias);
 	float get_bias() const;
 
+	void set_reflection_bias(float p_bias);
+	float get_reflection_bias() const;
+
 	void set_normal_bias(float p_normal_bias);
 	float get_normal_bias() const;
+
+	void set_anisotropic_strength(float p_strength);
+	float get_anisotropic_strength() const;
 
 	void set_interior(bool p_enable);
 	bool is_interior() const;

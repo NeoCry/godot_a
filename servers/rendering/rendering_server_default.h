@@ -609,9 +609,11 @@ public:
 	FUNC2(voxel_gi_set_energy, RID, float)
 	FUNC2(voxel_gi_set_baked_exposure_normalization, RID, float)
 	FUNC2(voxel_gi_set_bias, RID, float)
+	FUNC2(voxel_gi_set_reflection_bias, RID, float)
 	FUNC2(voxel_gi_set_normal_bias, RID, float)
 	FUNC2(voxel_gi_set_interior, RID, bool)
 	FUNC2(voxel_gi_set_use_two_bounces, RID, bool)
+	FUNC2(voxel_gi_set_anisotropic_strength, RID, float)
 
 	FUNC0(sdfgi_reset)
 

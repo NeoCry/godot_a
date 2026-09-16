@@ -104,6 +104,21 @@ layout(set = 0, binding = 4, std430) buffer Outputs {
 }
 outputs;
 
+// Anisotropic (directional) copy of `outputs`, 6 vec4 per cell (+X,-X,+Y,-Y,+Z,-Z),
+// used to build anisotropic voxel mipmaps that reduce light leaking through thin geometry.
+layout(set = 0, binding = 6, std430) buffer AnisoOutputs {
+	vec4 data[];
+}
+aniso_outputs;
+
+const vec3 ANISO_DIR[6] = vec3[](
+		vec3(1.0, 0.0, 0.0),
+		vec3(-1.0, 0.0, 0.0),
+		vec3(0.0, 1.0, 0.0),
+		vec3(0.0, -1.0, 0.0),
+		vec3(0.0, 0.0, 1.0),
+		vec3(0.0, 0.0, -1.0));
+
 #endif // MODE DYNAMIC
 
 layout(set = 0, binding = 9) uniform texture3D texture_sdf;
@@ -112,6 +127,7 @@ layout(set = 0, binding = 10) uniform sampler texture_sampler;
 #ifdef MODE_WRITE_TEXTURE
 
 layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image3D color_tex;
+layout(rgba8, set = 0, binding = 11) uniform restrict writeonly image3D color_tex_aniso[6];
 
 #endif
 
@@ -458,6 +474,18 @@ void main() {
 
 	outputs.data[cell_index] = vec4(accum + emission, 0.0);
 
+	{
+		// Leaf-level anisotropic init: radiance is view-independent (Lambertian), but a
+		// thin surface has little cross-section when viewed edge-on or from behind, so
+		// scale the opacity of each of the 6 axis directions by how much it faces the normal.
+		vec3 leaf_light = accum + emission;
+		bool has_normal = length(normal) > 0.2;
+		for (uint d = 0; d < 6; d++) {
+			float w = has_normal ? clamp(dot(normal, ANISO_DIR[d]), 0.0, 1.0) : 1.0;
+			aniso_outputs.data[cell_index * 6 + d] = vec4(leaf_light, albedo.a * w);
+		}
+	}
+
 #endif //MODE_COMPUTE_LIGHT
 
 	/////////////////SECOND BOUNCE///////////////////////////////
@@ -519,6 +547,14 @@ void main() {
 
 	outputs.data[cell_index] = vec4(accum, 0.0);
 
+	{
+		bool has_normal = length(normal.xyz) > 0.2;
+		for (uint d = 0; d < 6; d++) {
+			float w = has_normal ? clamp(dot(normal.xyz, ANISO_DIR[d]), 0.0, 1.0) : 1.0;
+			aniso_outputs.data[cell_index * 6 + d] = vec4(accum, albedo.a * w);
+		}
+	}
+
 #endif // MODE_SECOND_BOUNCE
 
 	/////////////////UPDATE MIPMAPS///////////////////////////////
@@ -541,6 +577,52 @@ void main() {
 		float divisor = mix(8.0, count, params.propagation);
 		outputs.data[cell_index] = vec4(light_accum / divisor, 0.0);
 	}
+
+	{
+		// Anisotropic mipmap generation: for each of the 6 axis directions, composite
+		// this cell's 8 children front-to-back along that axis (as if ray marching one
+		// step), which lets cone tracing pick up directional occlusion instead of a
+		// plain isotropic average. See https://research.nvidia.com/publication/2011-08_octree-based-sparse-voxelization-using-hardware-conservative-rasterization
+		// (Crassin & Green) for the technique this is based on.
+		vec4 caniso[8][6];
+		for (uint c = 0; c < 8; c++) {
+			uint child_index = cell_children.data[cell_index].children[c];
+			for (uint d = 0; d < 6; d++) {
+				caniso[c][d] = (child_index == NO_CHILDREN) ? vec4(0.0) : aniso_outputs.data[child_index * 6 + d];
+			}
+		}
+
+		vec4 isotropic_result = vec4(outputs.data[cell_index].rgb, albedo.a);
+
+		vec4 result[6];
+		for (uint axis = 0; axis < 3; axis++) {
+			uint bit = 1u << axis;
+			vec4 pos_accum = vec4(0.0);
+			vec4 neg_accum = vec4(0.0);
+			for (uint c = 0; c < 8; c++) {
+				if ((c & bit) != 0u) {
+					continue;
+				}
+				uint c_hi = c | bit;
+
+				// +axis: ray travels from the low side to the high side of the axis.
+				vec4 front_p = caniso[c][axis * 2 + 0];
+				vec4 back_p = caniso[c_hi][axis * 2 + 0];
+				pos_accum += front_p + (1.0 - front_p.a) * back_p;
+
+				// -axis: ray travels from the high side to the low side of the axis.
+				vec4 front_n = caniso[c_hi][axis * 2 + 1];
+				vec4 back_n = caniso[c][axis * 2 + 1];
+				neg_accum += front_n + (1.0 - front_n.a) * back_n;
+			}
+			result[axis * 2 + 0] = mix(isotropic_result, pos_accum * 0.25, params.aniso_strength);
+			result[axis * 2 + 1] = mix(isotropic_result, neg_accum * 0.25, params.aniso_strength);
+		}
+
+		for (uint d = 0; d < 6; d++) {
+			aniso_outputs.data[cell_index * 6 + d] = result[d];
+		}
+	}
 #endif
 
 	///////////////////WRITE TEXTURE/////////////////////////////
@@ -548,6 +630,10 @@ void main() {
 #ifdef MODE_WRITE_TEXTURE
 	{
 		imageStore(color_tex, ivec3(posu), vec4(outputs.data[cell_index].rgb / params.dynamic_range, albedo.a));
+		for (uint d = 0; d < 6; d++) {
+			vec4 av = aniso_outputs.data[cell_index * 6 + d];
+			imageStore(color_tex_aniso[d], ivec3(posu), vec4(av.rgb / params.dynamic_range, av.a));
+		}
 	}
 #endif
 

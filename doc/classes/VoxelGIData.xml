@@ -63,8 +63,11 @@
 		</method>
 	</methods>
 	<members>
+		<member name="anisotropic_strength" type="float" setter="set_anisotropic_strength" getter="get_anisotropic_strength" default="0.0">
+			If greater than [code]0.0[/code], bakes 6 additional directional (anisotropic) copies of the voxel mipmap chain, blended in by this amount, and uses them at run-time to pick the cone tracing direction that best matches the light or reflection being computed. This reduces light leaking through thin geometry (such as walls and floors) at the cost of increased VRAM usage and bake time. This must be set before the [VoxelGI] node is baked to take effect; changing it afterwards only takes effect after the next bake.
+		</member>
 		<member name="bias" type="float" setter="set_bias" getter="get_bias" default="1.5">
-			The normal bias to use for indirect lighting and reflections. Higher values reduce self-reflections visible in non-rough materials, at the cost of more visible light leaking and flatter-looking indirect lighting. To prioritize hiding self-reflections over lighting quality, set [member bias] to [code]0.0[/code] and [member normal_bias] to a value between [code]1.0[/code] and [code]2.0[/code].
+			The normal bias to use for indirect lighting. Higher values reduce self-lighting artifacts visible in non-rough materials, at the cost of more visible light leaking and flatter-looking indirect lighting. See also [member reflection_bias]. To prioritize hiding self-reflections over lighting quality, set [member bias] to [code]0.0[/code] and [member normal_bias] to a value between [code]1.0[/code] and [code]2.0[/code].
 		</member>
 		<member name="dynamic_range" type="float" setter="set_dynamic_range" getter="get_dynamic_range" default="2.0">
 			The dynamic range to use ([code]1.0[/code] represents a low dynamic range scene brightness). Higher values can be used to provide brighter indirect lighting, at the cost of more visible color banding in dark areas (both in indirect lighting and reflections). To avoid color banding, it's recommended to use the lowest value that does not result in visible light clipping.
@@ -80,6 +83,9 @@
 		</member>
 		<member name="propagation" type="float" setter="set_propagation" getter="get_propagation" default="0.5">
 			The multiplier to use when light bounces off a surface. Higher values result in brighter indirect lighting. If indirect lighting looks too flat, try decreasing [member propagation] while increasing [member energy] at the same time. See also [member use_two_bounces] which influences the indirect lighting's effective brightness.
+		</member>
+		<member name="reflection_bias" type="float" setter="set_reflection_bias" getter="get_reflection_bias" default="1.5">
+			The normal bias to use for reflections. Higher values reduce self-reflections visible in non-rough materials, at the cost of more visible light leaking and flatter-looking reflections. Since reflections are most noticeable on smooth surfaces, this can usually be set lower than [member bias] to get sharper contact reflections while keeping diffuse lighting free of leaks.
 		</member>
 		<member name="use_two_bounces" type="bool" setter="set_use_two_bounces" getter="is_using_two_bounces" default="true">
 			If [code]true[/code], performs two bounces of indirect lighting instead of one. This makes indirect lighting look more natural and brighter at a small performance cost. The second bounce is also visible in reflections. If the scene appears too bright after enabling [member use_two_bounces], adjust [member propagation] and [member energy].

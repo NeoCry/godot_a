@@ -86,11 +86,13 @@ struct VoxelGIData {
 	float dynamic_range; // 4 - 80
 
 	float bias; // 4 - 84
-	float normal_bias; // 4 - 88
-	bool blend_ambient; // 4 - 92
-	uint mipmaps; // 4 - 96
+	float reflection_bias; // 4 - 88
+	float normal_bias; // 4 - 92
+	bool blend_ambient; // 4 - 96
 
-	vec3 pad; // 12 - 108
+	uint mipmaps; // 4 - 100
+	bool anisotropic; // 4 - 104
+	float pad; // 4 - 108
 	float exposure_normalization; // 4 - 112
 };
 
@@ -100,6 +102,15 @@ layout(set = 0, binding = 16, std140) uniform VoxelGIs {
 voxel_gi_instances;
 
 layout(set = 0, binding = 17) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
+
+// Anisotropic (directional) mipmap chains, sampled instead of `voxel_gi_textures` when
+// VoxelGIData.anisotropic is set, to reduce light leaking through thin geometry.
+layout(set = 0, binding = 20) uniform texture3D voxel_gi_aniso_px_textures[MAX_VOXEL_GI_INSTANCES];
+layout(set = 0, binding = 21) uniform texture3D voxel_gi_aniso_nx_textures[MAX_VOXEL_GI_INSTANCES];
+layout(set = 0, binding = 22) uniform texture3D voxel_gi_aniso_py_textures[MAX_VOXEL_GI_INSTANCES];
+layout(set = 0, binding = 23) uniform texture3D voxel_gi_aniso_ny_textures[MAX_VOXEL_GI_INSTANCES];
+layout(set = 0, binding = 24) uniform texture3D voxel_gi_aniso_pz_textures[MAX_VOXEL_GI_INSTANCES];
+layout(set = 0, binding = 25) uniform texture3D voxel_gi_aniso_nz_textures[MAX_VOXEL_GI_INSTANCES];
 
 layout(set = 0, binding = 18, std140) uniform SceneData {
 	mat4x4 inv_projection[2];
@@ -483,8 +494,34 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 	}
 }
 
+// Combines the 6 anisotropic mip chains of a probe, weighting each axis by how much the
+// cone direction points along it (dir*dir sums to 1 for a unit vector), and picking
+// whichever of the +/- textures matches the direction's sign on that axis.
+vec4 sample_aniso_voxel(uint index, vec3 uvw_pos, vec3 direction, float lod) {
+	// Selecting between two texture handles with a ternary operator is not reliably
+	// supported across GLSL compilers, so branch on which array to sample instead.
+	vec3 dir2 = direction * direction;
+	vec4 result = vec4(0.0);
+	if (direction.x > 0.0) {
+		result += dir2.x * textureLod(sampler3D(voxel_gi_aniso_px_textures[index], linear_sampler_with_mipmaps), uvw_pos, lod);
+	} else {
+		result += dir2.x * textureLod(sampler3D(voxel_gi_aniso_nx_textures[index], linear_sampler_with_mipmaps), uvw_pos, lod);
+	}
+	if (direction.y > 0.0) {
+		result += dir2.y * textureLod(sampler3D(voxel_gi_aniso_py_textures[index], linear_sampler_with_mipmaps), uvw_pos, lod);
+	} else {
+		result += dir2.y * textureLod(sampler3D(voxel_gi_aniso_ny_textures[index], linear_sampler_with_mipmaps), uvw_pos, lod);
+	}
+	if (direction.z > 0.0) {
+		result += dir2.z * textureLod(sampler3D(voxel_gi_aniso_pz_textures[index], linear_sampler_with_mipmaps), uvw_pos, lod);
+	} else {
+		result += dir2.z * textureLod(sampler3D(voxel_gi_aniso_nz_textures[index], linear_sampler_with_mipmaps), uvw_pos, lod);
+	}
+	return result;
+}
+
 //standard voxel cone trace
-vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
+vec4 voxel_cone_trace(texture3D probe, uint index, bool p_anisotropic, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 
@@ -496,7 +533,8 @@ vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction,
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + half_diameter * cell_size)))) {
 			break;
 		}
-		vec4 scolor = textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, log2(diameter));
+		float lod = log2(diameter);
+		vec4 scolor = p_anisotropic ? sample_aniso_voxel(index, uvw_pos, direction, lod) : textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod);
 		float a = (1.0 - color.a);
 		color += a * scolor;
 		dist += half_diameter;
@@ -505,7 +543,7 @@ vec4 voxel_cone_trace(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction,
 	return color;
 }
 
-vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3 direction, float max_distance, float p_bias) {
+vec4 voxel_cone_trace_45_degrees(texture3D probe, uint index, bool p_anisotropic, vec3 cell_size, vec3 pos, vec3 direction, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 	float radius = max(0.5, dist);
@@ -518,7 +556,7 @@ vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + radius * cell_size)))) {
 			break;
 		}
-		vec4 scolor = textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod_level);
+		vec4 scolor = p_anisotropic ? sample_aniso_voxel(index, uvw_pos, direction, lod_level) : textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod_level);
 		lod_level += 1.0;
 
 		float a = (1.0 - color.a);
@@ -551,6 +589,8 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	float max_distance = length(voxel_gi_instances.data[index].bounds);
 	vec3 cell_size = 1.0 / voxel_gi_instances.data[index].bounds;
 
+	bool aniso = voxel_gi_instances.data[index].anisotropic;
+
 	//irradiance
 
 	vec4 light = vec4(0.0);
@@ -570,7 +610,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 
 		for (uint i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], index, aniso, cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	} else {
 		const uint cone_dir_count = 4;
@@ -583,7 +623,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 		float cone_weights[cone_dir_count] = float[](0.25, 0.25, 0.25, 0.25);
 		for (int i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace_45_degrees(voxel_gi_textures[index], cell_size, position, dir, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace_45_degrees(voxel_gi_textures[index], index, aniso, cell_size, position, dir, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	}
 
@@ -595,7 +635,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_diff += light * blend;
 
 	//radiance
-	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].bias);
+	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], index, aniso, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].reflection_bias);
 	irr_light.rgb *= voxel_gi_instances.data[index].dynamic_range * voxel_gi_instances.data[index].exposure_normalization;
 	if (!voxel_gi_instances.data[index].blend_ambient) {
 		irr_light.a = 1.0;
