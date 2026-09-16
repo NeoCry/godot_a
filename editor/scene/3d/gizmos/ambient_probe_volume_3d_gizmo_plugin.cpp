@@ -111,7 +111,7 @@ void AmbientProbeVolume3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	p_gizmo->add_collision_segments(lines);
 	p_gizmo->add_handles(handles, handles_material);
 
-	// Small crosses previewing where "Generate Probes" would place each LightmapProbe.
+	// Small crosses previewing where "Bake AO" will sample each probe.
 	// Kept out of the collision segments above so they don't interfere with picking the volume.
 	Vector<Vector3> probe_lines;
 	const Vector3i counts = volume->get_probe_counts();
