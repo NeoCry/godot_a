@@ -69,6 +69,9 @@ public:
 	virtual void voxel_gi_set_bias(RID p_voxel_gi, float p_range) override;
 	virtual float voxel_gi_get_bias(RID p_voxel_gi) const override;
 
+	virtual void voxel_gi_set_reflection_bias(RID p_voxel_gi, float p_range) override;
+	virtual float voxel_gi_get_reflection_bias(RID p_voxel_gi) const override;
+
 	virtual void voxel_gi_set_normal_bias(RID p_voxel_gi, float p_range) override;
 	virtual float voxel_gi_get_normal_bias(RID p_voxel_gi) const override;
 
@@ -77,6 +80,9 @@ public:
 
 	virtual void voxel_gi_set_use_two_bounces(RID p_voxel_gi, bool p_enable) override;
 	virtual bool voxel_gi_is_using_two_bounces(RID p_voxel_gi) const override;
+
+	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) override;
+	virtual float voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const override;
 
 	virtual uint32_t voxel_gi_get_version(RID p_voxel_gi) const override;
 

@@ -118,6 +118,13 @@ float GI::voxel_gi_get_bias(RID p_voxel_gi) const {
 	return 0.0;
 }
 
+void GI::voxel_gi_set_reflection_bias(RID p_voxel_gi, float p_range) {
+}
+
+float GI::voxel_gi_get_reflection_bias(RID p_voxel_gi) const {
+	return 0.0;
+}
+
 void GI::voxel_gi_set_normal_bias(RID p_voxel_gi, float p_range) {
 }
 
@@ -137,6 +144,13 @@ void GI::voxel_gi_set_use_two_bounces(RID p_voxel_gi, bool p_enable) {
 
 bool GI::voxel_gi_is_using_two_bounces(RID p_voxel_gi) const {
 	return false;
+}
+
+void GI::voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) {
+}
+
+float GI::voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const {
+	return 0.0;
 }
 
 uint32_t GI::voxel_gi_get_version(RID p_voxel_gi) const {

@@ -316,6 +316,19 @@ float GI::voxel_gi_get_bias(RID p_voxel_gi) const {
 	return voxel_gi->bias;
 }
 
+void GI::voxel_gi_set_reflection_bias(RID p_voxel_gi, float p_bias) {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL(voxel_gi);
+
+	voxel_gi->reflection_bias = p_bias;
+}
+
+float GI::voxel_gi_get_reflection_bias(RID p_voxel_gi) const {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL_V(voxel_gi, 0);
+	return voxel_gi->reflection_bias;
+}
+
 void GI::voxel_gi_set_normal_bias(RID p_voxel_gi, float p_normal_bias) {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
 	ERR_FAIL_NULL(voxel_gi);
@@ -354,6 +367,19 @@ bool GI::voxel_gi_is_interior(RID p_voxel_gi) const {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
 	ERR_FAIL_NULL_V(voxel_gi, false);
 	return voxel_gi->interior;
+}
+
+void GI::voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL(voxel_gi);
+
+	voxel_gi->anisotropic_strength = CLAMP(p_strength, 0.0, 1.0);
+}
+
+float GI::voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL_V(voxel_gi, 0);
+	return voxel_gi->anisotropic_strength;
 }
 
 uint32_t GI::voxel_gi_get_version(RID p_voxel_gi) const {
@@ -2647,18 +2673,29 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 
 			RD::get_singleton()->texture_clear(texture, Color(0, 0, 0, 0), 0, levels.size(), 0, 1);
 
+			for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+				aniso_texture[d] = RD::get_singleton()->texture_create(tf, RD::TextureView());
+				RD::get_singleton()->set_resource_name(aniso_texture[d], "VoxelGI Instance Anisotropic Texture");
+				RD::get_singleton()->texture_clear(aniso_texture[d], Color(0, 0, 0, 0), 0, levels.size(), 0, 1);
+			}
+
+			int total_elements = 0;
 			{
-				int total_elements = 0;
 				for (int i = 0; i < levels.size(); i++) {
 					total_elements += levels[i];
 				}
 
 				write_buffer = RD::get_singleton()->storage_buffer_create(total_elements * 16);
+				// 6 directional (aniso) copies of the per-cell color+alpha used to build anisotropic mipmaps.
+				aniso_buffer = RD::get_singleton()->storage_buffer_create(total_elements * 16 * VOXEL_GI_ANISO_DIR_COUNT);
 			}
 
 			for (int i = 0; i < levels.size(); i++) {
 				VoxelGIInstance::Mipmap mipmap;
 				mipmap.texture = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), texture, 0, i, 1, RD::TEXTURE_SLICE_3D);
+				for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+					mipmap.aniso_texture[d] = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), aniso_texture[d], 0, i, 1, RD::TEXTURE_SLICE_3D);
+				}
 				mipmap.level = levels.size() - i - 1;
 				mipmap.cell_offset = 0;
 				for (uint32_t j = 0; j < mipmap.level; j++) {
@@ -2687,6 +2724,13 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 					u.binding = 4;
 					u.append_id(write_buffer);
+					uniforms.push_back(u);
+				}
+				{
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+					u.binding = 6;
+					u.append_id(aniso_buffer);
 					uniforms.push_back(u);
 				}
 				{
@@ -2737,6 +2781,15 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
 					u.binding = 5;
 					u.append_id(mipmap.texture);
+					uniforms.push_back(u);
+				}
+				{
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+					u.binding = 11;
+					for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+						u.append_id(mipmap.aniso_texture[d]);
+					}
 					uniforms.push_back(u);
 				}
 
@@ -3086,7 +3139,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 			push_constant.propagation = gi->voxel_gi_get_propagation(probe);
 			push_constant.dynamic_range = gi->voxel_gi_get_dynamic_range(probe);
 			push_constant.light_count = light_count;
-			push_constant.aniso_strength = 0;
+			push_constant.aniso_strength = gi->voxel_gi_get_anisotropic_strength(probe);
 			push_constant.cell_size = cell_size;
 
 			/*		print_line("probe update to version " + itos(last_probe_version));
@@ -3403,6 +3456,16 @@ void GI::VoxelGIInstance::free_resources() {
 	if (texture.is_valid()) {
 		RD::get_singleton()->free_rid(texture);
 		RD::get_singleton()->free_rid(write_buffer);
+		for (int i = 0; i < VOXEL_GI_ANISO_DIR_COUNT; i++) {
+			if (aniso_texture[i].is_valid()) {
+				RD::get_singleton()->free_rid(aniso_texture[i]);
+				aniso_texture[i] = RID();
+			}
+		}
+		if (aniso_buffer.is_valid()) {
+			RD::get_singleton()->free_rid(aniso_buffer);
+			aniso_buffer = RID();
+		}
 
 		texture = RID();
 		write_buffer = RID();
@@ -3858,11 +3921,15 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 
 	for (int i = 0; i < MAX_VOXEL_GI_INSTANCES; i++) {
 		RID texture;
+		RID aniso_textures[VOXEL_GI_ANISO_DIR_COUNT];
 		if (i < (int)p_voxel_gi_instances.size()) {
 			VoxelGIInstance *gipi = voxel_gi_instance_owner.get_or_null(p_voxel_gi_instances[i]);
 
 			if (gipi) {
 				texture = gipi->texture;
+				for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+					aniso_textures[d] = gipi->aniso_texture[d];
+				}
 				VoxelGIData &gipd = voxel_gi_data[i];
 
 				RID base_probe = gipi->probe;
@@ -3894,9 +3961,11 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 
 				gipd.dynamic_range = voxel_gi_get_dynamic_range(base_probe) * voxel_gi_get_energy(base_probe);
 				gipd.bias = voxel_gi_get_bias(base_probe);
+				gipd.reflection_bias = voxel_gi_get_reflection_bias(base_probe);
 				gipd.normal_bias = voxel_gi_get_normal_bias(base_probe);
 				gipd.blend_ambient = !voxel_gi_is_interior(base_probe);
 				gipd.mipmaps = gipi->mipmaps.size();
+				gipd.anisotropic = voxel_gi_get_anisotropic_strength(base_probe) > 0.0;
 				gipd.exposure_normalization = 1.0;
 				if (p_render_data->camera_attributes.is_valid()) {
 					float exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);
@@ -3914,6 +3983,18 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 		if (texture != rbgi->voxel_gi_textures[i]) {
 			voxel_gi_instances_changed = true;
 			rbgi->voxel_gi_textures[i] = texture;
+		}
+
+		for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+			RID aniso_texture = aniso_textures[d];
+			if (aniso_texture == RID()) {
+				aniso_texture = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_3D_WHITE);
+			}
+
+			if (aniso_texture != rbgi->voxel_gi_aniso_textures[d][i]) {
+				voxel_gi_instances_changed = true;
+				rbgi->voxel_gi_aniso_textures[d][i] = aniso_texture;
+			}
 		}
 	}
 
@@ -4245,6 +4326,15 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 				u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
 				u.binding = 18;
 				u.append_id(rbgi->scene_data_ubo);
+				uniforms.push_back(u);
+			}
+			for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+				u.binding = 20 + d;
+				for (int i = 0; i < MAX_VOXEL_GI_INSTANCES; i++) {
+					u.append_id(rbgi->voxel_gi_aniso_textures[d][i]);
+				}
 				uniforms.push_back(u);
 			}
 			if (RendererSceneRenderRD::get_singleton()->is_vrs_supported()) {

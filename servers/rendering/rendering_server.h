@@ -413,9 +413,11 @@ public:
 	virtual void voxel_gi_set_energy(RID p_voxel_gi, float p_energy) = 0;
 	virtual void voxel_gi_set_baked_exposure_normalization(RID p_voxel_gi, float p_baked_exposure) = 0;
 	virtual void voxel_gi_set_bias(RID p_voxel_gi, float p_bias) = 0;
+	virtual void voxel_gi_set_reflection_bias(RID p_voxel_gi, float p_bias) = 0;
 	virtual void voxel_gi_set_normal_bias(RID p_voxel_gi, float p_range) = 0;
 	virtual void voxel_gi_set_interior(RID p_voxel_gi, bool p_enable) = 0;
 	virtual void voxel_gi_set_use_two_bounces(RID p_voxel_gi, bool p_enable) = 0;
+	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) = 0;
 
 	virtual void voxel_gi_set_quality(RSE::VoxelGIQuality) = 0;
 

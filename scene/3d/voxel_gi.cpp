@@ -164,6 +164,15 @@ float VoxelGIData::get_bias() const {
 	return bias;
 }
 
+void VoxelGIData::set_reflection_bias(float p_bias) {
+	RS::get_singleton()->voxel_gi_set_reflection_bias(probe, p_bias);
+	reflection_bias = p_bias;
+}
+
+float VoxelGIData::get_reflection_bias() const {
+	return reflection_bias;
+}
+
 void VoxelGIData::set_normal_bias(float p_normal_bias) {
 	RS::get_singleton()->voxel_gi_set_normal_bias(probe, p_normal_bias);
 	normal_bias = p_normal_bias;
@@ -191,6 +200,15 @@ bool VoxelGIData::is_using_two_bounces() const {
 	return use_two_bounces;
 }
 
+void VoxelGIData::set_anisotropic_strength(float p_strength) {
+	RS::get_singleton()->voxel_gi_set_anisotropic_strength(probe, p_strength);
+	anisotropic_strength = p_strength;
+}
+
+float VoxelGIData::get_anisotropic_strength() const {
+	return anisotropic_strength;
+}
+
 RID VoxelGIData::get_rid() const {
 	return probe;
 }
@@ -214,6 +232,9 @@ void VoxelGIData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_bias", "bias"), &VoxelGIData::set_bias);
 	ClassDB::bind_method(D_METHOD("get_bias"), &VoxelGIData::get_bias);
 
+	ClassDB::bind_method(D_METHOD("set_reflection_bias", "bias"), &VoxelGIData::set_reflection_bias);
+	ClassDB::bind_method(D_METHOD("get_reflection_bias"), &VoxelGIData::get_reflection_bias);
+
 	ClassDB::bind_method(D_METHOD("set_normal_bias", "bias"), &VoxelGIData::set_normal_bias);
 	ClassDB::bind_method(D_METHOD("get_normal_bias"), &VoxelGIData::get_normal_bias);
 
@@ -226,6 +247,9 @@ void VoxelGIData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_use_two_bounces", "enable"), &VoxelGIData::set_use_two_bounces);
 	ClassDB::bind_method(D_METHOD("is_using_two_bounces"), &VoxelGIData::is_using_two_bounces);
 
+	ClassDB::bind_method(D_METHOD("set_anisotropic_strength", "strength"), &VoxelGIData::set_anisotropic_strength);
+	ClassDB::bind_method(D_METHOD("get_anisotropic_strength"), &VoxelGIData::get_anisotropic_strength);
+
 	ClassDB::bind_method(D_METHOD("_set_data", "data"), &VoxelGIData::_set_data);
 	ClassDB::bind_method(D_METHOD("_get_data"), &VoxelGIData::_get_data);
 
@@ -234,10 +258,12 @@ void VoxelGIData::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "dynamic_range", PROPERTY_HINT_RANGE, "1,8,0.01"), "set_dynamic_range", "get_dynamic_range");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "energy", PROPERTY_HINT_RANGE, "0,64,0.01"), "set_energy", "get_energy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bias", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_bias", "get_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reflection_bias", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_reflection_bias", "get_reflection_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "normal_bias", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_normal_bias", "get_normal_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "propagation", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_propagation", "get_propagation");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_two_bounces"), "set_use_two_bounces", "is_using_two_bounces");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "interior"), "set_interior", "is_interior");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "anisotropic_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_anisotropic_strength", "get_anisotropic_strength");
 }
 
 #ifndef DISABLE_DEPRECATED

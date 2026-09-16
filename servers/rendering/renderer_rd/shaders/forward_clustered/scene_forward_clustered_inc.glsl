@@ -465,11 +465,13 @@ struct VoxelGIData {
 	float dynamic_range; // 4 - 80
 
 	float bias; // 4 - 84
-	float normal_bias; // 4 - 88
-	bool blend_ambient; // 4 - 92
-	uint mipmaps; // 4 - 96
+	float reflection_bias; // 4 - 88
+	float normal_bias; // 4 - 92
+	bool blend_ambient; // 4 - 96
 
-	vec3 pad; // 12 - 108
+	uint mipmaps; // 4 - 100
+	bool anisotropic; // 4 - 104
+	float pad; // 4 - 108
 	float exposure_normalization; // 4 - 112
 };
 

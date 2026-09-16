@@ -4683,6 +4683,14 @@
 				Returns the transform to cell space for the specified voxel GI data instance. See also [method voxel_gi_allocate_data].
 			</description>
 		</method>
+		<method name="voxel_gi_set_anisotropic_strength">
+			<return type="void" />
+			<param index="0" name="voxel_gi" type="RID" />
+			<param index="1" name="strength" type="float" />
+			<description>
+				Sets the [member VoxelGIData.anisotropic_strength] value to use on the specified [param voxel_gi]'s [RID].
+			</description>
+		</method>
 		<method name="voxel_gi_set_baked_exposure_normalization">
 			<return type="void" />
 			<param index="0" name="voxel_gi" type="RID" />
@@ -4744,6 +4752,14 @@
 			<param index="0" name="quality" type="int" enum="RenderingServer.VoxelGIQuality" />
 			<description>
 				Sets the [member ProjectSettings.rendering/global_illumination/voxel_gi/quality] value to use when rendering. This parameter is global and cannot be set on a per-VoxelGI basis.
+			</description>
+		</method>
+		<method name="voxel_gi_set_reflection_bias">
+			<return type="void" />
+			<param index="0" name="voxel_gi" type="RID" />
+			<param index="1" name="bias" type="float" />
+			<description>
+				Sets the [member VoxelGIData.reflection_bias] value to use on the specified [param voxel_gi]'s [RID].
 			</description>
 		</method>
 		<method name="voxel_gi_set_use_two_bounces">

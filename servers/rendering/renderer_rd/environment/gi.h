@@ -85,8 +85,10 @@ public:
 		float energy = 1.0;
 		float baked_exposure = 1.0;
 		float bias = 1.4;
+		float reflection_bias = 1.4;
 		float normal_bias = 0.0;
 		float propagation = 0.5;
+		float anisotropic_strength = 0.0;
 		bool interior = false;
 		bool use_two_bounces = true;
 
@@ -100,16 +102,24 @@ public:
 
 	//@TODO VoxelGIInstance is still directly used in the render code, we'll address this when we refactor the render code itself.
 
+	// Anisotropic mipmaps store 6 directional (+X,-X,+Y,-Y,+Z,-Z) copies of the color
+	// mipmap chain so cone tracing can pick the faces that best match each cone's
+	// direction, reducing light leaking through thin geometry.
+	enum { VOXEL_GI_ANISO_DIR_COUNT = 6 };
+
 	struct VoxelGIInstance {
 		// access to our containers
 		GI *gi = nullptr;
 
 		RID probe;
 		RID texture;
+		RID aniso_texture[VOXEL_GI_ANISO_DIR_COUNT];
 		RID write_buffer;
+		RID aniso_buffer;
 
 		struct Mipmap {
 			RID texture;
+			RID aniso_texture[VOXEL_GI_ANISO_DIR_COUNT];
 			RID uniform_set;
 			RID second_bounce_uniform_set;
 			RID write_uniform_set;
@@ -458,6 +468,7 @@ public:
 
 	public:
 		RID voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
+		RID voxel_gi_aniso_textures[VOXEL_GI_ANISO_DIR_COUNT][MAX_VOXEL_GI_INSTANCES];
 
 		RID full_buffer;
 		RID full_dispatch;
@@ -509,6 +520,9 @@ public:
 	virtual void voxel_gi_set_bias(RID p_voxel_gi, float p_bias) override;
 	virtual float voxel_gi_get_bias(RID p_voxel_gi) const override;
 
+	virtual void voxel_gi_set_reflection_bias(RID p_voxel_gi, float p_bias) override;
+	virtual float voxel_gi_get_reflection_bias(RID p_voxel_gi) const override;
+
 	virtual void voxel_gi_set_normal_bias(RID p_voxel_gi, float p_range) override;
 	virtual float voxel_gi_get_normal_bias(RID p_voxel_gi) const override;
 
@@ -517,6 +531,9 @@ public:
 
 	virtual void voxel_gi_set_use_two_bounces(RID p_voxel_gi, bool p_enable) override;
 	virtual bool voxel_gi_is_using_two_bounces(RID p_voxel_gi) const override;
+
+	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) override;
+	virtual float voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const override;
 
 	virtual uint32_t voxel_gi_get_version(RID p_probe) const override;
 	uint32_t voxel_gi_get_data_version(RID p_probe);
@@ -765,11 +782,13 @@ public:
 		float dynamic_range; // 4 - 80
 
 		float bias; // 4 - 84
-		float normal_bias; // 4 - 88
-		uint32_t blend_ambient; // 4 - 92
-		uint32_t mipmaps; // 4 - 96
+		float reflection_bias; // 4 - 88
+		float normal_bias; // 4 - 92
+		uint32_t blend_ambient; // 4 - 96
 
-		float pad[3]; // 12 - 108
+		uint32_t mipmaps; // 4 - 100
+		uint32_t anisotropic; // 4 - 104
+		float pad; // 4 - 108
 		float exposure_normalization; // 4 - 112
 	};
 
