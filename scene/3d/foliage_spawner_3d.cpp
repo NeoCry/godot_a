@@ -37,7 +37,6 @@
 #include "core/object/class_db.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
-#include "scene/3d/ambient_probe_volume_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/multimesh.h"
@@ -86,9 +85,6 @@ void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_align_to_normal_amount", "amount"), &FoliageSpawner3D::set_align_to_normal_amount);
 	ClassDB::bind_method(D_METHOD("get_align_to_normal_amount"), &FoliageSpawner3D::get_align_to_normal_amount);
 
-	ClassDB::bind_method(D_METHOD("set_ambient_occlusion_volume", "path"), &FoliageSpawner3D::set_ambient_occlusion_volume);
-	ClassDB::bind_method(D_METHOD("get_ambient_occlusion_volume"), &FoliageSpawner3D::get_ambient_occlusion_volume);
-
 	ClassDB::bind_method(D_METHOD("set_random_rotation", "random"), &FoliageSpawner3D::set_random_rotation);
 	ClassDB::bind_method(D_METHOD("is_random_rotation_enabled"), &FoliageSpawner3D::is_random_rotation_enabled);
 
@@ -126,9 +122,6 @@ void FoliageSpawner3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_slope_degrees", PROPERTY_HINT_RANGE, "0,90,0.1,suffix:°"), "set_max_slope_degrees", "get_max_slope_degrees");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "align_to_normal"), "set_align_to_normal", "is_aligned_to_normal");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "align_to_normal_amount", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_align_to_normal_amount", "get_align_to_normal_amount");
-
-	ADD_GROUP("Ambient Occlusion", "");
-	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "ambient_occlusion_volume", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "AmbientProbeVolume3D"), "set_ambient_occlusion_volume", "get_ambient_occlusion_volume");
 
 	ADD_GROUP("Randomization", "");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "random_rotation"), "set_random_rotation", "is_random_rotation_enabled");
@@ -272,14 +265,6 @@ void FoliageSpawner3D::set_align_to_normal_amount(float p_amount) {
 
 float FoliageSpawner3D::get_align_to_normal_amount() const {
 	return align_to_normal_amount;
-}
-
-void FoliageSpawner3D::set_ambient_occlusion_volume(const NodePath &p_path) {
-	ambient_occlusion_volume = p_path;
-}
-
-NodePath FoliageSpawner3D::get_ambient_occlusion_volume() const {
-	return ambient_occlusion_volume;
 }
 
 void FoliageSpawner3D::set_random_rotation(bool p_random) {
@@ -560,20 +545,13 @@ void FoliageSpawner3D::regenerate() {
 		}
 	}
 
-	AmbientProbeVolume3D *ao_volume = Object::cast_to<AmbientProbeVolume3D>(is_inside_tree() ? get_node_or_null(ambient_occlusion_volume) : nullptr);
-
 	Ref<MultiMesh> mm;
 	mm.instantiate();
 	mm->set_transform_format(MultiMesh::TRANSFORM_3D);
 	mm->set_mesh(mesh);
-	mm->set_use_custom_data(ao_volume != nullptr);
 	mm->set_instance_count(transforms.size());
 	for (uint32_t i = 0; i < transforms.size(); i++) {
 		mm->set_instance_transform(i, transforms[i]);
-		if (ao_volume != nullptr) {
-			const float ao = ao_volume->get_ao_at(gt.xform(transforms[i].origin));
-			mm->set_instance_custom_data(i, Color(ao, ao, ao, 1.0));
-		}
 	}
 
 	set_multimesh(mm);
@@ -604,15 +582,6 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 		}
 	}
 
-	if (!ambient_occlusion_volume.is_empty()) {
-		AmbientProbeVolume3D *ao_volume = Object::cast_to<AmbientProbeVolume3D>(is_inside_tree() ? get_node_or_null(ambient_occlusion_volume) : nullptr);
-		if (ao_volume == nullptr) {
-			warnings.push_back(RTR("Ambient Occlusion Volume does not point to an AmbientProbeVolume3D. Assign one, or clear the path."));
-		} else if (!ao_volume->is_baked()) {
-			warnings.push_back(RTR("The AmbientProbeVolume3D referenced by Ambient Occlusion Volume has not been baked yet, so instances will use full ambient occlusion (unoccluded) until it is."));
-		}
-	}
-
 	if (mesh.is_valid()) {
 		Ref<MultiMesh> mm = get_multimesh();
 		if (mm.is_null() || mm->get_instance_count() == 0) {
@@ -628,11 +597,4 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 }
 
 FoliageSpawner3D::FoliageSpawner3D() {
-	// Baked global illumination (LightmapGI probes, VoxelGI, SDFGI) is generally
-	// not worth its cost for grass and other small scattered foliage: the visual
-	// difference is minor at that scale, LightmapGI would otherwise try to lightmap
-	// every scattered instance, and dynamic per-instance GI probe lookups add up
-	// with thousands of MultiMesh instances. Users who do want it can still switch
-	// GI Mode back on in the inspector.
-	set_gi_mode(GI_MODE_DISABLED);
 }

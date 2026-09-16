@@ -51,7 +51,6 @@
 #include "editor/gui/editor_toolbar_group.h"
 #include "editor/plugins/editor_plugin_list.h"
 #include "editor/run/editor_run_bar.h"
-#include "editor/scene/3d/gizmos/ambient_probe_volume_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/audio_listener_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/audio_stream_player_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/camera_3d_gizmo_plugin.h"
@@ -3023,7 +3022,6 @@ void Node3DEditor::_register_all_gizmos() {
 	add_gizmo_plugin(Ref<VoxelGIGizmoPlugin>(memnew(VoxelGIGizmoPlugin)));
 	add_gizmo_plugin(Ref<LightmapGIGizmoPlugin>(memnew(LightmapGIGizmoPlugin)));
 	add_gizmo_plugin(Ref<LightmapProbeGizmoPlugin>(memnew(LightmapProbeGizmoPlugin)));
-	add_gizmo_plugin(Ref<AmbientProbeVolume3DGizmoPlugin>(memnew(AmbientProbeVolume3DGizmoPlugin)));
 	add_gizmo_plugin(Ref<FogVolumeGizmoPlugin>(memnew(FogVolumeGizmoPlugin)));
 	add_gizmo_plugin(Ref<FoliageSpawner3DGizmoPlugin>(memnew(FoliageSpawner3DGizmoPlugin)));
 	add_gizmo_plugin(Ref<TwoBoneIK3DGizmoPlugin>(memnew(TwoBoneIK3DGizmoPlugin)));
