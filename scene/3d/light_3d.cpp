@@ -435,11 +435,16 @@ void Light3D::_bind_methods() {
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_opacity", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_param", "get_param", PARAM_SHADOW_OPACITY);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_blur", PROPERTY_HINT_RANGE, "0,10,0.001"), "set_param", "get_param", PARAM_SHADOW_BLUR);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "shadow_caster_mask", PROPERTY_HINT_LAYERS_3D_RENDER), "set_shadow_caster_mask", "get_shadow_caster_mask");
-	ADD_SUBGROUP("Contact Shadows", "shadow_contact_shadows_");
+
+	// This is intentionally a top-level ADD_GROUP (not an ADD_SUBGROUP nested under "Shadow"):
+	// screen-space shadows are computed straight from the depth buffer and work independently of
+	// shadow_enabled (see LightStorage::update_light_buffers()/RenderForwardClustered). Nesting it
+	// under "Shadow" would make the whole section collapse/gray out whenever shadow_enabled is
+	// turned off, hiding a control that stays fully functional in that case.
+	ADD_GROUP("Screen Space Shadows", "shadow_contact_shadows_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "shadow_contact_shadows_allow", PROPERTY_HINT_GROUP_ENABLE), "set_allow_contact_shadows", "get_allow_contact_shadows");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_contact_shadows_opacity", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_param", "get_param", PARAM_CONTACT_SHADOW_OPACITY);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_contact_shadows_blur", PROPERTY_HINT_RANGE, "0,10,0.001"), "set_param", "get_param", PARAM_CONTACT_SHADOW_BLUR);
-	ADD_SUBGROUP("", "");
 
 	ADD_GROUP("Distance Fade", "distance_fade_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "distance_fade_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_enable_distance_fade", "is_distance_fade_enabled");

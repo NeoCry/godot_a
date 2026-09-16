@@ -365,6 +365,7 @@ SSEffects::SSEffects() {
 			}
 
 			sscs.border_sampler = border_sampler;
+			sscs.exclusion_rects_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(SSCSExclusionRectsBuffer));
 		}
 	}
 
@@ -477,6 +478,7 @@ SSEffects::~SSEffects() {
 		sscs.sscs_shader.version_free(sscs.sscs_shader_version);
 
 		RD::get_singleton()->free_rid(sscs.border_sampler);
+		RD::get_singleton()->free_rid(sscs.exclusion_rects_buffer);
 	}
 
 	{
@@ -1791,6 +1793,24 @@ void SSEffects::sscs_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers
 	}
 }
 
+void SSEffects::sscs_set_exclusion_rects(const Vector4 *p_rects, uint32_t p_rect_count) {
+	sscs.exclusion_rect_count = MIN(p_rect_count, SSCS_MAX_EXCLUSION_RECTS);
+
+	if (sscs.exclusion_rect_count == 0) {
+		return;
+	}
+
+	SSCSExclusionRectsBuffer buffer_data;
+	for (uint32_t i = 0; i < sscs.exclusion_rect_count; i++) {
+		buffer_data.rects[i][0] = p_rects[i].x;
+		buffer_data.rects[i][1] = p_rects[i].y;
+		buffer_data.rects[i][2] = p_rects[i].z;
+		buffer_data.rects[i][3] = p_rects[i].w;
+	}
+
+	RD::get_singleton()->buffer_update(sscs.exclusion_rects_buffer, 0, sizeof(float) * 4 * sscs.exclusion_rect_count, buffer_data.rects);
+}
+
 void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, const SSCSSettings &p_settings, const Projection *p_projections, Vector3 p_light_direction, uint32_t p_light_index, float p_opacity, float p_blur, float p_taa_frame_count) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	ERR_FAIL_NULL(uniform_set_cache);
@@ -1862,6 +1882,7 @@ void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_
 		push_constant.light_coordinates[3] = light.w;
 		push_constant.light_offset[0] = bound_start.x * wave_size;
 		push_constant.light_offset[1] = bound_start.y * wave_size;
+		push_constant.exclusion_rect_count = sscs.exclusion_rect_count;
 
 		RID depth_buffer = p_render_buffers->get_depth_texture(v);
 		uint32_t layer = p_light_index * view_count + v;
@@ -1869,8 +1890,9 @@ void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_
 
 		RD::Uniform u_depth_buffer(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>{ sscs.border_sampler, depth_buffer });
 		RD::Uniform u_sscs(RD::UNIFORM_TYPE_IMAGE, 1, sscs_texture);
+		RD::Uniform u_exclusion_rects(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 2, sscs.exclusion_rects_buffer);
 
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(sscs_shader, 0, u_depth_buffer, u_sscs), 0);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(sscs_shader, 0, u_depth_buffer, u_sscs, u_exclusion_rects), 0);
 
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
 		RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, bound_size.x, bound_size.y);

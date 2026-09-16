@@ -174,7 +174,18 @@ public:
 		float surface_thickness = 0.01f;
 	};
 
+	// Maximum number of GeometryInstance3D objects that can opt out of casting screen space
+	// shadows (GeometryInstance3D.ignore_screen_space_shadows) in a single frame. Each excluded
+	// instance contributes one screen-space bounding rect that the SSCS ray march skips over.
+	// Must match SSCS_MAX_EXCLUSION_RECTS in screen_space_contact_shadows.glsl.
+	static const uint32_t SSCS_MAX_EXCLUSION_RECTS = 32;
+
 	void sscs_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, uint32_t p_contact_shadow_count);
+	// Uploads the screen-space rects (in [0,1] UV space, as vec4(min_x, min_y, max_x, max_y)) of
+	// instances that should not cast screen space shadows. Call once per frame before
+	// screen_space_contact_shadows(); the same set of rects is used for every light processed
+	// that frame, since exclusion is purely geometric, not light-dependent.
+	void sscs_set_exclusion_rects(const Vector4 *p_rects, uint32_t p_rect_count);
 	void screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, const SSCSSettings &p_settings, const Projection *p_projections, Vector3 p_light_direction, uint32_t p_light_index, float p_opacity, float p_blur, float p_taa_frame_count);
 
 private:
@@ -529,8 +540,14 @@ private:
 		RID sscs_shader_version;
 		PipelineDeferredRD sscs_pipelines[SCREEN_SPACE_CONTACT_SHADOWS_MAX];
 		RID border_sampler;
+		RID exclusion_rects_buffer;
+		uint32_t exclusion_rect_count = 0;
 
 	} sscs;
+
+	struct SSCSExclusionRectsBuffer {
+		float rects[SSCS_MAX_EXCLUSION_RECTS][4];
+	};
 
 	struct ScreenSpaceContactShadowsPushConstant {
 		int32_t screen_size[2];
@@ -540,6 +557,7 @@ private:
 		float opacity;
 		float blur;
 		float taa_frame_count;
+		uint32_t exclusion_rect_count;
 	};
 
 	/* Subsurface scattering */
