@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="AmbientProbeVolume3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Bakes large-scale ambient occlusion into a grid of probes filling a box volume, without lightmaps.
+	</brief_description>
+	<description>
+		[AmbientProbeVolume3D] computes ambient occlusion (how exposed a point is to the sky/ambient light versus blocked by nearby geometry) at a regular grid of points filling the box defined by [member size] (centered on the node's origin), and stores one value per point. Pressing the [b]Bake AO[/b] button in the Inspector (or calling [method bake_ao]) does this entirely on the CPU by raycasting against the triangle geometry of every visible [MeshInstance3D] found under [member occluder_root] (or the current scene root if left unset): for each probe, [member ray_count] rays are cast up to [member max_distance] in roughly uniform directions around the sphere, and the fraction that hit something becomes that probe's occlusion.
+		This is intentionally independent of [LightmapGI]/[LightmapProbe]: no mesh needs lightmap UV2s, nothing gets a baked lightmap texture, and no separate bake step for direct/indirect light is involved. It only ever produces ambient occlusion, which keeps baking fast and avoids forcing UV2 unwrapping (or lightmap texel budgeting) onto meshes—like scattered vegetation—that would be impractical to lightmap. If baked, indirect [i]light[/i] (not just occlusion) is also wanted for some objects, use [LightmapGI]/[LightmapProbe] for those instead; the two systems don't conflict and can be used side by side.
+		Read the baked result back with [method get_ao_at], which trilinearly samples the grid at any world-space position (returning [code]1.0[/code], i.e. fully lit, outside the box or before baking). This node does not shade anything by itself: apply the value however fits the object, for example [FoliageSpawner3D] can sample it directly into its generated [MultiMesh]'s per-instance custom data via [member FoliageSpawner3D.ambient_occlusion_volume] (read back in the mesh's shader), or a script can call [method get_ao_at] to darken a [Light3D]'s energy, a [MeshInstance3D]'s per-instance shader parameter, etc. Since nothing receives this data unless it is explicitly wired up this way, there's no separate "opt-out" needed for objects that shouldn't be affected (e.g. small props): simply don't sample it for them.
+		[b]VoxelGI vs. this node for large-scale ambient occlusion:[/b] [VoxelGI] voxelizes one fixed-resolution 3D texture (up to 256 per axis) across its whole box and updates in real time, which makes it a poor fit for very large or open outdoor areas: covering more world space either coarsens every voxel or spends a lot of GPU memory and bake/update time on a single volume, and its effect fades out near the box's edges. This node's probes are just points, placed wherever needed at whatever spacing is useful, with no such resolution-vs-coverage trade-off, and they cost nothing at runtime beyond [method get_ao_at]'s trilinear lookup (or, if pre-applied like [FoliageSpawner3D] does, nothing at all). The trade-off is that baked data doesn't react to moving lights or geometry. For large, mostly-static outdoor scenes, prefer this node for ambient occlusion on vegetation and similar objects; reserve [VoxelGI] for smaller, bounded areas (e.g. a single interior or a gameplay-relevant room) where real-time reaction to moving lights matters. [SDFGI] (via [member Environment.sdfgi_enabled]) is usually a better real-time alternative to [VoxelGI] for large open worlds, since it works from cascades around the camera instead of a single fixed volume, but still costs GPU time every frame that baked data does not.
+		[b]Note:[/b] [method bake_ao] requires the node to be inside the [SceneTree], since it scans the scene for occluding geometry.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="bake_ao">
+			<return type="void" />
+			<description>
+				Scans [member occluder_root] (or the current scene root if unset) for visible [MeshInstance3D] geometry, then raycasts from every probe in the [member probe_counts] grid filling [member size] to compute and store its ambient occlusion. Replaces any previously baked data.
+			</description>
+		</method>
+		<method name="clear_ao">
+			<return type="void" />
+			<description>
+				Discards any baked data. After this, [method get_ao_at] returns [code]1.0[/code] (fully lit) everywhere until [method bake_ao] is called again.
+			</description>
+		</method>
+		<method name="get_ao_at" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="world_position" type="Vector3" />
+			<description>
+				Returns the baked ambient occlusion at [param world_position], trilinearly interpolated between the nearest probes ([code]1.0[/code] = fully lit, [code]0.0[/code] = fully occluded). Returns [code]1.0[/code] if [param world_position] is outside [member size], or if this volume hasn't been baked yet.
+			</description>
+		</method>
+		<method name="is_baked" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if [method bake_ao] has been called since the last [method clear_ao] (or since [member probe_counts] last changed, which also clears baked data since it no longer matches the grid).
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="ao_strength" type="float" setter="set_ao_strength" getter="get_ao_strength" default="1.0">
+			Multiplies how strongly hits reduce a probe's ambient occlusion during [method bake_ao]. Values above [code]1.0[/code] exaggerate occlusion (a probe can go fully dark from partial occlusion); [code]0.0[/code] disables the effect entirely (everything stays fully lit).
+		</member>
+		<member name="bake_ao_button" type="Callable" setter="" getter="get_bake_button">
+			Pressing this button in the Inspector calls [method bake_ao]. It is not meant to be read or assigned from code; use [method bake_ao] directly instead.
+		</member>
+		<member name="clear_ao_button" type="Callable" setter="" getter="get_clear_button">
+			Pressing this button in the Inspector calls [method clear_ao]. It is not meant to be read or assigned from code; use [method clear_ao] directly instead.
+		</member>
+		<member name="max_distance" type="float" setter="set_max_distance" getter="get_max_distance" default="8.0">
+			The maximum ray length used by [method bake_ao], in meters. Geometry farther than this from a probe cannot occlude it. Larger values catch more distant occluders but increase bake time and tend to darken probes that are simply far from any surface (which is not always desired for ambient occlusion).
+		</member>
+		<member name="occluder_root" type="NodePath" setter="set_occluder_root" getter="get_occluder_root" default="NodePath(&quot;&quot;)">
+			The root node that [method bake_ao] scans (recursively) for [MeshInstance3D] occluders. If left empty, the current scene root is used (the edited scene root in the editor).
+		</member>
+		<member name="probe_counts" type="Vector3i" setter="set_probe_counts" getter="get_probe_counts" default="Vector3i(6, 3, 6)">
+			The number of probes along each axis, clamped between [code]1[/code] and [code]64[/code] per axis. The total probe count ([member probe_counts].x × [member probe_counts].y × [member probe_counts].z) directly affects [method bake_ao]'s running time, so keep it as low as the desired detail allows. Changing this clears any previously baked data, since it no longer matches the new grid.
+		</member>
+		<member name="ray_count" type="int" setter="set_ray_count" getter="get_ray_count" default="48">
+			The number of rays cast per probe by [method bake_ao], spread roughly uniformly over the sphere. Higher values produce smoother, less noisy occlusion at the cost of longer bake times.
+		</member>
+		<member name="size" type="Vector3" setter="set_size" getter="get_size" default="Vector3(20, 10, 20)">
+			The size of the box volume that probes fill, centered on the node's origin.
+		</member>
+	</members>
+</class>
