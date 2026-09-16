@@ -54,11 +54,19 @@ class AmbientProbeVolume3D : public Node3D {
 
 	PackedFloat32Array baked_ao;
 
+	// Diagnostics from the last bake_ao()/apply_to_instances() call, not persisted;
+	// -1 means "hasn't run yet". Surfaced via get_configuration_warnings() and
+	// printed to the Output panel so a bake/apply that quietly did nothing useful
+	// (e.g. no occluder geometry found, or no GeometryInstance3D to apply to) is
+	// easy to tell apart from one that worked but simply found no occlusion.
+	int last_bake_occluder_face_count = -1;
+	int last_apply_instance_count = -1;
+
 	Callable _get_bake_button() const;
 	Callable _get_clear_button() const;
 	Callable _get_apply_button() const;
 
-	void _apply_to_instances(Node *p_node);
+	void _apply_to_instances(Node *p_node, int &r_count);
 
 	void _set_baked_ao(const PackedFloat32Array &p_data);
 	PackedFloat32Array _get_baked_ao() const;

@@ -49,21 +49,43 @@ struct OccluderFace {
 	float radius = 0.0f;
 };
 
+void add_occluder_mesh(const Ref<Mesh> &p_mesh, const Transform3D &p_xf, LocalVector<OccluderFace> &r_faces) {
+	if (p_mesh.is_null()) {
+		return;
+	}
+	Vector<Face3> faces = p_mesh->get_faces();
+	for (const Face3 &face : faces) {
+		OccluderFace of;
+		of.v0 = p_xf.xform(face.vertex[0]);
+		of.v1 = p_xf.xform(face.vertex[1]);
+		of.v2 = p_xf.xform(face.vertex[2]);
+		of.center = (of.v0 + of.v1 + of.v2) / 3.0f;
+		of.radius = MAX(of.center.distance_to(of.v0), MAX(of.center.distance_to(of.v1), of.center.distance_to(of.v2)));
+		r_faces.push_back(of);
+	}
+}
+
 void gather_occluder_faces(Node *p_node, const Transform3D &p_world_to_local, LocalVector<OccluderFace> &r_faces) {
 	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_node);
 	if (mi != nullptr && mi->is_visible_in_tree()) {
-		Ref<Mesh> mesh = mi->get_mesh();
-		if (mesh.is_valid()) {
-			const Transform3D xf = p_world_to_local * mi->get_global_transform();
-			Vector<Face3> faces = mesh->get_faces();
-			for (const Face3 &face : faces) {
-				OccluderFace of;
-				of.v0 = xf.xform(face.vertex[0]);
-				of.v1 = xf.xform(face.vertex[1]);
-				of.v2 = xf.xform(face.vertex[2]);
-				of.center = (of.v0 + of.v1 + of.v2) / 3.0f;
-				of.radius = MAX(of.center.distance_to(of.v0), MAX(of.center.distance_to(of.v1), of.center.distance_to(of.v2)));
-				r_faces.push_back(of);
+		add_occluder_mesh(mi->get_mesh(), p_world_to_local * mi->get_global_transform(), r_faces);
+	}
+
+	Node3D *s = Object::cast_to<Node3D>(p_node);
+	if (mi == nullptr && s != nullptr && s->is_visible_in_tree()) {
+		// Nodes that don't carry a single Mesh of their own but can still contribute
+		// baked static geometry (e.g. GridMap) expose it the same way LightmapGI/VoxelGI
+		// already look for it: an optional get_bake_meshes() method returning
+		// [mesh0, local_xf0, mesh1, local_xf1, ...]. Calling call() on a node that has no
+		// such method is a documented no-op (returns a null Variant, no error), so this is
+		// safe to try unconditionally on every Node3D.
+		Array bake_meshes = s->call("get_bake_meshes");
+		if (bake_meshes.size() > 0 && (bake_meshes.size() & 1) == 0) {
+			const Transform3D base_xf = p_world_to_local * s->get_global_transform();
+			for (int i = 0; i < bake_meshes.size(); i += 2) {
+				const Ref<Mesh> mesh = bake_meshes[i];
+				const Transform3D local_xf = bake_meshes[i + 1];
+				add_occluder_mesh(mesh, base_xf * local_xf, r_faces);
 			}
 		}
 	}
@@ -263,6 +285,7 @@ PackedFloat32Array AmbientProbeVolume3D::_get_baked_ao() const {
 
 void AmbientProbeVolume3D::clear_ao() {
 	baked_ao.clear();
+	last_bake_occluder_face_count = -1;
 	update_gizmos();
 	update_configuration_warnings();
 }
@@ -288,6 +311,7 @@ void AmbientProbeVolume3D::bake_ao() {
 
 	LocalVector<OccluderFace> faces;
 	gather_occluder_faces(root, world_to_local, faces);
+	last_bake_occluder_face_count = int(faces.size());
 
 	const int total_probes = probe_counts.x * probe_counts.y * probe_counts.z;
 	PackedFloat32Array new_baked_ao;
@@ -330,18 +354,27 @@ void AmbientProbeVolume3D::bake_ao() {
 	}
 
 	baked_ao = new_baked_ao;
+
+	print_line(vformat("AmbientProbeVolume3D \"%s\": baked %d probes against %d occluder triangle(s) found under \"%s\".",
+			String(get_name()), total_probes, faces.size(), root->get_name()));
+	if (faces.is_empty()) {
+		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": found no occluder geometry under Occluder Root (\"%s\"). Only visible MeshInstance3D nodes (and nodes like GridMap that provide baked meshes) are used as occluders; make sure Occluder Root actually contains some, and that Max Distance/the probe grid are close enough to reach them.",
+				String(get_name()), root->get_name()));
+	}
+
 	update_gizmos();
 	update_configuration_warnings();
 }
 
-void AmbientProbeVolume3D::_apply_to_instances(Node *p_node) {
+void AmbientProbeVolume3D::_apply_to_instances(Node *p_node, int &r_count) {
 	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
 	if (gi != nullptr) {
 		gi->set_instance_shader_parameter(apply_shader_parameter, get_ao_at(gi->get_global_position()));
+		r_count++;
 	}
 
 	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_apply_to_instances(p_node->get_child(i));
+		_apply_to_instances(p_node->get_child(i), r_count);
 	}
 }
 
@@ -358,7 +391,19 @@ void AmbientProbeVolume3D::apply_to_instances() {
 	}
 	ERR_FAIL_NULL_MSG(root, "AmbientProbeVolume3D could not find a scene root to apply to. Set Apply Target explicitly.");
 
-	_apply_to_instances(root);
+	int count = 0;
+	_apply_to_instances(root, count);
+	last_apply_instance_count = count;
+
+	print_line(vformat("AmbientProbeVolume3D \"%s\": set instance shader parameter \"%s\" on %d GeometryInstance3D node(s) under \"%s\".",
+			String(get_name()), String(apply_shader_parameter), count, root->get_name()));
+	if (count == 0) {
+		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": found no GeometryInstance3D under Apply Target (\"%s\") to apply to.",
+				String(get_name()), root->get_name()));
+	} else {
+		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": this only has a visible effect on meshes whose own shader declares \"instance uniform float %s : hint_range(0, 1) = 1.0;\" and actually uses it (e.g. multiplied into ALBEDO). A default/unmodified StandardMaterial3D will not show any difference.",
+				String(get_name()), String(apply_shader_parameter)));
+	}
 }
 
 float AmbientProbeVolume3D::get_ao_at(const Vector3 &p_world_position) const {
@@ -430,7 +475,11 @@ PackedStringArray AmbientProbeVolume3D::get_configuration_warnings() const {
 			}
 		}
 		if (!any_occlusion) {
-			warnings.push_back(RTR("The last bake found no occlusion at all (every probe is fully lit). This usually means Occluder Root doesn't point to a Node3D containing visible MeshInstance3D geometry, or Max Distance/the probe grid don't reach close enough to that geometry. It does not mean nothing is receiving the baked data — see the class description for how baked AO needs to be applied (e.g. FoliageSpawner3D.ambient_occlusion_volume, or Apply To Instances)."));
+			if (last_bake_occluder_face_count == 0) {
+				warnings.push_back(RTR("The last bake found zero occluder triangles: Occluder Root doesn't contain any visible MeshInstance3D (or GridMap-like) geometry, so every probe was left fully lit. Check the Output panel for the exact message printed by the last bake, and make sure Occluder Root points at a node that actually contains your level geometry."));
+			} else {
+				warnings.push_back(vformat(RTR("The last bake found %d occluder triangle(s), but no probe ended up occluded by any of them (every probe is fully lit). This usually means Max Distance is too short, or the probe grid doesn't reach close enough to that geometry — check the Output panel for the exact triangle count printed by the last bake. It does not mean nothing is receiving the baked data — see the class description for how baked AO needs to be applied (e.g. FoliageSpawner3D.ambient_occlusion_volume, or Apply To Instances)."), last_bake_occluder_face_count));
+			}
 		}
 	}
 
