@@ -67,9 +67,6 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	bool align_to_normal = true;
 	float align_to_normal_amount = 1.0;
 
-	// Ambient occlusion.
-	NodePath ambient_occlusion_volume;
-
 	// Randomization.
 	bool random_rotation = true;
 	float random_tilt_degrees = 0.0;
@@ -126,9 +123,6 @@ public:
 
 	void set_align_to_normal_amount(float p_amount);
 	float get_align_to_normal_amount() const;
-
-	void set_ambient_occlusion_volume(const NodePath &p_path);
-	NodePath get_ambient_occlusion_volume() const;
 
 	void set_random_rotation(bool p_random);
 	bool is_random_rotation_enabled() const;

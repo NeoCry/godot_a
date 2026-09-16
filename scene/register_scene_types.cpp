@@ -227,7 +227,6 @@
 
 #ifndef _3D_DISABLED
 #include "scene/3d/aim_modifier_3d.h"
-#include "scene/3d/ambient_probe_volume_3d.h"
 #include "scene/3d/audio_listener_3d.h"
 #include "scene/3d/audio_stream_player_3d.h"
 #include "scene/3d/bone_attachment_3d.h"
@@ -679,7 +678,6 @@ void register_scene_types() {
 	GDREGISTER_CLASS(LightmapGIData);
 	GDREGISTER_CLASS(LightmapProbe);
 	GDREGISTER_ABSTRACT_CLASS(Lightmapper);
-	GDREGISTER_CLASS(AmbientProbeVolume3D);
 
 	GDREGISTER_CLASS(Line3D);
 	GDREGISTER_CLASS(Trail3D);
