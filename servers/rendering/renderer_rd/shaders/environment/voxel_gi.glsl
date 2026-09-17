@@ -592,8 +592,11 @@ void main() {
 			}
 		}
 
-		vec4 isotropic_result = vec4(outputs.data[cell_index].rgb, albedo.a);
-
+		// The bake always produces the full (unattenuated) anisotropic result; how much
+		// of it actually reaches cone tracing is controlled at trace time by
+		// VoxelGIData.anisotropic_strength instead (see sample_aniso_voxel() in gi.glsl),
+		// so the strength slider can be tuned without re-baking and scales the visible
+		// difference linearly instead of being baked in level-by-level.
 		vec4 result[6];
 		for (uint axis = 0; axis < 3; axis++) {
 			uint bit = 1u << axis;
@@ -615,8 +618,8 @@ void main() {
 				vec4 back_n = caniso[c][axis * 2 + 1];
 				neg_accum += front_n + (1.0 - front_n.a) * back_n;
 			}
-			result[axis * 2 + 0] = mix(isotropic_result, pos_accum * 0.25, params.aniso_strength);
-			result[axis * 2 + 1] = mix(isotropic_result, neg_accum * 0.25, params.aniso_strength);
+			result[axis * 2 + 0] = pos_accum * 0.25;
+			result[axis * 2 + 1] = neg_accum * 0.25;
 		}
 
 		for (uint d = 0; d < 6; d++) {
