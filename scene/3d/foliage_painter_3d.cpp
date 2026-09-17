@@ -160,11 +160,20 @@ void FoliagePainter3D::insert_instance(int p_layer, int p_index, const Transform
 	int count = mm->get_instance_count();
 	p_index = CLAMP(p_index, 0, count);
 
-	mm->set_instance_count(count + 1);
-	for (int i = count; i > p_index; i--) {
-		mm->set_instance_transform(i, mm->get_instance_transform(i - 1));
+	// MultiMesh.instance_count "clears and (re)sizes the buffers" on every set,
+	// so the existing transforms have to be read out before growing it and
+	// written back afterwards, instead of being shifted in place.
+	LocalVector<Transform3D> transforms;
+	transforms.resize(count);
+	for (int i = 0; i < count; i++) {
+		transforms[i] = mm->get_instance_transform(i);
 	}
-	mm->set_instance_transform(p_index, p_transform);
+	transforms.insert(p_index, p_transform);
+
+	mm->set_instance_count((int)transforms.size());
+	for (uint32_t i = 0; i < transforms.size(); i++) {
+		mm->set_instance_transform(i, transforms[i]);
+	}
 }
 
 void FoliagePainter3D::remove_instance(int p_layer, int p_index) {
@@ -176,10 +185,19 @@ void FoliagePainter3D::remove_instance(int p_layer, int p_index) {
 	int count = mm->get_instance_count();
 	ERR_FAIL_INDEX(p_index, count);
 
-	for (int i = p_index; i < count - 1; i++) {
-		mm->set_instance_transform(i, mm->get_instance_transform(i + 1));
+	// Same reasoning as insert_instance: read before resizing, since resizing
+	// clears the buffer.
+	LocalVector<Transform3D> transforms;
+	transforms.resize(count);
+	for (int i = 0; i < count; i++) {
+		transforms[i] = mm->get_instance_transform(i);
 	}
-	mm->set_instance_count(count - 1);
+	transforms.remove_at(p_index);
+
+	mm->set_instance_count((int)transforms.size());
+	for (uint32_t i = 0; i < transforms.size(); i++) {
+		mm->set_instance_transform(i, transforms[i]);
+	}
 }
 
 int FoliagePainter3D::add_instance(int p_layer, const Transform3D &p_transform) {

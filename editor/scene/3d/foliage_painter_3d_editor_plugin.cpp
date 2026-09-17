@@ -654,7 +654,12 @@ EditorPlugin::AfterGUIInput FoliagePainter3DEditorPlugin::forward_3d_gui_input(C
 
 	Ref<InputEventMouseMotion> mm = p_event;
 	if (mm.is_valid()) {
-		if (_do_input_action(p_camera, mm->get_position(), false)) {
+		// Always refresh the brush cursor preview on hover, but only actually
+		// claim the event while a paint/erase stroke is being dragged (left
+		// button held). Otherwise orbit/pan/freelook (driven by mouse motion
+		// with other buttons held) would get blocked by this tool.
+		_do_input_action(p_camera, mm->get_position(), false);
+		if (stroke_active) {
 			return EditorPlugin::AFTER_GUI_INPUT_STOP;
 		}
 		return EditorPlugin::AFTER_GUI_INPUT_PASS;
