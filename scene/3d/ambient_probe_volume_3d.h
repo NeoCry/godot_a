@@ -61,6 +61,11 @@ class AmbientProbeVolume3D : public Node3D {
 	// easy to tell apart from one that worked but simply found no occlusion.
 	int last_bake_occluder_face_count = -1;
 	int last_apply_instance_count = -1;
+	// Distance (local space) from the probe grid's box to the closest occluder geometry
+	// found by the last bake, or -1.0 if unknown (nothing baked yet, or no occluders
+	// found at all). Lets get_configuration_warnings() tell "everything is too far away
+	// to reach" apart from other reasons a bake might find zero occlusion.
+	float last_bake_min_occluder_distance = -1.0f;
 
 	Callable _get_bake_button() const;
 	Callable _get_clear_button() const;

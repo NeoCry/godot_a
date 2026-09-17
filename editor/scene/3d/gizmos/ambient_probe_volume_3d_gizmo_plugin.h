@@ -38,7 +38,7 @@ class AmbientProbeVolume3DGizmoPlugin : public EditorNode3DGizmoPlugin {
 	GDCLASS(AmbientProbeVolume3DGizmoPlugin, EditorNode3DGizmoPlugin);
 
 	Ref<Gizmo3DHelper> helper;
-	float probe_size = 0.3f;
+	float probe_size = 0.9f;
 
 public:
 	bool has_gizmo(Node3D *p_spatial) override;

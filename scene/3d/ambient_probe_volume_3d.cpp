@@ -286,6 +286,7 @@ PackedFloat32Array AmbientProbeVolume3D::_get_baked_ao() const {
 void AmbientProbeVolume3D::clear_ao() {
 	baked_ao.clear();
 	last_bake_occluder_face_count = -1;
+	last_bake_min_occluder_distance = -1.0f;
 	update_gizmos();
 	update_configuration_warnings();
 }
@@ -312,6 +313,29 @@ void AmbientProbeVolume3D::bake_ao() {
 	LocalVector<OccluderFace> faces;
 	gather_occluder_faces(root, world_to_local, faces);
 	last_bake_occluder_face_count = int(faces.size());
+
+	// How far (in local space) the closest occluder vertex is from the probe grid's own
+	// box: if that's farther than Max Distance, no probe could ever reach it no matter
+	// how the rest of the bake is tuned, which is the single most common setup mistake
+	// (volume placed/sized without regard for the scene's actual scale).
+	last_bake_min_occluder_distance = -1.0f;
+	if (!faces.is_empty()) {
+		const Vector3 probe_half = size * 0.5;
+		const AABB probe_box(-probe_half, size);
+
+		Vector3 occ_min = faces[0].v0;
+		Vector3 occ_max = faces[0].v0;
+		for (const OccluderFace &f : faces) {
+			occ_min = occ_min.min(f.v0.min(f.v1.min(f.v2)));
+			occ_max = occ_max.max(f.v0.max(f.v1.max(f.v2)));
+		}
+
+		const Vector3 delta(
+				MAX(MAX(occ_min.x - probe_box.get_end().x, probe_box.position.x - occ_max.x), 0.0f),
+				MAX(MAX(occ_min.y - probe_box.get_end().y, probe_box.position.y - occ_max.y), 0.0f),
+				MAX(MAX(occ_min.z - probe_box.get_end().z, probe_box.position.z - occ_max.z), 0.0f));
+		last_bake_min_occluder_distance = delta.length();
+	}
 
 	const int total_probes = probe_counts.x * probe_counts.y * probe_counts.z;
 	PackedFloat32Array new_baked_ao;
@@ -355,11 +379,15 @@ void AmbientProbeVolume3D::bake_ao() {
 
 	baked_ao = new_baked_ao;
 
-	print_line(vformat("AmbientProbeVolume3D \"%s\": baked %d probes against %d occluder triangle(s) found under \"%s\".",
-			String(get_name()), total_probes, faces.size(), root->get_name()));
+	print_line(vformat("AmbientProbeVolume3D \"%s\": baked %d probes against %d occluder triangle(s) found under \"%s\" (closest occluder is %s from this volume's box; Max Distance is %.2f).",
+			String(get_name()), total_probes, faces.size(), root->get_name(),
+			faces.is_empty() ? String("n/a") : vformat("%.2fm", last_bake_min_occluder_distance), max_distance));
 	if (faces.is_empty()) {
 		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": found no occluder geometry under Occluder Root (\"%s\"). Only visible MeshInstance3D nodes (and nodes like GridMap that provide baked meshes) are used as occluders; make sure Occluder Root actually contains some, and that Max Distance/the probe grid are close enough to reach them.",
 				String(get_name()), root->get_name()));
+	} else if (last_bake_min_occluder_distance > max_distance) {
+		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": the closest occluder geometry is about %.2fm away from this volume's box, but Max Distance is only %.2f — no probe can reach it. Increase Max Distance to at least %.2f, and/or move/resize this volume (Size) so its box actually overlaps or sits closer to your geometry.",
+				String(get_name()), last_bake_min_occluder_distance, max_distance, last_bake_min_occluder_distance));
 	}
 
 	update_gizmos();
@@ -477,8 +505,10 @@ PackedStringArray AmbientProbeVolume3D::get_configuration_warnings() const {
 		if (!any_occlusion) {
 			if (last_bake_occluder_face_count == 0) {
 				warnings.push_back(RTR("The last bake found zero occluder triangles: Occluder Root doesn't contain any visible MeshInstance3D (or GridMap-like) geometry, so every probe was left fully lit. Check the Output panel for the exact message printed by the last bake, and make sure Occluder Root points at a node that actually contains your level geometry."));
+			} else if (last_bake_min_occluder_distance > max_distance) {
+				warnings.push_back(vformat(RTR("The last bake found %d occluder triangle(s), but the closest one is about %.2fm away from this volume's box while Max Distance is only %.2f — nothing was reachable. Increase Max Distance to at least %.2f, and/or move/resize this volume (Size) to actually overlap or sit closer to your geometry, then bake again."), last_bake_occluder_face_count, last_bake_min_occluder_distance, max_distance, last_bake_min_occluder_distance));
 			} else {
-				warnings.push_back(vformat(RTR("The last bake found %d occluder triangle(s), but no probe ended up occluded by any of them (every probe is fully lit). This usually means Max Distance is too short, or the probe grid doesn't reach close enough to that geometry — check the Output panel for the exact triangle count printed by the last bake. It does not mean nothing is receiving the baked data — see the class description for how baked AO needs to be applied (e.g. FoliageSpawner3D.ambient_occlusion_volume, or Apply To Instances)."), last_bake_occluder_face_count));
+				warnings.push_back(vformat(RTR("The last bake found %d occluder triangle(s) within reach (closest one about %.2fm away, Max Distance %.2f), but no probe ended up occluded by any of them (every probe is fully lit). This can happen if the geometry is very thin, single-sided in a way that misses rays, or if the probe grid just doesn't line up with it — try increasing Ray Count, or moving/resizing this volume so more probes sit near actual surfaces. It does not mean nothing is receiving the baked data — see the class description for how baked AO needs to be applied (e.g. FoliageSpawner3D.ambient_occlusion_volume, or Apply To Instances)."), last_bake_occluder_face_count, last_bake_min_occluder_distance, max_distance));
 			}
 		}
 	}
