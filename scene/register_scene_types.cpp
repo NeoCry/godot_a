@@ -243,6 +243,8 @@
 #include "scene/3d/decal.h"
 #include "scene/3d/fabr_ik_3d.h"
 #include "scene/3d/fog_volume.h"
+#include "scene/3d/foliage_layer.h"
+#include "scene/3d/foliage_painter_3d.h"
 #include "scene/3d/foliage_spawner_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
 #include "scene/3d/gpu_particles_collision_3d.h"
@@ -768,6 +770,8 @@ void register_scene_types() {
 #endif // PHYSICS_3D_DISABLED
 	GDREGISTER_CLASS(MultiMeshInstance3D);
 	GDREGISTER_CLASS(FoliageSpawner3D);
+	GDREGISTER_CLASS(FoliageLayer);
+	GDREGISTER_CLASS(FoliagePainter3D);
 
 	GDREGISTER_CLASS(Curve3D);
 	GDREGISTER_CLASS(Path3D);

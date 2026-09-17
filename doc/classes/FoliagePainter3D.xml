@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="FoliagePainter3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Paints one or more kinds of vegetation onto other meshes with a brush, in the editor.
+	</brief_description>
+	<description>
+		[FoliagePainter3D] holds a list of [member layers] (vegetation types, each a [FoliageLayer]) and renders each one through its own internal [MultiMeshInstance3D]. It is the counterpart to [FoliageSpawner3D]'s procedural box-volume scattering: instead of filling a volume automatically, instances are painted, erased, or placed/removed one at a time directly onto the actual surface geometry of any [MeshInstance3D] in the scene, using the brush tool that appears in the 3D viewport's toolbar while a [FoliagePainter3D] is selected.
+		Add at least one [FoliageLayer] to [member layers] (each with a [member FoliageLayer.mesh] assigned) before using the brush. The brush toolbar lets you choose which layers it paints with at once, its radius and density, and one of four modes:
+		- [b]Paint[/b]: click or drag over a mesh surface to scatter instances of the active layers within the brush, with random scale, rotation, and normal deviation controlled per layer (see [member FoliageLayer.min_scale], [member FoliageLayer.random_rotation], [member FoliageLayer.align_to_normal_amount], and [member FoliageLayer.random_tilt_degrees]).
+		- [b]Erase[/b]: click or drag to remove instances of the active layers found within the brush.
+		- [b]Place Single[/b]: click to insert exactly one instance at the exact clicked point.
+		- [b]Remove Single[/b]: click to delete the single closest instance to the clicked point.
+		Painting only looks at [MeshInstance3D] geometry; no physics bodies or collision shapes are required on the painted-on meshes. Each layer's visible distance can be configured independently through [member FoliageLayer.visibility_range_begin] and related properties, so nearby dense foliage (e.g. grass) can be culled at a much shorter distance than larger background vegetation.
+		While instances are usually added and removed through the brush, [method insert_instance], [method remove_instance], and [method add_instance] are also available for scripted or procedural editing of a layer's [MultiMesh].
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="add_instance">
+			<return type="int" />
+			<param index="0" name="layer_index" type="int" />
+			<param index="1" name="transform" type="Transform3D" />
+			<description>
+				Appends a new instance with the given [param transform] to the layer at [param layer_index], and returns its index. Equivalent to calling [method insert_instance] with an index equal to [method get_layer_instance_count].
+			</description>
+		</method>
+		<method name="get_layer" qualifiers="const">
+			<return type="FoliageLayer" />
+			<param index="0" name="layer_index" type="int" />
+			<description>
+				Returns the [FoliageLayer] at [param layer_index] in [member layers].
+			</description>
+		</method>
+		<method name="get_layer_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of layers in [member layers].
+			</description>
+		</method>
+		<method name="get_layer_instance_count" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="layer_index" type="int" />
+			<description>
+				Returns the number of instances currently painted for the layer at [param layer_index].
+			</description>
+		</method>
+		<method name="get_layer_instance_transform" qualifiers="const">
+			<return type="Transform3D" />
+			<param index="0" name="layer_index" type="int" />
+			<param index="1" name="index" type="int" />
+			<description>
+				Returns the local-space transform of instance [param index] of the layer at [param layer_index].
+			</description>
+		</method>
+		<method name="insert_instance">
+			<return type="void" />
+			<param index="0" name="layer_index" type="int" />
+			<param index="1" name="index" type="int" />
+			<param index="2" name="transform" type="Transform3D" />
+			<description>
+				Inserts a new instance with the given local-space [param transform] at [param index] in the layer at [param layer_index], shifting any existing instances at or after [param index] up by one. [param index] is clamped to the current instance count, so passing the current count appends the instance.
+			</description>
+		</method>
+		<method name="remove_instance">
+			<return type="void" />
+			<param index="0" name="layer_index" type="int" />
+			<param index="1" name="index" type="int" />
+			<description>
+				Removes instance [param index] from the layer at [param layer_index], shifting any subsequent instances down by one.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="layers" type="FoliageLayer[]" setter="set_layers" getter="get_layers" default="[]">
+			The vegetation types this node can paint. Each entry is a [FoliageLayer] with its own [Mesh], randomization settings, brush density/spacing, and visibility range. Add and configure entries from the Inspector, then select this node to paint with the brush tool in the 3D viewport.
+		</member>
+	</members>
+</class>
