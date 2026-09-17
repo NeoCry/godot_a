@@ -93,6 +93,15 @@ static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"uniform vec3 ao_volume_size = vec3(1.0, 1.0, 1.0);\n"
 		"uniform float ao_overlay_strength : hint_range(0.0, 1.0) = 1.0;\n"
 		"\n"
+		// Set per-instance (see _configure_overlay_alpha_scissor()) to the same albedo
+		// texture/threshold the instance's own base material already uses to cut out
+		// transparent pixels (e.g. a foliage card), so this overlay discards at exactly
+		// the same pixels instead of painting a solid darkened quad over them. Left at
+		// the default (0.0 threshold, so the branch below never discards) for instances
+		// with no such material, since a fully opaque surface has nothing to cut out.
+		"instance uniform sampler2D ao_overlay_base_albedo_texture : hint_default_white, filter_linear;\n"
+		"instance uniform float ao_overlay_alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.0;\n"
+		"\n"
 		"varying vec3 world_position;\n"
 		"\n"
 		"void vertex() {\n"
@@ -100,6 +109,9 @@ static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"}\n"
 		"\n"
 		"void fragment() {\n"
+		"\tif (ao_overlay_alpha_scissor_threshold > 0.0 && texture(ao_overlay_base_albedo_texture, UV).a < ao_overlay_alpha_scissor_threshold) {\n"
+		"\t\tdiscard;\n"
+		"\t}\n"
 		"\tvec3 local_position = (ao_volume_inverse_transform * vec4(world_position, 1.0)).xyz;\n"
 		"\tvec3 uvw = local_position / ao_volume_size + 0.5;\n"
 		"\tfloat ao = 1.0;\n"
@@ -190,6 +202,9 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_ao_strength", "strength"), &AmbientProbeVolume3D::set_ao_strength);
 	ClassDB::bind_method(D_METHOD("get_ao_strength"), &AmbientProbeVolume3D::get_ao_strength);
 
+	ClassDB::bind_method(D_METHOD("set_ao_smoothing", "smoothing"), &AmbientProbeVolume3D::set_ao_smoothing);
+	ClassDB::bind_method(D_METHOD("get_ao_smoothing"), &AmbientProbeVolume3D::get_ao_smoothing);
+
 	ClassDB::bind_method(D_METHOD("set_occluder_root", "path"), &AmbientProbeVolume3D::set_occluder_root);
 	ClassDB::bind_method(D_METHOD("get_occluder_root"), &AmbientProbeVolume3D::get_occluder_root);
 
@@ -230,6 +245,7 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "ray_count", PROPERTY_HINT_RANGE, "4,256,1"), "set_ray_count", "get_ray_count");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_distance", PROPERTY_HINT_RANGE, "0.01,1000,0.01,or_greater,suffix:m"), "set_max_distance", "get_max_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_strength", PROPERTY_HINT_RANGE, "0,4,0.01"), "set_ao_strength", "get_ao_strength");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_smoothing", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ao_smoothing", "get_ao_smoothing");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "occluder_root", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Node3D"), "set_occluder_root", "get_occluder_root");
 
 	ADD_GROUP("Apply", "");
@@ -309,6 +325,14 @@ float AmbientProbeVolume3D::get_ao_strength() const {
 	return ao_strength;
 }
 
+void AmbientProbeVolume3D::set_ao_smoothing(float p_smoothing) {
+	ao_smoothing = CLAMP(p_smoothing, 0.0f, 1.0f);
+}
+
+float AmbientProbeVolume3D::get_ao_smoothing() const {
+	return ao_smoothing;
+}
+
 void AmbientProbeVolume3D::set_occluder_root(const NodePath &p_path) {
 	occluder_root = p_path;
 }
@@ -373,6 +397,47 @@ void AmbientProbeVolume3D::clear_ao() {
 
 bool AmbientProbeVolume3D::is_baked() const {
 	return !baked_ao.is_empty();
+}
+
+PackedFloat32Array AmbientProbeVolume3D::_smooth_baked_ao(const PackedFloat32Array &p_raw) const {
+	// Simple 3x3x3 box blur across the probe grid (clamped at the edges), lerped against
+	// each probe's own raw value by ao_smoothing. This is deliberately a post-process over
+	// the already-baked data rather than, say, more rays per probe: it's cheap regardless
+	// of probe_counts/ray_count, and it smooths across probe boundaries (which more rays
+	// alone cannot do, since each probe is still sampled independently of its neighbors).
+	PackedFloat32Array smoothed = p_raw;
+	for (int zi = 0; zi < probe_counts.z; zi++) {
+		for (int yi = 0; yi < probe_counts.y; yi++) {
+			for (int xi = 0; xi < probe_counts.x; xi++) {
+				float sum = 0.0f;
+				int count = 0;
+				for (int dz = -1; dz <= 1; dz++) {
+					const int nz = zi + dz;
+					if (nz < 0 || nz >= probe_counts.z) {
+						continue;
+					}
+					for (int dy = -1; dy <= 1; dy++) {
+						const int ny = yi + dy;
+						if (ny < 0 || ny >= probe_counts.y) {
+							continue;
+						}
+						for (int dx = -1; dx <= 1; dx++) {
+							const int nx = xi + dx;
+							if (nx < 0 || nx >= probe_counts.x) {
+								continue;
+							}
+							sum += p_raw[nx + probe_counts.x * (ny + probe_counts.y * nz)];
+							count++;
+						}
+					}
+				}
+				const int index = xi + probe_counts.x * (yi + probe_counts.y * zi);
+				const float blurred = count > 0 ? sum / float(count) : p_raw[index];
+				smoothed.write[index] = Math::lerp(p_raw[index], blurred, ao_smoothing);
+			}
+		}
+	}
+	return smoothed;
 }
 
 void AmbientProbeVolume3D::bake_ao() {
@@ -457,7 +522,7 @@ void AmbientProbeVolume3D::bake_ao() {
 		}
 	}
 
-	baked_ao = new_baked_ao;
+	baked_ao = ao_smoothing > 0.0f ? _smooth_baked_ao(new_baked_ao) : new_baked_ao;
 
 	print_line(vformat("AmbientProbeVolume3D \"%s\": baked %d probes against %d occluder triangle(s) found under \"%s\" (closest occluder is %s from this volume's box; Max Distance is %.2f).",
 			String(get_name()), total_probes, faces.size(), root->get_name(),
@@ -546,11 +611,44 @@ void AmbientProbeVolume3D::_set_material_overlay_recursive(Node *p_node, const R
 	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
 	if (gi != nullptr) {
 		gi->set_material_overlay(p_material);
+		if (p_material.is_valid()) {
+			_configure_overlay_alpha_scissor(gi);
+		}
 		r_count++;
 	}
 
 	for (int i = 0; i < p_node->get_child_count(); i++) {
 		_set_material_overlay_recursive(p_node->get_child(i), p_material, r_count);
+	}
+}
+
+void AmbientProbeVolume3D::_configure_overlay_alpha_scissor(GeometryInstance3D *p_gi) {
+	// If this instance's own surface 0 material already cuts out transparent pixels (the
+	// common setup for foliage cards: a BaseMaterial3D with alpha scissor/hash/depth
+	// pre-pass transparency and an albedo texture), pass that same texture and threshold
+	// to the overlay shader as instance shader parameters so it discards at exactly the
+	// same pixels instead of painting a solid darkened quad over the "empty" parts of the
+	// card. Left at the sentinel threshold (0.0, meaning "never discard") for every other
+	// instance, since an opaque surface has nothing to cut out.
+	Ref<Material> base_material;
+	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
+	if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
+		base_material = mi->get_active_material(0);
+	}
+
+	Ref<BaseMaterial3D> base_std = base_material;
+	if (base_std.is_valid() &&
+			(base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR ||
+					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_HASH ||
+					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_DEPTH_PRE_PASS) &&
+			base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO).is_valid()) {
+		// A user-configured threshold of exactly 0.0 still means "cut out fully transparent
+		// pixels" for the base material's own alpha-scissor test, so floor it just above our
+		// own "disabled" sentinel rather than passing 0.0 through unchanged.
+		p_gi->set_instance_shader_parameter("ao_overlay_base_albedo_texture", base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+		p_gi->set_instance_shader_parameter("ao_overlay_alpha_scissor_threshold", MAX(base_std->get_alpha_scissor_threshold(), 0.001f));
+	} else {
+		p_gi->set_instance_shader_parameter("ao_overlay_alpha_scissor_threshold", 0.0f);
 	}
 }
 

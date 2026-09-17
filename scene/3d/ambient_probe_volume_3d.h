@@ -32,6 +32,7 @@
 
 #include "scene/3d/node_3d.h"
 
+class GeometryInstance3D;
 class ImageTexture3D;
 class Material;
 class Shader;
@@ -52,6 +53,7 @@ class AmbientProbeVolume3D : public Node3D {
 	int ray_count = 48;
 	float max_distance = 8.0;
 	float ao_strength = 1.0;
+	float ao_smoothing = 0.0f;
 	NodePath occluder_root;
 
 	NodePath apply_target;
@@ -85,9 +87,11 @@ class AmbientProbeVolume3D : public Node3D {
 	void _apply_to_instances(Node *p_node, int &r_count);
 	void _set_material_override_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
 	void _set_material_overlay_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
+	void _configure_overlay_alpha_scissor(GeometryInstance3D *p_gi);
 	Node *_resolve_apply_root() const;
 	void _rebuild_ao_volume_texture();
 	void _push_ao_volume_uniforms(const Ref<ShaderMaterial> &p_material);
+	PackedFloat32Array _smooth_baked_ao(const PackedFloat32Array &p_raw) const;
 
 	void _set_baked_ao(const PackedFloat32Array &p_data);
 	PackedFloat32Array _get_baked_ao() const;
@@ -110,6 +114,18 @@ public:
 
 	void set_ao_strength(float p_strength);
 	float get_ao_strength() const;
+
+	// How much bake_ao() box-blurs each probe's raw raycast result against its immediate
+	// neighbors (3x3x3, clamped at the grid's edges) before storing it, from 0.0 (off -
+	// each probe keeps its own raw value) to 1.0 (fully replaced by the neighborhood
+	// average). Raycasting with a limited ray_count is inherently noisy, and a sparse
+	// probe grid trilinearly interpolated between very different neighboring values can
+	// look blotchy/inconsistent with the actual geometry rather than like soft occlusion;
+	// smoothing the baked data itself (once, at bake time) fixes that at the source for
+	// every consumer (get_ao_at(), the overlay, apply_to_instances(), etc.) instead of
+	// requiring each of them to filter it themselves. Takes effect on the next bake_ao().
+	void set_ao_smoothing(float p_smoothing);
+	float get_ao_smoothing() const;
 
 	void set_occluder_root(const NodePath &p_path);
 	NodePath get_occluder_root() const;
@@ -166,6 +182,10 @@ public:
 	// multiplicative darkening of whatever was already rendered, not an approximation.
 	// Costs one extra draw per affected instance (the overlay pass), same as any other
 	// use of material_overlay. ao_overlay_strength scales how strong the darkening is.
+	// For an instance whose surface 0 uses a BaseMaterial3D with alpha scissor/hash/depth
+	// pre-pass transparency and an albedo texture (the common setup for cutout foliage
+	// cards), the overlay samples that same texture/threshold and discards to match, so it
+	// doesn't paint over the parts the base material already treats as fully transparent.
 	void set_ao_overlay_enabled(bool p_enabled);
 	bool is_ao_overlay_enabled() const;
 
