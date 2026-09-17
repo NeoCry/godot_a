@@ -32,6 +32,7 @@
 
 #include "core/core_string_names.h"
 #include "core/object/callable_mp.h"
+#include "core/object/class_db.h"
 #include "scene/3d/multimesh_instance_3d.h"
 #include "scene/resources/multimesh.h"
 
