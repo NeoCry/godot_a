@@ -93,14 +93,17 @@ static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"uniform vec3 ao_volume_size = vec3(1.0, 1.0, 1.0);\n"
 		"uniform float ao_overlay_strength : hint_range(0.0, 1.0) = 1.0;\n"
 		"\n"
-		// Set per-instance (see _configure_overlay_alpha_scissor()) to the same albedo
-		// texture/threshold the instance's own base material already uses to cut out
-		// transparent pixels (e.g. a foliage card), so this overlay discards at exactly
-		// the same pixels instead of painting a solid darkened quad over them. Left at
-		// the default (0.0 threshold, so the branch below never discards) for instances
-		// with no such material, since a fully opaque surface has nothing to cut out.
-		"instance uniform sampler2D ao_overlay_base_albedo_texture : hint_default_white, filter_linear;\n"
-		"instance uniform float ao_overlay_alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.0;\n"
+		// Set (see _configure_overlay_alpha_scissor()) to the same albedo texture/threshold
+		// the instance's own base material already uses to cut out transparent pixels (e.g.
+		// a foliage card), so this overlay discards at exactly the same pixels instead of
+		// painting a solid darkened quad over them. Godot's "instance uniform"s only support
+		// scalar/vector types, not samplers, so an instance that needs this gets its own
+		// duplicated copy of this material with these two set instead of sharing the one
+		// overlay_material every other instance uses; the default (0.0 threshold, so the
+		// branch below never discards) is correct for every instance with no such material,
+		// since a fully opaque surface has nothing to cut out.
+		"uniform sampler2D ao_overlay_base_albedo_texture : hint_default_white, filter_linear;\n"
+		"uniform float ao_overlay_alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.0;\n"
 		"\n"
 		"varying vec3 world_position;\n"
 		"\n"
@@ -625,11 +628,16 @@ void AmbientProbeVolume3D::_set_material_overlay_recursive(Node *p_node, const R
 void AmbientProbeVolume3D::_configure_overlay_alpha_scissor(GeometryInstance3D *p_gi) {
 	// If this instance's own surface 0 material already cuts out transparent pixels (the
 	// common setup for foliage cards: a BaseMaterial3D with alpha scissor/hash/depth
-	// pre-pass transparency and an albedo texture), pass that same texture and threshold
-	// to the overlay shader as instance shader parameters so it discards at exactly the
-	// same pixels instead of painting a solid darkened quad over the "empty" parts of the
-	// card. Left at the sentinel threshold (0.0, meaning "never discard") for every other
-	// instance, since an opaque surface has nothing to cut out.
+	// pre-pass transparency and an albedo texture), give this instance its own duplicated
+	// copy of overlay_material with that same texture/threshold set as regular shader
+	// parameters, so it discards at exactly the same pixels instead of painting a solid
+	// darkened quad over the "empty" parts of the card. Godot's instance shader parameters
+	// only support scalar/vector types, not samplers, so a shared per-instance uniform
+	// texture isn't an option here - a duplicated Material (cheap; it doesn't copy the
+	// textures it references, just points at them) is the only way to vary a texture
+	// between instances of the same base material. Every other instance keeps sharing the
+	// one overlay_material (already assigned by the caller), whose default threshold of
+	// 0.0 means "never discard", correct for an opaque surface with nothing to cut out.
 	Ref<Material> base_material;
 	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
 	if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
@@ -637,19 +645,21 @@ void AmbientProbeVolume3D::_configure_overlay_alpha_scissor(GeometryInstance3D *
 	}
 
 	Ref<BaseMaterial3D> base_std = base_material;
-	if (base_std.is_valid() &&
-			(base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR ||
+	if (base_std.is_null() ||
+			!(base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR ||
 					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_HASH ||
-					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_DEPTH_PRE_PASS) &&
-			base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO).is_valid()) {
-		// A user-configured threshold of exactly 0.0 still means "cut out fully transparent
-		// pixels" for the base material's own alpha-scissor test, so floor it just above our
-		// own "disabled" sentinel rather than passing 0.0 through unchanged.
-		p_gi->set_instance_shader_parameter("ao_overlay_base_albedo_texture", base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
-		p_gi->set_instance_shader_parameter("ao_overlay_alpha_scissor_threshold", MAX(base_std->get_alpha_scissor_threshold(), 0.001f));
-	} else {
-		p_gi->set_instance_shader_parameter("ao_overlay_alpha_scissor_threshold", 0.0f);
+					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_DEPTH_PRE_PASS) ||
+			base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO).is_null()) {
+		return;
 	}
+
+	Ref<ShaderMaterial> variant = overlay_material->duplicate();
+	// A user-configured threshold of exactly 0.0 still means "cut out fully transparent
+	// pixels" for the base material's own alpha-scissor test, so floor it just above our
+	// own "disabled" sentinel rather than passing 0.0 through unchanged.
+	variant->set_shader_parameter("ao_overlay_base_albedo_texture", base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+	variant->set_shader_parameter("ao_overlay_alpha_scissor_threshold", MAX(base_std->get_alpha_scissor_threshold(), 0.001f));
+	p_gi->set_material_overlay(variant);
 }
 
 void AmbientProbeVolume3D::_rebuild_ao_volume_texture() {
