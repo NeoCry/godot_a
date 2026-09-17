@@ -124,6 +124,14 @@ void AmbientProbeVolume3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	p_gizmo->add_collision_segments(lines);
 	p_gizmo->add_handles(handles, handles_material);
 
+	// Only draw the per-probe preview (crosses or spheres) while this node is selected:
+	// with dozens to thousands of probes, having them permanently visible would clutter
+	// the viewport for every other object once a volume is baked. The box outline above
+	// stays visible at all times so the volume itself can still be found/resized.
+	if (!p_gizmo->is_selected()) {
+		return;
+	}
+
 	const Vector3i counts = volume->get_probe_counts();
 	// Skip the per-probe preview for very dense grids: drawing tens of thousands of
 	// shapes every redraw would noticeably slow down the editor viewport for no benefit,
