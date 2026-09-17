@@ -36,11 +36,26 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/shader.h"
 
 // Hard cap per axis to keep a single accidental huge grid from hanging the editor.
 static const int AMBIENT_PROBE_VOLUME_MAX_PER_AXIS = 64;
 static const int AMBIENT_PROBE_VOLUME_WARN_PROBE_COUNT = 4096;
+
+// Unshaded spatial shader used by set_debug_preview_on_meshes(): the instance uniform
+// is the same one apply_to_instances() sets, so the two features are compatible with
+// each other and with a hand-written shader using the same parameter name.
+static const char *AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE =
+		"shader_type spatial;\n"
+		"render_mode unshaded;\n"
+		"\n"
+		"instance uniform float ambient_occlusion : hint_range(0.0, 1.0) = 1.0;\n"
+		"\n"
+		"void fragment() {\n"
+		"\tALBEDO = vec3(ambient_occlusion);\n"
+		"}\n";
 
 namespace {
 struct OccluderFace {
@@ -138,6 +153,9 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_probe_ao", "x", "y", "z"), &AmbientProbeVolume3D::get_probe_ao);
 	ClassDB::bind_method(D_METHOD("apply_to_instances"), &AmbientProbeVolume3D::apply_to_instances);
 
+	ClassDB::bind_method(D_METHOD("set_debug_preview_on_meshes", "enabled"), &AmbientProbeVolume3D::set_debug_preview_on_meshes);
+	ClassDB::bind_method(D_METHOD("is_debug_preview_on_meshes"), &AmbientProbeVolume3D::is_debug_preview_on_meshes);
+
 	ClassDB::bind_method(D_METHOD("get_bake_button"), &AmbientProbeVolume3D::_get_bake_button);
 	ClassDB::bind_method(D_METHOD("get_clear_button"), &AmbientProbeVolume3D::_get_clear_button);
 	ClassDB::bind_method(D_METHOD("get_apply_button"), &AmbientProbeVolume3D::_get_apply_button);
@@ -158,6 +176,7 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ADD_GROUP("Apply", "");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "apply_target", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Node3D"), "set_apply_target", "get_apply_target");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "apply_shader_parameter"), "set_apply_shader_parameter", "get_apply_shader_parameter");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_preview_on_meshes"), "set_debug_preview_on_meshes", "is_debug_preview_on_meshes");
 
 	ADD_GROUP("", "");
 	ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "baked_ao", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_INTERNAL), "_set_baked_ao", "_get_baked_ao");
@@ -390,8 +409,27 @@ void AmbientProbeVolume3D::bake_ao() {
 				String(get_name()), last_bake_min_occluder_distance, max_distance, last_bake_min_occluder_distance));
 	}
 
+	// If the debug preview is currently on, its instances are already sampling
+	// get_ao_at() via a material - but the actual per-instance shader parameter values
+	// were only pushed once, when it was toggled on, so a re-bake would otherwise leave
+	// it showing stale results until toggled off and back on.
+	if (debug_preview_on_meshes) {
+		set_debug_preview_on_meshes(true);
+	}
+
 	update_gizmos();
 	update_configuration_warnings();
+}
+
+Node *AmbientProbeVolume3D::_resolve_apply_root() const {
+	Node *root = apply_target.is_empty() ? nullptr : get_node_or_null(apply_target);
+	if (root == nullptr) {
+		root = get_tree()->get_edited_scene_root();
+	}
+	if (root == nullptr) {
+		root = get_tree()->get_current_scene();
+	}
+	return root;
 }
 
 void AmbientProbeVolume3D::_apply_to_instances(Node *p_node, int &r_count) {
@@ -410,13 +448,7 @@ void AmbientProbeVolume3D::apply_to_instances() {
 	ERR_FAIL_COND_MSG(!is_inside_tree(), "AmbientProbeVolume3D must be inside the SceneTree to apply, since it needs to scan the scene for GeometryInstance3D nodes.");
 	ERR_FAIL_COND_MSG(!is_baked(), "AmbientProbeVolume3D has not been baked yet; press Bake AO first.");
 
-	Node *root = apply_target.is_empty() ? nullptr : get_node_or_null(apply_target);
-	if (root == nullptr) {
-		root = get_tree()->get_edited_scene_root();
-	}
-	if (root == nullptr) {
-		root = get_tree()->get_current_scene();
-	}
+	Node *root = _resolve_apply_root();
 	ERR_FAIL_NULL_MSG(root, "AmbientProbeVolume3D could not find a scene root to apply to. Set Apply Target explicitly.");
 
 	int count = 0;
@@ -429,9 +461,60 @@ void AmbientProbeVolume3D::apply_to_instances() {
 		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": found no GeometryInstance3D under Apply Target (\"%s\") to apply to.",
 				String(get_name()), root->get_name()));
 	} else {
-		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": this only has a visible effect on meshes whose own shader declares \"instance uniform float %s : hint_range(0, 1) = 1.0;\" and actually uses it (e.g. multiplied into ALBEDO). A default/unmodified StandardMaterial3D will not show any difference.",
+		WARN_PRINT(vformat("AmbientProbeVolume3D \"%s\": this only has a visible effect on meshes whose own shader declares \"instance uniform float %s : hint_range(0, 1) = 1.0;\" and actually uses it (e.g. multiplied into ALBEDO). A default/unmodified StandardMaterial3D will not show any difference — press Debug Preview On Meshes instead if you just want to SEE the baked AO on the real geometry without writing a shader.",
 				String(get_name()), String(apply_shader_parameter)));
 	}
+}
+
+void AmbientProbeVolume3D::_set_debug_material_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count) {
+	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
+	if (gi != nullptr) {
+		if (p_material.is_valid()) {
+			gi->set_instance_shader_parameter(apply_shader_parameter, get_ao_at(gi->get_global_position()));
+		}
+		gi->set_material_override(p_material);
+		r_count++;
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_set_debug_material_recursive(p_node->get_child(i), p_material, r_count);
+	}
+}
+
+void AmbientProbeVolume3D::set_debug_preview_on_meshes(bool p_enabled) {
+	debug_preview_on_meshes = p_enabled;
+
+	if (!is_inside_tree()) {
+		return;
+	}
+
+	Node *root = _resolve_apply_root();
+	if (root == nullptr) {
+		return;
+	}
+
+	Ref<Material> material;
+	if (p_enabled) {
+		if (debug_material.is_null()) {
+			Ref<Shader> shader;
+			shader.instantiate();
+			shader->set_code(AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE);
+			debug_material.instantiate();
+			debug_material->set_shader(shader);
+		}
+		material = debug_material;
+	}
+
+	int count = 0;
+	_set_debug_material_recursive(root, material, count);
+
+	print_line(vformat("AmbientProbeVolume3D \"%s\": debug AO preview %s on %d GeometryInstance3D node(s) under \"%s\"%s.",
+			String(get_name()), p_enabled ? "enabled" : "disabled", count, root->get_name(),
+			(p_enabled && !is_baked()) ? " (not baked yet, so everything will show as fully lit)" : ""));
+}
+
+bool AmbientProbeVolume3D::is_debug_preview_on_meshes() const {
+	return debug_preview_on_meshes;
 }
 
 float AmbientProbeVolume3D::get_ao_at(const Vector3 &p_world_position) const {
@@ -518,6 +601,10 @@ PackedStringArray AmbientProbeVolume3D::get_configuration_warnings() const {
 		if (target == nullptr) {
 			warnings.push_back(RTR("Apply Target does not point to a valid node. Assign one, or clear the path."));
 		}
+	}
+
+	if (debug_preview_on_meshes) {
+		warnings.push_back(RTR("Debug Preview On Meshes is enabled: affected GeometryInstance3D nodes are being rendered with a generated grayscale debug material instead of their own, for diagnostics only. Turn it back off once you're done checking the bake."));
 	}
 
 	return warnings;
