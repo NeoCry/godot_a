@@ -32,6 +32,10 @@
 
 #include "scene/3d/node_3d.h"
 
+class Material;
+class Shader;
+class ShaderMaterial;
+
 // Bakes large-scale ambient occlusion into a grid of probes filling a box volume,
 // entirely on the CPU and independent of LightmapGI: it raycasts against the
 // triangle geometry of nearby MeshInstance3D nodes (no UV2, lightmap texel bake,
@@ -51,6 +55,8 @@ class AmbientProbeVolume3D : public Node3D {
 
 	NodePath apply_target;
 	StringName apply_shader_parameter = StringName("ambient_occlusion");
+	bool debug_preview_on_meshes = false;
+	Ref<ShaderMaterial> debug_material;
 
 	PackedFloat32Array baked_ao;
 
@@ -72,6 +78,8 @@ class AmbientProbeVolume3D : public Node3D {
 	Callable _get_apply_button() const;
 
 	void _apply_to_instances(Node *p_node, int &r_count);
+	void _set_debug_material_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
+	Node *_resolve_apply_root() const;
 
 	void _set_baked_ao(const PackedFloat32Array &p_data);
 	PackedFloat32Array _get_baked_ao() const;
@@ -126,6 +134,16 @@ public:
 	// <apply_shader_parameter> : hint_range(0, 1) = 1.0;" and use it (e.g. multiply
 	// it into ALBEDO or ALPHA). Requires the volume to be baked and inside the tree.
 	void apply_to_instances();
+
+	// Debug aid: when enabled, forces every GeometryInstance3D under apply_target (or
+	// the current scene root) to render fully unshaded, tinted grayscale by its baked
+	// AO, via a generated material_override - no custom shader required. This is the
+	// most direct way to see whether baking/apply actually did anything to the real
+	// geometry, independent of whatever the mesh's own material does with the data.
+	// Disabling it clears material_override on every instance it finds; it does not
+	// remember or restore whatever material_override those instances had before.
+	void set_debug_preview_on_meshes(bool p_enabled);
+	bool is_debug_preview_on_meshes() const;
 
 	// Trilinearly sampled ambient occlusion (1.0 = fully lit, 0.0 = fully occluded)
 	// at a world-space position. Returns 1.0 if this volume hasn't been baked yet,
