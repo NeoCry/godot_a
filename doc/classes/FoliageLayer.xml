@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="FoliageLayer" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A single paintable vegetation type inside a [FoliagePainter3D].
+	</brief_description>
+	<description>
+		[FoliageLayer] describes one kind of vegetation that a [FoliagePainter3D]'s brush can paint: which [Mesh] to use, how much random scale/rotation/normal deviation to apply to each instance, how densely and how far apart the brush places them, and at what distance the layer should fade out (see the [member visibility_range_begin] group).
+		Each layer owns its own [MultiMesh] (see [method get_multimesh]), which is where the actual painted instance transforms are stored and saved with the scene. It is created automatically and should not be replaced or edited directly; use [FoliagePainter3D]'s brush tool, or its [method FoliagePainter3D.insert_instance] / [method FoliagePainter3D.remove_instance] / [method FoliagePainter3D.add_instance] methods, to add or remove instances.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_instance_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the number of instances currently painted for this layer.
+			</description>
+		</method>
+		<method name="get_multimesh" qualifiers="const">
+			<return type="MultiMesh" />
+			<description>
+				Returns the [MultiMesh] that stores this layer's painted instance transforms. This is created automatically and should be treated as read-only.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="align_to_normal_amount" type="float" setter="set_align_to_normal_amount" getter="get_align_to_normal_amount" default="0.0">
+			Blends each instance's up axis between world up ([code]0.0[/code]) and the surface normal at the paint location ([code]1.0[/code]). Combined with [member random_tilt_degrees], this controls how much instances deviate from the surface normal.
+		</member>
+		<member name="cast_shadows" type="bool" setter="set_cast_shadows" getter="is_casting_shadows" default="true">
+			If [code]false[/code], this layer's instances do not cast shadows (equivalent to setting [member GeometryInstance3D.cast_shadow] to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF] on the layer's internal [MultiMeshInstance3D]).
+		</member>
+		<member name="density" type="float" setter="set_density" getter="get_density" default="4.0">
+			The approximate number of instances the brush attempts to place per paint stamp while this layer is active. Actual placement is also limited by [member min_instance_spacing] and by whether a valid surface is found under each sample point.
+		</member>
+		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
+			A display name for this layer, shown in [FoliagePainter3D]'s brush layer list and used to name its internal [MultiMeshInstance3D].
+		</member>
+		<member name="material_override" type="Material" setter="set_material_override" getter="get_material_override">
+			If set, overrides the material used to render this layer's instances (equivalent to [member GeometryInstance3D.material_override] on the layer's internal [MultiMeshInstance3D]).
+		</member>
+		<member name="max_scale" type="float" setter="set_max_scale" getter="get_max_scale" default="1.1">
+			The upper bound of the random uniform scale applied to each painted instance. See also [member min_scale].
+		</member>
+		<member name="mesh" type="Mesh" setter="set_mesh" getter="get_mesh">
+			The [Mesh] painted for this layer. The brush places nothing for a layer until this is set.
+		</member>
+		<member name="min_instance_spacing" type="float" setter="set_min_instance_spacing" getter="get_min_instance_spacing" default="0.5">
+			The minimum distance the brush enforces between two instances of this layer. Set to [code]0.0[/code] to allow instances to be placed arbitrarily close together.
+		</member>
+		<member name="min_scale" type="float" setter="set_min_scale" getter="get_min_scale" default="0.9">
+			The lower bound of the random uniform scale applied to each painted instance. See also [member max_scale].
+		</member>
+		<member name="random_rotation" type="bool" setter="set_random_rotation" getter="is_random_rotation_enabled" default="true">
+			If [code]true[/code], each painted instance receives a random rotation around its up axis.
+		</member>
+		<member name="random_tilt_degrees" type="float" setter="set_random_tilt_degrees" getter="get_random_tilt_degrees" default="0.0">
+			The maximum random tilt, in degrees, applied on top of [member align_to_normal_amount] for natural-looking variation from instance to instance.
+		</member>
+		<member name="visibility_range_begin" type="float" setter="set_visibility_range_begin" getter="get_visibility_range_begin" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_begin] for this layer's instances: the distance from the camera at which they start being visible (if greater than [code]0.0[/code]).
+		</member>
+		<member name="visibility_range_begin_margin" type="float" setter="set_visibility_range_begin_margin" getter="get_visibility_range_begin_margin" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_begin_margin] for this layer's instances.
+		</member>
+		<member name="visibility_range_end" type="float" setter="set_visibility_range_end" getter="get_visibility_range_end" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_end] for this layer's instances: the distance from the camera beyond which they stop being visible (if greater than [code]0.0[/code]). Use this to keep dense grass or small foliage from rendering far away.
+		</member>
+		<member name="visibility_range_end_margin" type="float" setter="set_visibility_range_end_margin" getter="get_visibility_range_end_margin" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_end_margin] for this layer's instances.
+		</member>
+		<member name="visibility_range_fade_mode" type="int" setter="set_visibility_range_fade_mode" getter="get_visibility_range_fade_mode" enum="GeometryInstance3D.VisibilityRangeFadeMode" default="0">
+			Equivalent to [member GeometryInstance3D.visibility_range_fade_mode] for this layer's instances: whether and how they fade in/out across [member visibility_range_begin_margin] and [member visibility_range_end_margin] instead of popping.
+		</member>
+	</members>
+</class>
