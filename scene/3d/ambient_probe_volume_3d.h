@@ -32,6 +32,7 @@
 
 #include "scene/3d/node_3d.h"
 
+class ImageTexture3D;
 class Material;
 class Shader;
 class ShaderMaterial;
@@ -57,6 +58,7 @@ class AmbientProbeVolume3D : public Node3D {
 	StringName apply_shader_parameter = StringName("ambient_occlusion");
 	bool debug_preview_on_meshes = false;
 	Ref<ShaderMaterial> debug_material;
+	Ref<ImageTexture3D> debug_ao_texture;
 
 	PackedFloat32Array baked_ao;
 
@@ -80,6 +82,7 @@ class AmbientProbeVolume3D : public Node3D {
 	void _apply_to_instances(Node *p_node, int &r_count);
 	void _set_debug_material_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
 	Node *_resolve_apply_root() const;
+	void _update_debug_material();
 
 	void _set_baked_ao(const PackedFloat32Array &p_data);
 	PackedFloat32Array _get_baked_ao() const;
@@ -136,10 +139,13 @@ public:
 	void apply_to_instances();
 
 	// Debug aid: when enabled, forces every GeometryInstance3D under apply_target (or
-	// the current scene root) to render fully unshaded, tinted grayscale by its baked
-	// AO, via a generated material_override - no custom shader required. This is the
-	// most direct way to see whether baking/apply actually did anything to the real
-	// geometry, independent of whatever the mesh's own material does with the data.
+	// the current scene root) to render fully unshaded, tinted grayscale by the baked
+	// AO at each rendered *fragment's* world position (via a generated material_override
+	// sampling a 3D texture built from baked_ao) - no custom shader required, and with
+	// real per-pixel detail even across a single huge mesh (e.g. an entire imported
+	// building), unlike apply_to_instances()'s necessarily one-value-per-node result.
+	// This is the most direct way to see whether baking actually did anything to the
+	// real geometry, independent of whatever the mesh's own material does with the data.
 	// Disabling it clears material_override on every instance it finds; it does not
 	// remember or restore whatever material_override those instances had before.
 	void set_debug_preview_on_meshes(bool p_enabled);

@@ -30,12 +30,14 @@
 
 #include "ambient_probe_volume_3d.h"
 
+#include "core/io/image.h"
 #include "core/math/face3.h"
 #include "core/object/class_db.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/shader.h"
@@ -44,17 +46,35 @@
 static const int AMBIENT_PROBE_VOLUME_MAX_PER_AXIS = 64;
 static const int AMBIENT_PROBE_VOLUME_WARN_PROBE_COUNT = 4096;
 
-// Unshaded spatial shader used by set_debug_preview_on_meshes(): the instance uniform
-// is the same one apply_to_instances() sets, so the two features are compatible with
-// each other and with a hand-written shader using the same parameter name.
+// Unshaded spatial shader used by set_debug_preview_on_meshes(). It deliberately does NOT
+// rely on the per-instance uniform apply_to_instances() sets: that is one value per
+// GeometryInstance3D (its origin), which is fine for many small instances (e.g. grass
+// blades) but next to useless for a handful of huge meshes (e.g. an imported building),
+// since the entire mesh would render as a single flat tone. Instead, this samples the
+// baked grid as an actual 3D texture per rendered fragment, using that fragment's own
+// world position, so a single large mesh still shows real spatial detail.
 static const char *AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE =
 		"shader_type spatial;\n"
 		"render_mode unshaded;\n"
 		"\n"
-		"instance uniform float ambient_occlusion : hint_range(0.0, 1.0) = 1.0;\n"
+		"uniform sampler3D ao_volume_texture : filter_linear, repeat_disable;\n"
+		"uniform mat4 ao_volume_inverse_transform;\n"
+		"uniform vec3 ao_volume_size = vec3(1.0, 1.0, 1.0);\n"
+		"\n"
+		"varying vec3 world_position;\n"
+		"\n"
+		"void vertex() {\n"
+		"\tworld_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;\n"
+		"}\n"
 		"\n"
 		"void fragment() {\n"
-		"\tALBEDO = vec3(ambient_occlusion);\n"
+		"\tvec3 local_position = (ao_volume_inverse_transform * vec4(world_position, 1.0)).xyz;\n"
+		"\tvec3 uvw = local_position / ao_volume_size + 0.5;\n"
+		"\tfloat ao = 1.0;\n"
+		"\tif (all(greaterThanEqual(uvw, vec3(0.0))) && all(lessThanEqual(uvw, vec3(1.0)))) {\n"
+		"\t\tao = texture(ao_volume_texture, uvw).r;\n"
+		"\t}\n"
+		"\tALBEDO = vec3(ao);\n"
 		"}\n";
 
 namespace {
@@ -469,9 +489,6 @@ void AmbientProbeVolume3D::apply_to_instances() {
 void AmbientProbeVolume3D::_set_debug_material_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count) {
 	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
 	if (gi != nullptr) {
-		if (p_material.is_valid()) {
-			gi->set_instance_shader_parameter(apply_shader_parameter, get_ao_at(gi->get_global_position()));
-		}
 		gi->set_material_override(p_material);
 		r_count++;
 	}
@@ -479,6 +496,41 @@ void AmbientProbeVolume3D::_set_debug_material_recursive(Node *p_node, const Ref
 	for (int i = 0; i < p_node->get_child_count(); i++) {
 		_set_debug_material_recursive(p_node->get_child(i), p_material, r_count);
 	}
+}
+
+void AmbientProbeVolume3D::_update_debug_material() {
+	if (debug_material.is_null()) {
+		Ref<Shader> shader;
+		shader.instantiate();
+		shader->set_code(AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE);
+		debug_material.instantiate();
+		debug_material->set_shader(shader);
+	}
+
+	// Pack baked_ao into a 3D texture (one probe per texel, same x + X*(y + Y*z) layout
+	// as get_probe_ao()) so the debug shader can sample real per-fragment world positions
+	// instead of a single value per GeometryInstance3D.
+	Vector<Ref<Image>> slices;
+	slices.resize(probe_counts.z);
+	for (int zi = 0; zi < probe_counts.z; zi++) {
+		Ref<Image> slice = Image::create_empty(probe_counts.x, probe_counts.y, false, Image::FORMAT_L8);
+		for (int yi = 0; yi < probe_counts.y; yi++) {
+			for (int xi = 0; xi < probe_counts.x; xi++) {
+				const float ao = get_probe_ao(xi, yi, zi);
+				slice->set_pixel(xi, yi, Color(ao, ao, ao));
+			}
+		}
+		slices.write[zi] = slice;
+	}
+
+	if (debug_ao_texture.is_null()) {
+		debug_ao_texture.instantiate();
+	}
+	debug_ao_texture->create(Image::FORMAT_L8, probe_counts.x, probe_counts.y, probe_counts.z, false, slices);
+
+	debug_material->set_shader_parameter("ao_volume_texture", debug_ao_texture);
+	debug_material->set_shader_parameter("ao_volume_inverse_transform", get_global_transform().affine_inverse());
+	debug_material->set_shader_parameter("ao_volume_size", size);
 }
 
 void AmbientProbeVolume3D::set_debug_preview_on_meshes(bool p_enabled) {
@@ -495,13 +547,7 @@ void AmbientProbeVolume3D::set_debug_preview_on_meshes(bool p_enabled) {
 
 	Ref<Material> material;
 	if (p_enabled) {
-		if (debug_material.is_null()) {
-			Ref<Shader> shader;
-			shader.instantiate();
-			shader->set_code(AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE);
-			debug_material.instantiate();
-			debug_material->set_shader(shader);
-		}
+		_update_debug_material();
 		material = debug_material;
 	}
 
