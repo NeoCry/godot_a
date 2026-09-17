@@ -77,6 +77,39 @@ static const char *AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE =
 		"\tALBEDO = vec3(ao);\n"
 		"}\n";
 
+// Unshaded, alpha-blended spatial shader used by set_ao_overlay_enabled(). Unlike the
+// debug preview shader above (which replaces the mesh's material entirely via
+// material_override), this is meant to be used as a material_overlay: an extra draw pass
+// on top of whatever the mesh already renders. It draws pure black with alpha = (1 - ao),
+// so standard alpha blending (render_mode blend_mix) works out to
+// final = base * (1 - alpha) + black * alpha = base * ao, i.e. a correct multiplicative
+// darkening of the mesh's own shading rather than a replacement of it.
+static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
+		"shader_type spatial;\n"
+		"render_mode blend_mix, unshaded, cull_back;\n"
+		"\n"
+		"uniform sampler3D ao_volume_texture : filter_linear, repeat_disable;\n"
+		"uniform mat4 ao_volume_inverse_transform;\n"
+		"uniform vec3 ao_volume_size = vec3(1.0, 1.0, 1.0);\n"
+		"uniform float ao_overlay_strength : hint_range(0.0, 1.0) = 1.0;\n"
+		"\n"
+		"varying vec3 world_position;\n"
+		"\n"
+		"void vertex() {\n"
+		"\tworld_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;\n"
+		"}\n"
+		"\n"
+		"void fragment() {\n"
+		"\tvec3 local_position = (ao_volume_inverse_transform * vec4(world_position, 1.0)).xyz;\n"
+		"\tvec3 uvw = local_position / ao_volume_size + 0.5;\n"
+		"\tfloat ao = 1.0;\n"
+		"\tif (all(greaterThanEqual(uvw, vec3(0.0))) && all(lessThanEqual(uvw, vec3(1.0)))) {\n"
+		"\t\tao = texture(ao_volume_texture, uvw).r;\n"
+		"\t}\n"
+		"\tALBEDO = vec3(0.0);\n"
+		"\tALPHA = clamp((1.0 - ao) * ao_overlay_strength, 0.0, 1.0);\n"
+		"}\n";
+
 namespace {
 struct OccluderFace {
 	Vector3 v0, v1, v2;
@@ -176,6 +209,12 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_debug_preview_on_meshes", "enabled"), &AmbientProbeVolume3D::set_debug_preview_on_meshes);
 	ClassDB::bind_method(D_METHOD("is_debug_preview_on_meshes"), &AmbientProbeVolume3D::is_debug_preview_on_meshes);
 
+	ClassDB::bind_method(D_METHOD("set_ao_overlay_enabled", "enabled"), &AmbientProbeVolume3D::set_ao_overlay_enabled);
+	ClassDB::bind_method(D_METHOD("is_ao_overlay_enabled"), &AmbientProbeVolume3D::is_ao_overlay_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_ao_overlay_strength", "strength"), &AmbientProbeVolume3D::set_ao_overlay_strength);
+	ClassDB::bind_method(D_METHOD("get_ao_overlay_strength"), &AmbientProbeVolume3D::get_ao_overlay_strength);
+
 	ClassDB::bind_method(D_METHOD("get_bake_button"), &AmbientProbeVolume3D::_get_bake_button);
 	ClassDB::bind_method(D_METHOD("get_clear_button"), &AmbientProbeVolume3D::_get_clear_button);
 	ClassDB::bind_method(D_METHOD("get_apply_button"), &AmbientProbeVolume3D::_get_apply_button);
@@ -196,6 +235,8 @@ void AmbientProbeVolume3D::_bind_methods() {
 	ADD_GROUP("Apply", "");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "apply_target", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Node3D"), "set_apply_target", "get_apply_target");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "apply_shader_parameter"), "set_apply_shader_parameter", "get_apply_shader_parameter");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ao_overlay_enabled"), "set_ao_overlay_enabled", "is_ao_overlay_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_overlay_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ao_overlay_strength", "get_ao_overlay_strength");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_preview_on_meshes"), "set_debug_preview_on_meshes", "is_debug_preview_on_meshes");
 
 	ADD_GROUP("", "");
@@ -429,12 +470,15 @@ void AmbientProbeVolume3D::bake_ao() {
 				String(get_name()), last_bake_min_occluder_distance, max_distance, last_bake_min_occluder_distance));
 	}
 
-	// If the debug preview is currently on, its instances are already sampling
-	// get_ao_at() via a material - but the actual per-instance shader parameter values
-	// were only pushed once, when it was toggled on, so a re-bake would otherwise leave
-	// it showing stale results until toggled off and back on.
+	// If the debug preview and/or the AO overlay are currently on, their instances are
+	// already sampling the baked data via a material - but the 3D texture built from it
+	// was only pushed once, when each was toggled on, so a re-bake would otherwise leave
+	// them showing stale results until toggled off and back on.
 	if (debug_preview_on_meshes) {
 		set_debug_preview_on_meshes(true);
+	}
+	if (ao_overlay_enabled) {
+		set_ao_overlay_enabled(true);
 	}
 
 	update_gizmos();
@@ -486,7 +530,7 @@ void AmbientProbeVolume3D::apply_to_instances() {
 	}
 }
 
-void AmbientProbeVolume3D::_set_debug_material_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count) {
+void AmbientProbeVolume3D::_set_material_override_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count) {
 	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
 	if (gi != nullptr) {
 		gi->set_material_override(p_material);
@@ -494,22 +538,26 @@ void AmbientProbeVolume3D::_set_debug_material_recursive(Node *p_node, const Ref
 	}
 
 	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_set_debug_material_recursive(p_node->get_child(i), p_material, r_count);
+		_set_material_override_recursive(p_node->get_child(i), p_material, r_count);
 	}
 }
 
-void AmbientProbeVolume3D::_update_debug_material() {
-	if (debug_material.is_null()) {
-		Ref<Shader> shader;
-		shader.instantiate();
-		shader->set_code(AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE);
-		debug_material.instantiate();
-		debug_material->set_shader(shader);
+void AmbientProbeVolume3D::_set_material_overlay_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count) {
+	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
+	if (gi != nullptr) {
+		gi->set_material_overlay(p_material);
+		r_count++;
 	}
 
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_set_material_overlay_recursive(p_node->get_child(i), p_material, r_count);
+	}
+}
+
+void AmbientProbeVolume3D::_rebuild_ao_volume_texture() {
 	// Pack baked_ao into a 3D texture (one probe per texel, same x + X*(y + Y*z) layout
-	// as get_probe_ao()) so the debug shader can sample real per-fragment world positions
-	// instead of a single value per GeometryInstance3D.
+	// as get_probe_ao()) so the debug/overlay shaders can sample real per-fragment world
+	// positions instead of a single value per GeometryInstance3D.
 	Vector<Ref<Image>> slices;
 	slices.resize(probe_counts.z);
 	for (int zi = 0; zi < probe_counts.z; zi++) {
@@ -523,14 +571,16 @@ void AmbientProbeVolume3D::_update_debug_material() {
 		slices.write[zi] = slice;
 	}
 
-	if (debug_ao_texture.is_null()) {
-		debug_ao_texture.instantiate();
+	if (ao_volume_texture.is_null()) {
+		ao_volume_texture.instantiate();
 	}
-	debug_ao_texture->create(Image::FORMAT_L8, probe_counts.x, probe_counts.y, probe_counts.z, false, slices);
+	ao_volume_texture->create(Image::FORMAT_L8, probe_counts.x, probe_counts.y, probe_counts.z, false, slices);
+}
 
-	debug_material->set_shader_parameter("ao_volume_texture", debug_ao_texture);
-	debug_material->set_shader_parameter("ao_volume_inverse_transform", get_global_transform().affine_inverse());
-	debug_material->set_shader_parameter("ao_volume_size", size);
+void AmbientProbeVolume3D::_push_ao_volume_uniforms(const Ref<ShaderMaterial> &p_material) {
+	p_material->set_shader_parameter("ao_volume_texture", ao_volume_texture);
+	p_material->set_shader_parameter("ao_volume_inverse_transform", get_global_transform().affine_inverse());
+	p_material->set_shader_parameter("ao_volume_size", size);
 }
 
 void AmbientProbeVolume3D::set_debug_preview_on_meshes(bool p_enabled) {
@@ -547,12 +597,20 @@ void AmbientProbeVolume3D::set_debug_preview_on_meshes(bool p_enabled) {
 
 	Ref<Material> material;
 	if (p_enabled) {
-		_update_debug_material();
+		if (debug_material.is_null()) {
+			Ref<Shader> shader;
+			shader.instantiate();
+			shader->set_code(AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE);
+			debug_material.instantiate();
+			debug_material->set_shader(shader);
+		}
+		_rebuild_ao_volume_texture();
+		_push_ao_volume_uniforms(debug_material);
 		material = debug_material;
 	}
 
 	int count = 0;
-	_set_debug_material_recursive(root, material, count);
+	_set_material_override_recursive(root, material, count);
 
 	print_line(vformat("AmbientProbeVolume3D \"%s\": debug AO preview %s on %d GeometryInstance3D node(s) under \"%s\"%s.",
 			String(get_name()), p_enabled ? "enabled" : "disabled", count, root->get_name(),
@@ -561,6 +619,56 @@ void AmbientProbeVolume3D::set_debug_preview_on_meshes(bool p_enabled) {
 
 bool AmbientProbeVolume3D::is_debug_preview_on_meshes() const {
 	return debug_preview_on_meshes;
+}
+
+void AmbientProbeVolume3D::set_ao_overlay_enabled(bool p_enabled) {
+	ao_overlay_enabled = p_enabled;
+
+	if (!is_inside_tree()) {
+		return;
+	}
+
+	Node *root = _resolve_apply_root();
+	if (root == nullptr) {
+		return;
+	}
+
+	Ref<Material> material;
+	if (p_enabled) {
+		if (overlay_material.is_null()) {
+			Ref<Shader> shader;
+			shader.instantiate();
+			shader->set_code(AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE);
+			overlay_material.instantiate();
+			overlay_material->set_shader(shader);
+		}
+		_rebuild_ao_volume_texture();
+		_push_ao_volume_uniforms(overlay_material);
+		overlay_material->set_shader_parameter("ao_overlay_strength", ao_overlay_strength);
+		material = overlay_material;
+	}
+
+	int count = 0;
+	_set_material_overlay_recursive(root, material, count);
+
+	print_line(vformat("AmbientProbeVolume3D \"%s\": AO overlay %s on %d GeometryInstance3D node(s) under \"%s\"%s.",
+			String(get_name()), p_enabled ? "enabled" : "disabled", count, root->get_name(),
+			(p_enabled && !is_baked()) ? " (not baked yet, so nothing will be darkened)" : ""));
+}
+
+bool AmbientProbeVolume3D::is_ao_overlay_enabled() const {
+	return ao_overlay_enabled;
+}
+
+void AmbientProbeVolume3D::set_ao_overlay_strength(float p_strength) {
+	ao_overlay_strength = CLAMP(p_strength, 0.0f, 1.0f);
+	if (overlay_material.is_valid()) {
+		overlay_material->set_shader_parameter("ao_overlay_strength", ao_overlay_strength);
+	}
+}
+
+float AmbientProbeVolume3D::get_ao_overlay_strength() const {
+	return ao_overlay_strength;
 }
 
 float AmbientProbeVolume3D::get_ao_at(const Vector3 &p_world_position) const {
@@ -651,6 +759,10 @@ PackedStringArray AmbientProbeVolume3D::get_configuration_warnings() const {
 
 	if (debug_preview_on_meshes) {
 		warnings.push_back(RTR("Debug Preview On Meshes is enabled: affected GeometryInstance3D nodes are being rendered with a generated grayscale debug material instead of their own, for diagnostics only. Turn it back off once you're done checking the bake."));
+	}
+
+	if (ao_overlay_enabled && !is_baked()) {
+		warnings.push_back(RTR("AO Overlay is enabled, but this volume hasn't been baked yet, so it has nothing to darken. Press Bake AO."));
 	}
 
 	return warnings;

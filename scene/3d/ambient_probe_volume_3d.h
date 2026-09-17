@@ -57,8 +57,11 @@ class AmbientProbeVolume3D : public Node3D {
 	NodePath apply_target;
 	StringName apply_shader_parameter = StringName("ambient_occlusion");
 	bool debug_preview_on_meshes = false;
+	bool ao_overlay_enabled = false;
+	float ao_overlay_strength = 1.0f;
 	Ref<ShaderMaterial> debug_material;
-	Ref<ImageTexture3D> debug_ao_texture;
+	Ref<ShaderMaterial> overlay_material;
+	Ref<ImageTexture3D> ao_volume_texture;
 
 	PackedFloat32Array baked_ao;
 
@@ -80,9 +83,11 @@ class AmbientProbeVolume3D : public Node3D {
 	Callable _get_apply_button() const;
 
 	void _apply_to_instances(Node *p_node, int &r_count);
-	void _set_debug_material_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
+	void _set_material_override_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
+	void _set_material_overlay_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
 	Node *_resolve_apply_root() const;
-	void _update_debug_material();
+	void _rebuild_ao_volume_texture();
+	void _push_ao_volume_uniforms(const Ref<ShaderMaterial> &p_material);
 
 	void _set_baked_ao(const PackedFloat32Array &p_data);
 	PackedFloat32Array _get_baked_ao() const;
@@ -147,9 +152,25 @@ public:
 	// This is the most direct way to see whether baking actually did anything to the
 	// real geometry, independent of whatever the mesh's own material does with the data.
 	// Disabling it clears material_override on every instance it finds; it does not
-	// remember or restore whatever material_override those instances had before.
+	// remember or restore whatever material_override those instances had before. This
+	// is a diagnostic override (see set_ao_overlay_enabled() for a real, shippable effect).
 	void set_debug_preview_on_meshes(bool p_enabled);
 	bool is_debug_preview_on_meshes() const;
+
+	// The actual, shippable way to make baked AO visible on ordinary meshes without
+	// writing a shader or touching their material: when enabled, every GeometryInstance3D
+	// under apply_target gets a generated material_overlay (not material_override, so the
+	// mesh's own material/textures are untouched) that draws pure black with alpha =
+	// (1 - AO) at each fragment's world position, standard alpha-blended on top. Since
+	// blending gives final = base * ao + black * (1 - ao) = base * ao, this is a correct
+	// multiplicative darkening of whatever was already rendered, not an approximation.
+	// Costs one extra draw per affected instance (the overlay pass), same as any other
+	// use of material_overlay. ao_overlay_strength scales how strong the darkening is.
+	void set_ao_overlay_enabled(bool p_enabled);
+	bool is_ao_overlay_enabled() const;
+
+	void set_ao_overlay_strength(float p_strength);
+	float get_ao_overlay_strength() const;
 
 	// Trilinearly sampled ambient occlusion (1.0 = fully lit, 0.0 = fully occluded)
 	// at a world-space position. Returns 1.0 if this volume hasn't been baked yet,
