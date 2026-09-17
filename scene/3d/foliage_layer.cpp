@@ -30,6 +30,7 @@
 
 #include "foliage_layer.h"
 
+#include "core/object/class_db.h"
 #include "scene/resources/mesh.h"
 
 void FoliageLayer::_bind_methods() {
