@@ -35,11 +35,13 @@
 #include "core/object/class_db.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/multimesh_instance_3d.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/multimesh.h"
 #include "scene/resources/shader.h"
 
 // Hard cap per axis to keep a single accidental huge grid from hanging the editor.
@@ -638,10 +640,22 @@ void AmbientProbeVolume3D::_configure_overlay_alpha_scissor(GeometryInstance3D *
 	// between instances of the same base material. Every other instance keeps sharing the
 	// one overlay_material (already assigned by the caller), whose default threshold of
 	// 0.0 means "never discard", correct for an opaque surface with nothing to cut out.
-	Ref<Material> base_material;
-	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
-	if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
-		base_material = mi->get_active_material(0);
+	// Both MeshInstance3D and MultiMeshInstance3D are handled explicitly, since grass/foliage
+	// (the main reason this matters) is generated as a MultiMeshInstance3D by FoliageSpawner3D
+	// and FoliagePainter3D, not a MeshInstance3D.
+	Ref<Material> base_material = p_gi->get_material_override();
+	if (base_material.is_null()) {
+		MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
+		MultiMeshInstance3D *mmi = Object::cast_to<MultiMeshInstance3D>(p_gi);
+		if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
+			base_material = mi->get_active_material(0);
+		} else if (mmi != nullptr && mmi->get_multimesh().is_valid() && mmi->get_multimesh()->get_mesh().is_valid() && mmi->get_multimesh()->get_mesh()->get_surface_count() > 0) {
+			// MultiMeshInstance3D (what FoliageSpawner3D/FoliagePainter3D actually generate
+			// for grass/foliage cards) has no get_active_material()-style helper of its own;
+			// its multimesh's mesh surface material is the equivalent of "the material this
+			// instance renders with" when GeometryInstance3D.material_override isn't set.
+			base_material = mmi->get_multimesh()->get_mesh()->surface_get_material(0);
+		}
 	}
 
 	Ref<BaseMaterial3D> base_std = base_material;
