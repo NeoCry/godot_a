@@ -38,6 +38,7 @@
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "editor/settings/editor_settings.h"
 #include "scene/3d/reflection_probe.h"
+#include "scene/resources/3d/primitive_meshes.h"
 
 ReflectionProbeGizmoPlugin::ReflectionProbeGizmoPlugin() {
 	helper.instantiate();
@@ -50,6 +51,25 @@ ReflectionProbeGizmoPlugin::ReflectionProbeGizmoPlugin() {
 
 	create_icon_material("reflection_probe_icon", EditorNode::get_singleton()->get_editor_theme()->get_icon(SNAME("GizmoReflectionProbe"), EditorStringName(EditorIcons)));
 	create_handle_material("handles");
+
+	preview_sphere_size = EDITOR_GET("editors/3d_gizmos/gizmo_settings/reflection_probe_preview_sphere_size");
+
+	bool show_preview_sphere = EDITOR_GET("editors/3d_gizmos/gizmo_settings/reflection_probe_preview_sphere");
+	if (show_preview_sphere) {
+		// Mirror ball preview: unlike the flat icon and wireframe box above (which use the
+		// unshaded, always-on-top gizmo materials), this sphere uses a real PBR material so
+		// the editor's regular lighting/reflection pass actually shades it, giving an at-a-
+		// glance idea of what this probe is capturing, the way reflection probes are commonly
+		// visualized in other engines.
+		preview_sphere_mesh.instantiate();
+		preview_sphere_mesh->set_radial_segments(32);
+		preview_sphere_mesh->set_rings(16);
+
+		preview_sphere_material.instantiate();
+		preview_sphere_material->set_metallic(1.0);
+		preview_sphere_material->set_roughness(0.0);
+		preview_sphere_material->set_albedo(Color(1, 1, 1));
+	}
 }
 
 bool ReflectionProbeGizmoPlugin::has_gizmo(Node3D *p_spatial) {
@@ -210,4 +230,21 @@ void ReflectionProbeGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 
 	Ref<Material> icon = get_material("reflection_probe_icon", p_gizmo);
 	p_gizmo->add_unscaled_billboard(icon, 0.05);
+
+	if (preview_sphere_mesh.is_valid()) {
+		ReflectionProbe *probe = Object::cast_to<ReflectionProbe>(p_gizmo->get_node_3d());
+		Vector3 size = probe->get_size();
+		// Never let the preview sphere grow past a small fraction of the probe's own
+		// influence box, so it stays a debug marker instead of dominating the viewport
+		// for large probes.
+		float radius = MIN(preview_sphere_size * 0.5f, MIN(size.x, MIN(size.y, size.z)) * 0.15f);
+		if (radius > 0.001f) {
+			preview_sphere_mesh->set_radius(radius);
+			preview_sphere_mesh->set_height(radius * 2.0f);
+
+			Transform3D xform;
+			xform.origin = probe->get_origin_offset();
+			p_gizmo->add_mesh(preview_sphere_mesh, preview_sphere_material, xform);
+		}
+	}
 }

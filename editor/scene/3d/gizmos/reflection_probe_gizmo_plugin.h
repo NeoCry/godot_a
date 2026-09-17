@@ -33,11 +33,21 @@
 #include "editor/scene/3d/node_3d_editor_gizmos.h"
 
 class Gizmo3DHelper;
+class SphereMesh;
+class StandardMaterial3D;
 
 class ReflectionProbeGizmoPlugin : public EditorNode3DGizmoPlugin {
 	GDCLASS(ReflectionProbeGizmoPlugin, EditorNode3DGizmoPlugin);
 
 	Ref<Gizmo3DHelper> helper;
+
+	// Mirror-ball preview: a small chrome sphere rendered with the real PBR pipeline
+	// (not the flat, unshaded gizmo material used for the box/handles below), so it
+	// actually picks up the probe's own reflection along with the rest of the scene's
+	// lighting, matching how reflection probes are conventionally visualized.
+	Ref<SphereMesh> preview_sphere_mesh;
+	Ref<StandardMaterial3D> preview_sphere_material;
+	float preview_sphere_size = 0.3f;
 
 public:
 	bool has_gizmo(Node3D *p_spatial) override;
