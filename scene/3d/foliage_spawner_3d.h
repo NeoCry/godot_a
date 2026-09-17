@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "core/templates/hash_map.h"
+#include "core/templates/local_vector.h"
 #include "scene/3d/multimesh_instance_3d.h"
 
 class Image;
@@ -41,13 +43,29 @@ class Texture2D;
 // to Unreal Engine's Procedural Foliage Spawner: it fills the volume according to
 // density/spacing rules, an optional grayscale distribution mask, and can project
 // the instances onto the actual surface geometry of another mesh below them (e.g. terrain).
+//
+// Generated instances are spatially chunked into a grid of cells on the local XZ
+// plane (see cell_size), the same technique FoliagePainter3D uses for painted
+// instances: each non-empty cell gets its own small MultiMesh and internal
+// MultiMeshInstance3D child with a tight bounding box, so the renderer's normal
+// per-node AABB frustum culling naturally skips whole cells that are off-screen,
+// instead of always submitting every instance in one giant draw call.
 class FoliageSpawner3D : public MultiMeshInstance3D {
 	GDCLASS(FoliageSpawner3D, MultiMeshInstance3D);
+
+	struct FoliageCell {
+		Ref<MultiMesh> multimesh;
+		MultiMeshInstance3D *node = nullptr;
+	};
 
 	Ref<Mesh> mesh;
 
 	// Volume.
 	Vector3 volume_size = Vector3(10, 4, 10);
+
+	// Chunking.
+	float cell_size = 16.0f;
+	HashMap<Vector2i, FoliageCell> cells;
 
 	// Distribution.
 	float density = 1.0;
@@ -80,9 +98,22 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	bool _sample_mask(const Ref<Image> &p_image, const Vector2 &p_uv, RandomPCG &p_rng) const;
 	Callable _get_regenerate_button() const;
 
+	void _clear_cells();
+	FoliageCell &_get_or_create_cell(const Vector2i &p_cell);
+	void _sync_cell_node(FoliageCell &p_cell);
+	void _configure_cell_node(MultiMeshInstance3D *p_node) const;
+
+	// Internal, storage-only representation of cells' MultiMesh resources, so
+	// generated instances are actually saved with the scene (the
+	// MultiMeshInstance3D nodes themselves are not; they're recreated from this
+	// data instead, the same way FoliagePainter3D persists its own cells).
+	Array _get_cell_data() const;
+	void _set_cell_data(const Array &p_data);
+
 protected:
 	static void _bind_methods();
 	void _validate_property(PropertyInfo &p_property) const;
+	void _notification(int p_what);
 
 public:
 	void set_mesh(const Ref<Mesh> &p_mesh);
@@ -90,6 +121,9 @@ public:
 
 	void set_volume_size(const Vector3 &p_size);
 	Vector3 get_volume_size() const;
+
+	void set_cell_size(float p_size);
+	float get_cell_size() const;
 
 	void set_density(float p_density);
 	float get_density() const;
