@@ -4,14 +4,15 @@
 		Paints one or more kinds of vegetation onto other meshes with a brush, in the editor.
 	</brief_description>
 	<description>
-		[FoliagePainter3D] holds a list of [member layers] (vegetation types, each a [FoliageLayer]) and renders each one through its own internal [MultiMeshInstance3D]. It is the counterpart to [FoliageSpawner3D]'s procedural box-volume scattering: instead of filling a volume automatically, instances are painted, erased, or placed/removed one at a time directly onto the actual surface geometry of any [MeshInstance3D] in the scene, using the brush tool that appears in the 3D viewport's toolbar while a [FoliagePainter3D] is selected.
+		[FoliagePainter3D] holds a list of [member layers] (vegetation types, each a [FoliageLayer]). It is the counterpart to [FoliageSpawner3D]'s procedural box-volume scattering: instead of filling a volume automatically, instances are painted, erased, or placed/removed one at a time directly onto the actual surface geometry of any [MeshInstance3D] in the scene, using the brush tool that appears in the 3D viewport's toolbar while a [FoliagePainter3D] is selected.
 		Add at least one [FoliageLayer] to [member layers] (each with a [member FoliageLayer.mesh] assigned) before using the brush. The brush toolbar lets you choose which layers it paints with at once, its radius and density, and one of four modes:
 		- [b]Paint[/b]: click or drag over a mesh surface to scatter instances of the active layers within the brush, with random scale, rotation, and normal deviation controlled per layer (see [member FoliageLayer.min_scale], [member FoliageLayer.random_rotation], [member FoliageLayer.align_to_normal_amount], and [member FoliageLayer.random_tilt_degrees]).
 		- [b]Erase[/b]: click or drag to remove instances of the active layers found within the brush.
 		- [b]Place Single[/b]: click to insert exactly one instance at the exact clicked point.
 		- [b]Remove Single[/b]: click to delete the single closest instance to the clicked point.
 		Painting only looks at [MeshInstance3D] geometry; no physics bodies or collision shapes are required on the painted-on meshes. Each layer's visible distance can be configured independently through [member FoliageLayer.visibility_range_begin] and related properties, so nearby dense foliage (e.g. grass) can be culled at a much shorter distance than larger background vegetation.
-		While instances are usually added and removed through the brush, [method insert_instance], [method remove_instance], and [method add_instance] are also available for scripted or procedural editing of a layer's [MultiMesh].
+		[b]Cell chunking:[/b] each layer's instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty (layer, cell) pair is rendered through its own internal [MultiMeshInstance3D]. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Set [member cell_size] before painting a large area — changing it later does not move already-painted instances into the new grid.
+		While instances are usually added and removed through the brush, [method insert_instance], [method remove_instance], and [method add_instance] are also available for scripted or procedural editing.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -19,9 +20,10 @@
 		<method name="add_instance">
 			<return type="int" />
 			<param index="0" name="layer_index" type="int" />
-			<param index="1" name="transform" type="Transform3D" />
+			<param index="1" name="cell" type="Vector2i" />
+			<param index="2" name="transform" type="Transform3D" />
 			<description>
-				Appends a new instance with the given [param transform] to the layer at [param layer_index], and returns its index. Equivalent to calling [method insert_instance] with an index equal to [method get_layer_instance_count].
+				Appends a new instance with the given local-space [param transform] to the layer at [param layer_index], in the cell at [param cell] (see [member cell_size]), and returns its index within that cell. Equivalent to calling [method insert_instance] with an index equal to that cell's current instance count.
 			</description>
 		</method>
 		<method name="get_layer" qualifiers="const">
@@ -37,40 +39,30 @@
 				Returns the number of layers in [member layers].
 			</description>
 		</method>
-		<method name="get_layer_instance_count" qualifiers="const">
-			<return type="int" />
-			<param index="0" name="layer_index" type="int" />
-			<description>
-				Returns the number of instances currently painted for the layer at [param layer_index].
-			</description>
-		</method>
-		<method name="get_layer_instance_transform" qualifiers="const">
-			<return type="Transform3D" />
-			<param index="0" name="layer_index" type="int" />
-			<param index="1" name="index" type="int" />
-			<description>
-				Returns the local-space transform of instance [param index] of the layer at [param layer_index].
-			</description>
-		</method>
 		<method name="insert_instance">
 			<return type="void" />
 			<param index="0" name="layer_index" type="int" />
-			<param index="1" name="index" type="int" />
-			<param index="2" name="transform" type="Transform3D" />
+			<param index="1" name="cell" type="Vector2i" />
+			<param index="2" name="index" type="int" />
+			<param index="3" name="transform" type="Transform3D" />
 			<description>
-				Inserts a new instance with the given local-space [param transform] at [param index] in the layer at [param layer_index], shifting any existing instances at or after [param index] up by one. [param index] is clamped to the current instance count, so passing the current count appends the instance.
+				Inserts a new instance with the given local-space [param transform] at [param index] within the cell at [param cell] (see [member cell_size]) in the layer at [param layer_index], shifting any existing instances of that cell at or after [param index] up by one. [param index] is clamped to the cell's current instance count, so passing that count appends the instance. The cell is created automatically if it doesn't exist yet.
 			</description>
 		</method>
 		<method name="remove_instance">
 			<return type="void" />
 			<param index="0" name="layer_index" type="int" />
-			<param index="1" name="index" type="int" />
+			<param index="1" name="cell" type="Vector2i" />
+			<param index="2" name="index" type="int" />
 			<description>
-				Removes instance [param index] from the layer at [param layer_index], shifting any subsequent instances down by one.
+				Removes instance [param index] from the cell at [param cell] in the layer at [param layer_index], shifting any subsequent instances of that cell down by one. The cell itself is freed automatically once it has no instances left.
 			</description>
 		</method>
 	</methods>
 	<members>
+		<member name="cell_size" type="float" setter="set_cell_size" getter="get_cell_size" default="16.0">
+			The size (in meters, on the local XZ plane) of the grid cells that each layer's instances are chunked into. See the class description for why this matters. Larger values mean fewer, bigger cells (coarser culling, less overhead); smaller values mean finer-grained culling at the cost of more internal [MultiMeshInstance3D] nodes. It should generally stay well above the brush radius and above [member FoliageLayer.min_instance_spacing], which only checks for nearby instances within the same cell and its immediate neighbors.
+		</member>
 		<member name="layers" type="FoliageLayer[]" setter="set_layers" getter="get_layers" default="[]">
 			The vegetation types this node can paint. Each entry is a [FoliageLayer] with its own [Mesh], randomization settings, brush density/spacing, and visibility range. Add and configure entries from the Inspector, then select this node to paint with the brush tool in the 3D viewport.
 		</member>

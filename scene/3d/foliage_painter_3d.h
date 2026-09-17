@@ -30,26 +30,49 @@
 
 #pragma once
 
+#include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/foliage_layer.h"
 #include "scene/3d/node_3d.h"
 
+class MultiMesh;
 class MultiMeshInstance3D;
 
-// Holds one or more FoliageLayers (vegetation types) and renders each one
-// through its own internal MultiMeshInstance3D. Instances are painted onto
-// arbitrary MeshInstance3D surfaces in the editor with FoliagePainter3DEditorPlugin;
-// this node itself only stores the resulting per-layer MultiMesh data and keeps
-// it in sync with the layer configuration (mesh, material, visibility range).
+// Holds one or more FoliageLayers (vegetation types). Painted instances of
+// each layer are spatially chunked into a grid of cells on the XZ plane
+// (see cell_size); each non-empty (layer, cell) pair gets its own MultiMesh
+// and internal MultiMeshInstance3D, so the renderer's normal per-node AABB
+// frustum culling naturally skips whole cells that are off-screen, instead
+// of always submitting every instance of a layer in one giant draw call.
+// Instances are painted onto arbitrary MeshInstance3D surfaces in the editor
+// with FoliagePainter3DEditorPlugin.
 class FoliagePainter3D : public Node3D {
 	GDCLASS(FoliagePainter3D, Node3D);
 
-	TypedArray<FoliageLayer> layers;
-	LocalVector<MultiMeshInstance3D *> layer_nodes;
+	struct FoliageCell {
+		Ref<MultiMesh> multimesh;
+		MultiMeshInstance3D *node = nullptr;
+	};
 
-	void _update_layer_nodes();
-	void _sync_layer_node(int p_index);
+	TypedArray<FoliageLayer> layers;
+	float cell_size = 16.0f;
+
+	// One cell map per layer (indexed the same as `layers`).
+	LocalVector<HashMap<Vector2i, FoliageCell>> layer_cells;
+
+	void _ensure_layer_cells_size();
+	FoliageCell &_get_or_create_cell(int p_layer, const Vector2i &p_cell);
+	void _sync_cell_node(int p_layer, FoliageCell &p_cell);
+	void _sync_layer_cells(int p_layer);
+	void _prune_layers_to_size();
 	void _on_layer_changed(int p_index);
+
+	// Internal, storage-only representation of layer_cells' MultiMesh
+	// resources, so painted instances are actually saved with the scene
+	// (the MultiMeshInstance3D nodes themselves are not; they're recreated
+	// from this data instead).
+	Array _get_cell_data() const;
+	void _set_cell_data(const Array &p_data);
 
 protected:
 	static void _bind_methods();
@@ -59,17 +82,25 @@ public:
 	void set_layers(const TypedArray<FoliageLayer> &p_layers);
 	TypedArray<FoliageLayer> get_layers() const;
 
+	void set_cell_size(float p_size);
+	float get_cell_size() const;
+
 	int get_layer_count() const;
 	Ref<FoliageLayer> get_layer(int p_index) const;
 
 	// Ordered insert/remove so that undo/redo (which replays these calls
 	// through EditorUndoRedoManager) can restore the exact original layout.
-	void insert_instance(int p_layer, int p_index, const Transform3D &p_transform);
-	void remove_instance(int p_layer, int p_index);
-	int add_instance(int p_layer, const Transform3D &p_transform);
+	// Cells that become empty after a removal are freed automatically.
+	void insert_instance(int p_layer, const Vector2i &p_cell, int p_index, const Transform3D &p_transform);
+	void remove_instance(int p_layer, const Vector2i &p_cell, int p_index);
+	int add_instance(int p_layer, const Vector2i &p_cell, const Transform3D &p_transform);
 
-	int get_layer_instance_count(int p_layer) const;
-	Transform3D get_layer_instance_transform(int p_layer, int p_index) const;
+	// Plain C++ helpers for the editor plugin (not bound to ClassDB: they're
+	// only ever called directly from FoliagePainter3DEditorPlugin's C++ code).
+	Vector2i get_cell_for_local_position(const Vector3 &p_local_position) const;
+	Vector<Vector2i> get_layer_cell_coords(int p_layer) const;
+	int get_cell_instance_count(int p_layer, const Vector2i &p_cell) const;
+	Transform3D get_cell_instance_transform(int p_layer, const Vector2i &p_cell, int p_index) const;
 
 	PackedStringArray get_configuration_warnings() const override;
 

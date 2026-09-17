@@ -353,21 +353,24 @@ Transform3D FoliagePainter3DEditorPlugin::_make_instance_transform(const Ref<Fol
 }
 
 void FoliagePainter3DEditorPlugin::_do_insert(int p_layer, const Transform3D &p_transform) {
-	const int index = painter->add_instance(p_layer, p_transform);
+	const Vector2i cell = painter->get_cell_for_local_position(p_transform.origin);
+	const int index = painter->add_instance(p_layer, cell, p_transform);
 
 	StrokeOp op;
 	op.layer = p_layer;
+	op.cell = cell;
 	op.index = index;
 	op.transform = p_transform;
 	op.is_insert = true;
 	stroke_ops.push_back(op);
 }
 
-void FoliagePainter3DEditorPlugin::_do_remove(int p_layer, int p_index, const Transform3D &p_transform) {
-	painter->remove_instance(p_layer, p_index);
+void FoliagePainter3DEditorPlugin::_do_remove(int p_layer, const Vector2i &p_cell, int p_index, const Transform3D &p_transform) {
+	painter->remove_instance(p_layer, p_cell, p_index);
 
 	StrokeOp op;
 	op.layer = p_layer;
+	op.cell = p_cell;
 	op.index = p_index;
 	op.transform = p_transform;
 	op.is_insert = false;
@@ -413,15 +416,24 @@ void FoliagePainter3DEditorPlugin::_stamp_paint(const Vector3 &p_position, const
 		const float spacing = layer->get_min_instance_spacing();
 		if (spacing > 0.0f) {
 			const Transform3D layer_gt = painter->get_global_transform();
-			Ref<MultiMesh> mm = layer->get_multimesh();
-			const int existing = mm->get_instance_count();
+			const Vector3 local_hit = layer_gt.affine_inverse().xform(hit_pos);
+			const Vector2i center_cell = painter->get_cell_for_local_position(local_hit);
 			const float spacing_sq = spacing * spacing;
 			bool too_close = false;
-			for (int i = 0; i < existing; i++) {
-				const Vector3 p = layer_gt.xform(mm->get_instance_transform(i).origin);
-				if (p.distance_squared_to(hit_pos) < spacing_sq) {
-					too_close = true;
-					break;
+			// Only the 3x3 neighborhood of cells can possibly contain an
+			// instance within `spacing` as long as spacing <= cell_size, which
+			// covers the normal case (brush radii are usually well under it).
+			for (int dz = -1; dz <= 1 && !too_close; dz++) {
+				for (int dx = -1; dx <= 1 && !too_close; dx++) {
+					const Vector2i neighbor = center_cell + Vector2i(dx, dz);
+					const int count = painter->get_cell_instance_count(layer_idx, neighbor);
+					for (int i = 0; i < count; i++) {
+						const Vector3 p = layer_gt.xform(painter->get_cell_instance_transform(layer_idx, neighbor, i).origin);
+						if (p.distance_squared_to(hit_pos) < spacing_sq) {
+							too_close = true;
+							break;
+						}
+					}
 				}
 			}
 			if (too_close) {
@@ -443,18 +455,15 @@ void FoliagePainter3DEditorPlugin::_stamp_erase(const Vector3 &p_position) {
 	const float radius_sq = brush_radius * brush_radius;
 
 	for (int layer_idx : active) {
-		Ref<FoliageLayer> layer = painter->get_layer(layer_idx);
-		if (layer.is_null()) {
-			continue;
-		}
-		Ref<MultiMesh> mm = layer->get_multimesh();
-		// Walk backwards so ordered (shift-down) removal never invalidates the
-		// index of an instance we haven't visited yet in this same pass.
-		for (int i = mm->get_instance_count() - 1; i >= 0; i--) {
-			const Transform3D t = mm->get_instance_transform(i);
-			const Vector3 p = layer_gt.xform(t.origin);
-			if (p.distance_squared_to(p_position) < radius_sq) {
-				_do_remove(layer_idx, i, t);
+		for (const Vector2i &cell : painter->get_layer_cell_coords(layer_idx)) {
+			// Walk backwards so ordered (shift-down) removal never invalidates
+			// the index of an instance we haven't visited yet in this same pass.
+			for (int i = painter->get_cell_instance_count(layer_idx, cell) - 1; i >= 0; i--) {
+				const Transform3D t = painter->get_cell_instance_transform(layer_idx, cell, i);
+				const Vector3 p = layer_gt.xform(t.origin);
+				if (p.distance_squared_to(p_position) < radius_sq) {
+					_do_remove(layer_idx, cell, i, t);
+				}
 			}
 		}
 	}
@@ -473,12 +482,13 @@ void FoliagePainter3DEditorPlugin::_place_single(const Vector3 &p_position, cons
 	}
 
 	const Transform3D instance_xf = _make_instance_transform(layer, p_position, p_normal);
-	const int index = painter->add_instance(layer_idx, instance_xf);
+	const Vector2i cell = painter->get_cell_for_local_position(instance_xf.origin);
+	const int index = painter->add_instance(layer_idx, cell, instance_xf);
 
 	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 	ur->create_action(TTR("Place Foliage Instance"));
-	ur->add_do_method(painter, "insert_instance", layer_idx, index, instance_xf);
-	ur->add_undo_method(painter, "remove_instance", layer_idx, index);
+	ur->add_do_method(painter, "insert_instance", layer_idx, cell, index, instance_xf);
+	ur->add_undo_method(painter, "remove_instance", layer_idx, cell, index);
 	ur->commit_action(false);
 }
 
@@ -491,24 +501,24 @@ void FoliagePainter3DEditorPlugin::_remove_single(const Vector3 &p_position) {
 	const Transform3D gt = painter->get_global_transform();
 
 	int best_layer = -1;
+	Vector2i best_cell;
 	int best_index = -1;
 	float best_dist_sq = brush_radius * brush_radius;
 	Transform3D best_transform;
 
 	for (int layer_idx : active) {
-		Ref<FoliageLayer> layer = painter->get_layer(layer_idx);
-		if (layer.is_null()) {
-			continue;
-		}
-		Ref<MultiMesh> mm = layer->get_multimesh();
-		for (int i = 0; i < mm->get_instance_count(); i++) {
-			const Transform3D t = mm->get_instance_transform(i);
-			const float d = gt.xform(t.origin).distance_squared_to(p_position);
-			if (d < best_dist_sq) {
-				best_dist_sq = d;
-				best_layer = layer_idx;
-				best_index = i;
-				best_transform = t;
+		for (const Vector2i &cell : painter->get_layer_cell_coords(layer_idx)) {
+			const int count = painter->get_cell_instance_count(layer_idx, cell);
+			for (int i = 0; i < count; i++) {
+				const Transform3D t = painter->get_cell_instance_transform(layer_idx, cell, i);
+				const float d = gt.xform(t.origin).distance_squared_to(p_position);
+				if (d < best_dist_sq) {
+					best_dist_sq = d;
+					best_layer = layer_idx;
+					best_cell = cell;
+					best_index = i;
+					best_transform = t;
+				}
 			}
 		}
 	}
@@ -517,12 +527,12 @@ void FoliagePainter3DEditorPlugin::_remove_single(const Vector3 &p_position) {
 		return;
 	}
 
-	painter->remove_instance(best_layer, best_index);
+	painter->remove_instance(best_layer, best_cell, best_index);
 
 	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 	ur->create_action(TTR("Remove Foliage Instance"));
-	ur->add_do_method(painter, "remove_instance", best_layer, best_index);
-	ur->add_undo_method(painter, "insert_instance", best_layer, best_index, best_transform);
+	ur->add_do_method(painter, "remove_instance", best_layer, best_cell, best_index);
+	ur->add_undo_method(painter, "insert_instance", best_layer, best_cell, best_index, best_transform);
 	ur->commit_action(false);
 }
 
@@ -540,17 +550,17 @@ void FoliagePainter3DEditorPlugin::_end_stroke() {
 		ur->create_action(mode == MODE_ERASE ? TTR("Erase Foliage") : TTR("Paint Foliage"));
 		for (const StrokeOp &op : stroke_ops) {
 			if (op.is_insert) {
-				ur->add_do_method(painter, "insert_instance", op.layer, op.index, op.transform);
+				ur->add_do_method(painter, "insert_instance", op.layer, op.cell, op.index, op.transform);
 			} else {
-				ur->add_do_method(painter, "remove_instance", op.layer, op.index);
+				ur->add_do_method(painter, "remove_instance", op.layer, op.cell, op.index);
 			}
 		}
 		for (int i = stroke_ops.size() - 1; i >= 0; i--) {
 			const StrokeOp &op = stroke_ops[i];
 			if (op.is_insert) {
-				ur->add_undo_method(painter, "remove_instance", op.layer, op.index);
+				ur->add_undo_method(painter, "remove_instance", op.layer, op.cell, op.index);
 			} else {
-				ur->add_undo_method(painter, "insert_instance", op.layer, op.index, op.transform);
+				ur->add_undo_method(painter, "insert_instance", op.layer, op.cell, op.index, op.transform);
 			}
 		}
 		ur->commit_action(false);
@@ -564,9 +574,9 @@ void FoliagePainter3DEditorPlugin::_cancel_stroke() {
 		for (int i = stroke_ops.size() - 1; i >= 0; i--) {
 			const StrokeOp &op = stroke_ops[i];
 			if (op.is_insert) {
-				painter->remove_instance(op.layer, op.index);
+				painter->remove_instance(op.layer, op.cell, op.index);
 			} else {
-				painter->insert_instance(op.layer, op.index, op.transform);
+				painter->insert_instance(op.layer, op.cell, op.index, op.transform);
 			}
 		}
 	}

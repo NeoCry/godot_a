@@ -43,8 +43,6 @@ void FoliageLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_material_override", "material"), &FoliageLayer::set_material_override);
 	ClassDB::bind_method(D_METHOD("get_material_override"), &FoliageLayer::get_material_override);
 
-	ClassDB::bind_method(D_METHOD("get_multimesh"), &FoliageLayer::get_multimesh);
-
 	ClassDB::bind_method(D_METHOD("set_min_scale", "scale"), &FoliageLayer::set_min_scale);
 	ClassDB::bind_method(D_METHOD("get_min_scale"), &FoliageLayer::get_min_scale);
 
@@ -84,8 +82,6 @@ void FoliageLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_visibility_range_fade_mode", "mode"), &FoliageLayer::set_visibility_range_fade_mode);
 	ClassDB::bind_method(D_METHOD("get_visibility_range_fade_mode"), &FoliageLayer::get_visibility_range_fade_mode);
 
-	ClassDB::bind_method(D_METHOD("get_instance_count"), &FoliageLayer::get_instance_count);
-
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "layer_name"), "set_layer_name", "get_layer_name");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"), "set_mesh", "get_mesh");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_override", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_material_override", "get_material_override");
@@ -123,7 +119,6 @@ String FoliageLayer::get_layer_name() const {
 
 void FoliageLayer::set_mesh(const Ref<Mesh> &p_mesh) {
 	mesh = p_mesh;
-	multimesh->set_mesh(mesh);
 	emit_changed();
 }
 
@@ -138,10 +133,6 @@ void FoliageLayer::set_material_override(const Ref<Material> &p_material) {
 
 Ref<Material> FoliageLayer::get_material_override() const {
 	return material_override;
-}
-
-Ref<MultiMesh> FoliageLayer::get_multimesh() const {
-	return multimesh;
 }
 
 void FoliageLayer::set_min_scale(float p_scale) {
@@ -254,12 +245,5 @@ GeometryInstance3D::VisibilityRangeFadeMode FoliageLayer::get_visibility_range_f
 	return visibility_range_fade_mode;
 }
 
-int FoliageLayer::get_instance_count() const {
-	return multimesh->get_instance_count();
-}
-
 FoliageLayer::FoliageLayer() {
-	multimesh.instantiate();
-	multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
-	multimesh->set_instance_count(0);
 }

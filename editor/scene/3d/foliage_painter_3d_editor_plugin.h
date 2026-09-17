@@ -59,6 +59,7 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 
 	struct StrokeOp {
 		int layer = 0;
+		Vector2i cell;
 		int index = 0;
 		Transform3D transform;
 		bool is_insert = true; // true: "do" inserts (undo removes). false: "do" removes (undo inserts).
@@ -124,7 +125,7 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 	void _cancel_stroke();
 
 	void _do_insert(int p_layer, const Transform3D &p_transform);
-	void _do_remove(int p_layer, int p_index, const Transform3D &p_transform);
+	void _do_remove(int p_layer, const Vector2i &p_cell, int p_index, const Transform3D &p_transform);
 
 	void _stamp_paint(const Vector3 &p_position, const Vector3 &p_normal);
 	void _stamp_erase(const Vector3 &p_position);
