@@ -269,14 +269,15 @@ void FoliagePainter3DEditorPlugin::_ensure_cursor_instance() {
 	d[RSE::ARRAY_VERTEX] = points;
 	RS::get_singleton()->mesh_add_surface_from_arrays(cursor_mesh, RSE::PRIMITIVE_LINES, d);
 
-	Ref<StandardMaterial3D> mat;
-	mat.instantiate();
-	mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
-	mat->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
-	mat->set_flag(StandardMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
-	mat->set_albedo(Color(1.0, 0.85, 0.2, 0.9));
-	mat->set_render_priority(Material::RENDER_PRIORITY_MAX);
-	RS::get_singleton()->mesh_surface_set_material(cursor_mesh, 0, mat->get_rid());
+	// Must be kept alive on the instance (see the member's comment), not just
+	// a local Ref, or its RID would be freed while the surface still used it.
+	cursor_material.instantiate();
+	cursor_material->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
+	cursor_material->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
+	cursor_material->set_flag(StandardMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
+	cursor_material->set_albedo(Color(1.0, 0.85, 0.2, 0.9));
+	cursor_material->set_render_priority(Material::RENDER_PRIORITY_MAX);
+	RS::get_singleton()->mesh_surface_set_material(cursor_mesh, 0, cursor_material->get_rid());
 }
 
 void FoliagePainter3DEditorPlugin::_update_cursor(const Vector3 &p_position, const Vector3 &p_normal, bool p_visible) {

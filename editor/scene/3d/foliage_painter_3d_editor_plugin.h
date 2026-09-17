@@ -42,6 +42,7 @@ class HBoxContainer;
 class MenuButton;
 class MeshInstance3D;
 class SpinBox;
+class StandardMaterial3D;
 
 // In-viewport brush tool for FoliagePainter3D: paints, erases, and single-place/
 // remove instances of one or more foliage layers directly onto the actual
@@ -87,6 +88,11 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 	// Brush cursor overlay (drawn directly through RenderingServer, like GridMap's cursor).
 	RID cursor_mesh;
 	RID cursor_instance;
+	// Kept alive for as long as the plugin exists: mesh_surface_set_material()
+	// only stores the material's RID, so if this Ref were local and dropped,
+	// the material (and its RID) would be freed while the mesh surface still
+	// referenced it, leaving cursor_mesh pointing at a dangling material RID.
+	Ref<StandardMaterial3D> cursor_material;
 
 	// Active stroke (mouse held down).
 	bool stroke_active = false;

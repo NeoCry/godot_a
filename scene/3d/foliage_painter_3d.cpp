@@ -147,6 +147,10 @@ void FoliagePainter3D::_prune_layers_to_size() {
 void FoliagePainter3D::_on_layer_changed(int p_index) {
 	if (p_index >= 0 && p_index < layers.size()) {
 		_sync_layer_cells(p_index);
+		// A layer's own properties (e.g. its mesh) changing can affect the
+		// warnings shown for this node (e.g. "Layer N has no Mesh assigned"),
+		// which would otherwise stay stale until something else refreshed them.
+		update_configuration_warnings();
 	}
 }
 
