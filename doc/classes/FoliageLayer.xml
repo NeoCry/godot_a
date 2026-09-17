@@ -5,24 +5,10 @@
 	</brief_description>
 	<description>
 		[FoliageLayer] describes one kind of vegetation that a [FoliagePainter3D]'s brush can paint: which [Mesh] to use, how much random scale/rotation/normal deviation to apply to each instance, how densely and how far apart the brush places them, and at what distance the layer should fade out (see the [member visibility_range_begin] group).
-		Each layer owns its own [MultiMesh] (see [method get_multimesh]), which is where the actual painted instance transforms are stored and saved with the scene. It is created automatically and should not be replaced or edited directly; use [FoliagePainter3D]'s brush tool, or its [method FoliagePainter3D.insert_instance] / [method FoliagePainter3D.remove_instance] / [method FoliagePainter3D.add_instance] methods, to add or remove instances.
+		This resource is pure configuration; it does not store any instance data itself. [FoliagePainter3D] paints and stores this layer's instances, spatially chunked into a grid of cells (see [member FoliagePainter3D.cell_size]) so that off-screen cells can be culled by the renderer independently. Use [FoliagePainter3D]'s brush tool, or its [method FoliagePainter3D.insert_instance] / [method FoliagePainter3D.remove_instance] / [method FoliagePainter3D.add_instance] methods, to add or remove instances.
 	</description>
 	<tutorials>
 	</tutorials>
-	<methods>
-		<method name="get_instance_count" qualifiers="const">
-			<return type="int" />
-			<description>
-				Returns the number of instances currently painted for this layer.
-			</description>
-		</method>
-		<method name="get_multimesh" qualifiers="const">
-			<return type="MultiMesh" />
-			<description>
-				Returns the [MultiMesh] that stores this layer's painted instance transforms. This is created automatically and should be treated as read-only.
-			</description>
-		</method>
-	</methods>
 	<members>
 		<member name="align_to_normal_amount" type="float" setter="set_align_to_normal_amount" getter="get_align_to_normal_amount" default="0.0">
 			Blends each instance's up axis between world up ([code]0.0[/code]) and the surface normal at the paint location ([code]1.0[/code]). Combined with [member random_tilt_degrees], this controls how much instances deviate from the surface normal.
@@ -33,8 +19,17 @@
 		<member name="density" type="float" setter="set_density" getter="get_density" default="4.0">
 			The approximate number of instances the brush attempts to place per paint stamp while this layer is active. Actual placement is also limited by [member min_instance_spacing] and by whether a valid surface is found under each sample point.
 		</member>
+		<member name="ignore_screen_space_shadows" type="bool" setter="set_ignore_screen_space_shadows" getter="is_ignoring_screen_space_shadows" default="false">
+			Equivalent to [member GeometryInstance3D.ignore_screen_space_shadows] for this layer's instances. Enable this to exclude dense, small foliage (e.g. grass) from screen-space contact shadows, which can otherwise be a relatively expensive effect to compute over thousands of small instances for little visual benefit.
+		</member>
+		<member name="instance_count" type="int" setter="" getter="get_instance_count" default="0">
+			The number of instances currently painted for this layer, summed across all of [FoliagePainter3D]'s cells. This is read-only and for informational display in the Inspector only; it is kept up to date automatically and is not saved with this resource.
+		</member>
 		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
 			A display name for this layer, shown in [FoliagePainter3D]'s brush layer list and used to name its internal [MultiMeshInstance3D].
+		</member>
+		<member name="lod_bias" type="float" setter="set_lod_bias" getter="get_lod_bias" default="1.0">
+			Equivalent to [member GeometryInstance3D.lod_bias] for this layer's instances: values above [code]1.0[/code] make the mesh's LODs switch to a lower level of detail sooner, values below [code]1.0[/code] delay switching.
 		</member>
 		<member name="material_override" type="Material" setter="set_material_override" getter="get_material_override">
 			If set, overrides the material used to render this layer's instances (equivalent to [member GeometryInstance3D.material_override] on the layer's internal [MultiMeshInstance3D]).

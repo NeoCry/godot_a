@@ -31,22 +31,20 @@
 #pragma once
 
 #include "scene/3d/visual_instance_3d.h"
-#include "scene/resources/multimesh.h"
 
 class Mesh;
 class Material;
 
 // A single paintable vegetation type inside a FoliagePainter3D: the mesh to
 // scatter, its randomization rules, and the visibility range it should fade
-// out at. Each layer owns its own MultiMesh, which is where the actual
-// painted instance transforms are stored (and saved with the scene).
+// out at. This is pure configuration; the painted instance transforms
+// themselves are stored (and spatially chunked into cells) by FoliagePainter3D.
 class FoliageLayer : public Resource {
 	GDCLASS(FoliageLayer, Resource);
 
 	String layer_name = "Layer";
 	Ref<Mesh> mesh;
 	Ref<Material> material_override;
-	Ref<MultiMesh> multimesh;
 
 	// Randomization.
 	float min_scale = 0.9;
@@ -60,6 +58,8 @@ class FoliageLayer : public Resource {
 	float min_instance_spacing = 0.5;
 
 	bool cast_shadows = true;
+	bool ignore_screen_space_shadows = false;
+	float lod_bias = 1.0;
 
 	// Visibility range (per vegetation type), mirrors GeometryInstance3D.
 	float visibility_range_begin = 0.0;
@@ -67,6 +67,11 @@ class FoliageLayer : public Resource {
 	float visibility_range_end = 0.0;
 	float visibility_range_end_margin = 0.0;
 	GeometryInstance3D::VisibilityRangeFadeMode visibility_range_fade_mode = GeometryInstance3D::VISIBILITY_RANGE_FADE_DISABLED;
+
+	// Informational only: kept in sync by FoliagePainter3D (which owns the
+	// actual per-cell instance data) purely so the Inspector can show it.
+	// Not the source of truth, and not saved with the resource.
+	int instance_count = 0;
 
 protected:
 	static void _bind_methods();
@@ -80,8 +85,6 @@ public:
 
 	void set_material_override(const Ref<Material> &p_material);
 	Ref<Material> get_material_override() const;
-
-	Ref<MultiMesh> get_multimesh() const;
 
 	void set_min_scale(float p_scale);
 	float get_min_scale() const;
@@ -107,6 +110,12 @@ public:
 	void set_cast_shadows(bool p_enable);
 	bool is_casting_shadows() const;
 
+	void set_ignore_screen_space_shadows(bool p_ignore);
+	bool is_ignoring_screen_space_shadows() const;
+
+	void set_lod_bias(float p_bias);
+	float get_lod_bias() const;
+
 	void set_visibility_range_begin(float p_dist);
 	float get_visibility_range_begin() const;
 
@@ -123,6 +132,9 @@ public:
 	GeometryInstance3D::VisibilityRangeFadeMode get_visibility_range_fade_mode() const;
 
 	int get_instance_count() const;
+	// Called only by FoliagePainter3D to keep the display-only instance_count
+	// property current; does not mark the resource changed/dirty.
+	void _set_display_instance_count(int p_count);
 
 	FoliageLayer();
 };
