@@ -89,7 +89,7 @@ struct VoxelGIData {
 	bool blend_ambient; // 4 - 96
 
 	uint mipmaps; // 4 - 100
-	bool anisotropic; // 4 - 104
+	float anisotropic_strength; // 4 - 104
 	float pad; // 4 - 108
 	float exposure_normalization; // 4 - 112
 };

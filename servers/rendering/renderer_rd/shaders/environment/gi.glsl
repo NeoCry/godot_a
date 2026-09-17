@@ -91,7 +91,7 @@ struct VoxelGIData {
 	bool blend_ambient; // 4 - 96
 
 	uint mipmaps; // 4 - 100
-	bool anisotropic; // 4 - 104
+	float anisotropic_strength; // 4 - 104
 	float pad; // 4 - 108
 	float exposure_normalization; // 4 - 112
 };
@@ -103,8 +103,8 @@ voxel_gi_instances;
 
 layout(set = 0, binding = 17) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
 
-// Anisotropic (directional) mipmap chains, sampled instead of `voxel_gi_textures` when
-// VoxelGIData.anisotropic is set, to reduce light leaking through thin geometry.
+// Anisotropic (directional) mipmap chains, blended with `voxel_gi_textures` according to
+// VoxelGIData.anisotropic_strength, to reduce light leaking through thin geometry.
 layout(set = 0, binding = 20) uniform texture3D voxel_gi_aniso_px_textures[MAX_VOXEL_GI_INSTANCES];
 layout(set = 0, binding = 21) uniform texture3D voxel_gi_aniso_nx_textures[MAX_VOXEL_GI_INSTANCES];
 layout(set = 0, binding = 22) uniform texture3D voxel_gi_aniso_py_textures[MAX_VOXEL_GI_INSTANCES];
@@ -520,8 +520,22 @@ vec4 sample_aniso_voxel(uint index, vec3 uvw_pos, vec3 direction, float lod) {
 	return result;
 }
 
+// Samples the isotropic mip chain, blending in the anisotropic one according to
+// p_aniso_strength (0 = isotropic only, matching the pre-anisotropic-mipmaps behavior
+// exactly; 1 = anisotropic only). Keeping this a plain linear blend at trace time (rather
+// than pre-blending when the mipmaps are baked) means the slider scales the visible
+// effect predictably and can be tweaked without re-baking.
+vec4 sample_voxel(texture3D probe, uint index, float p_aniso_strength, vec3 uvw_pos, vec3 direction, float lod) {
+	vec4 iso_color = textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod);
+	if (p_aniso_strength <= 0.0) {
+		return iso_color;
+	}
+	vec4 aniso_color = sample_aniso_voxel(index, uvw_pos, direction, lod);
+	return mix(iso_color, aniso_color, p_aniso_strength);
+}
+
 //standard voxel cone trace
-vec4 voxel_cone_trace(texture3D probe, uint index, bool p_anisotropic, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
+vec4 voxel_cone_trace(texture3D probe, uint index, float p_aniso_strength, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 
@@ -534,7 +548,7 @@ vec4 voxel_cone_trace(texture3D probe, uint index, bool p_anisotropic, vec3 cell
 			break;
 		}
 		float lod = log2(diameter);
-		vec4 scolor = p_anisotropic ? sample_aniso_voxel(index, uvw_pos, direction, lod) : textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod);
+		vec4 scolor = sample_voxel(probe, index, p_aniso_strength, uvw_pos, direction, lod);
 		float a = (1.0 - color.a);
 		color += a * scolor;
 		dist += half_diameter;
@@ -543,7 +557,7 @@ vec4 voxel_cone_trace(texture3D probe, uint index, bool p_anisotropic, vec3 cell
 	return color;
 }
 
-vec4 voxel_cone_trace_45_degrees(texture3D probe, uint index, bool p_anisotropic, vec3 cell_size, vec3 pos, vec3 direction, float max_distance, float p_bias) {
+vec4 voxel_cone_trace_45_degrees(texture3D probe, uint index, float p_aniso_strength, vec3 cell_size, vec3 pos, vec3 direction, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 	float radius = max(0.5, dist);
@@ -556,7 +570,7 @@ vec4 voxel_cone_trace_45_degrees(texture3D probe, uint index, bool p_anisotropic
 		if (any(greaterThan(abs(uvw_pos - 0.5), vec3(0.5f + radius * cell_size)))) {
 			break;
 		}
-		vec4 scolor = p_anisotropic ? sample_aniso_voxel(index, uvw_pos, direction, lod_level) : textureLod(sampler3D(probe, linear_sampler_with_mipmaps), uvw_pos, lod_level);
+		vec4 scolor = sample_voxel(probe, index, p_aniso_strength, uvw_pos, direction, lod_level);
 		lod_level += 1.0;
 
 		float a = (1.0 - color.a);
@@ -589,7 +603,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	float max_distance = length(voxel_gi_instances.data[index].bounds);
 	vec3 cell_size = 1.0 / voxel_gi_instances.data[index].bounds;
 
-	bool aniso = voxel_gi_instances.data[index].anisotropic;
+	float aniso_strength = voxel_gi_instances.data[index].anisotropic_strength;
 
 	//irradiance
 
@@ -610,7 +624,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 
 		for (uint i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], index, aniso, cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], index, aniso_strength, cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	} else {
 		const uint cone_dir_count = 4;
@@ -623,7 +637,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 		float cone_weights[cone_dir_count] = float[](0.25, 0.25, 0.25, 0.25);
 		for (int i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace_45_degrees(voxel_gi_textures[index], index, aniso, cell_size, position, dir, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace_45_degrees(voxel_gi_textures[index], index, aniso_strength, cell_size, position, dir, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	}
 
@@ -635,7 +649,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_diff += light * blend;
 
 	//radiance
-	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], index, aniso, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].reflection_bias);
+	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], index, aniso_strength, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].reflection_bias);
 	irr_light.rgb *= voxel_gi_instances.data[index].dynamic_range * voxel_gi_instances.data[index].exposure_normalization;
 	if (!voxel_gi_instances.data[index].blend_ambient) {
 		irr_light.a = 1.0;

@@ -3139,7 +3139,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 			push_constant.propagation = gi->voxel_gi_get_propagation(probe);
 			push_constant.dynamic_range = gi->voxel_gi_get_dynamic_range(probe);
 			push_constant.light_count = light_count;
-			push_constant.aniso_strength = gi->voxel_gi_get_anisotropic_strength(probe);
+			push_constant.aniso_strength = 0; // Unused: anisotropic_strength is applied at cone-trace time instead (see gi.glsl).
 			push_constant.cell_size = cell_size;
 
 			/*		print_line("probe update to version " + itos(last_probe_version));
@@ -3965,7 +3965,7 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 				gipd.normal_bias = voxel_gi_get_normal_bias(base_probe);
 				gipd.blend_ambient = !voxel_gi_is_interior(base_probe);
 				gipd.mipmaps = gipi->mipmaps.size();
-				gipd.anisotropic = voxel_gi_get_anisotropic_strength(base_probe) > 0.0;
+				gipd.anisotropic_strength = voxel_gi_get_anisotropic_strength(base_probe);
 				gipd.exposure_normalization = 1.0;
 				if (p_render_data->camera_attributes.is_valid()) {
 					float exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);
