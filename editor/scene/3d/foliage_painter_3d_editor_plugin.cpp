@@ -30,6 +30,7 @@
 
 #include "foliage_painter_3d_editor_plugin.h"
 
+#include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -44,6 +45,7 @@
 #include "scene/gui/spin_box.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/scene_string_names.h"
 #include "servers/rendering/rendering_server.h"
 
 void FoliagePainter3DEditorPlugin::_bind_methods() {
