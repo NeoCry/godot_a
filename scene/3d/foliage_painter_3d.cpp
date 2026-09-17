@@ -115,6 +115,8 @@ void FoliagePainter3D::_sync_cell_node(int p_layer, FoliageCell &p_cell) {
 	p_cell.node->set_multimesh(p_cell.multimesh);
 	p_cell.node->set_material_override(layer->get_material_override());
 	p_cell.node->set_cast_shadows_setting(layer->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+	p_cell.node->set_ignore_screen_space_shadows(layer->is_ignoring_screen_space_shadows());
+	p_cell.node->set_lod_bias(layer->get_lod_bias());
 	p_cell.node->set_visibility_range_begin(layer->get_visibility_range_begin());
 	p_cell.node->set_visibility_range_begin_margin(layer->get_visibility_range_begin_margin());
 	p_cell.node->set_visibility_range_end(layer->get_visibility_range_end());
@@ -154,6 +156,26 @@ void FoliagePainter3D::_on_layer_changed(int p_index) {
 	}
 }
 
+void FoliagePainter3D::_refresh_layer_instance_count(int p_layer) {
+	if (p_layer < 0 || p_layer >= layers.size()) {
+		return;
+	}
+	Ref<FoliageLayer> layer = layers[p_layer];
+	if (layer.is_null()) {
+		return;
+	}
+
+	int total = 0;
+	if (p_layer < (int)layer_cells.size()) {
+		for (const KeyValue<Vector2i, FoliageCell> &kv : layer_cells[p_layer]) {
+			if (kv.value.multimesh.is_valid()) {
+				total += kv.value.multimesh->get_instance_count();
+			}
+		}
+	}
+	layer->_set_display_instance_count(total);
+}
+
 void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
 	// Every non-null entry in `layers` is always connected to _on_layer_changed
 	// bound with its own index, so it can be resynced whenever the layer's
@@ -178,6 +200,7 @@ void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
 	_prune_layers_to_size();
 	for (int i = 0; i < layers.size(); i++) {
 		_sync_layer_cells(i);
+		_refresh_layer_instance_count(i);
 	}
 	update_configuration_warnings();
 }
@@ -225,6 +248,8 @@ void FoliagePainter3D::insert_instance(int p_layer, const Vector2i &p_cell, int 
 	for (uint32_t i = 0; i < transforms.size(); i++) {
 		mm->set_instance_transform(i, transforms[i]);
 	}
+
+	_refresh_layer_instance_count(p_layer);
 }
 
 void FoliagePainter3D::remove_instance(int p_layer, const Vector2i &p_cell, int p_index) {
@@ -261,6 +286,8 @@ void FoliagePainter3D::remove_instance(int p_layer, const Vector2i &p_cell, int 
 		}
 		layer_cells[p_layer].erase(p_cell);
 	}
+
+	_refresh_layer_instance_count(p_layer);
 }
 
 int FoliagePainter3D::add_instance(int p_layer, const Vector2i &p_cell, const Transform3D &p_transform) {
@@ -361,6 +388,10 @@ void FoliagePainter3D::_set_cell_data(const Array &p_data) {
 		cell.multimesh = mm;
 		layer_cells[layer_idx][cell_coord] = cell;
 		_sync_cell_node(layer_idx, layer_cells[layer_idx][cell_coord]);
+	}
+
+	for (int i = 0; i < layers.size(); i++) {
+		_refresh_layer_instance_count(i);
 	}
 }
 

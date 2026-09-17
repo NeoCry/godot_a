@@ -115,7 +115,8 @@ void FoliagePainter3DEditorPlugin::_rebuild_layers_menu() {
 		layer_active.write[i] = (i < old_active.size()) ? old_active[i] : true;
 		Ref<FoliageLayer> layer = painter->get_layer(i);
 		const String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
-		popup->add_check_item(name, i);
+		const int instance_count = layer.is_valid() ? layer->get_instance_count() : 0;
+		popup->add_check_item(vformat("%s (%d)", name, instance_count), i);
 		popup->set_item_checked(popup->get_item_count() - 1, layer_active[i]);
 	}
 }

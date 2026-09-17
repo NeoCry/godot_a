@@ -67,6 +67,14 @@ void FoliageLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_cast_shadows", "enable"), &FoliageLayer::set_cast_shadows);
 	ClassDB::bind_method(D_METHOD("is_casting_shadows"), &FoliageLayer::is_casting_shadows);
 
+	ClassDB::bind_method(D_METHOD("set_ignore_screen_space_shadows", "ignore"), &FoliageLayer::set_ignore_screen_space_shadows);
+	ClassDB::bind_method(D_METHOD("is_ignoring_screen_space_shadows"), &FoliageLayer::is_ignoring_screen_space_shadows);
+
+	ClassDB::bind_method(D_METHOD("set_lod_bias", "bias"), &FoliageLayer::set_lod_bias);
+	ClassDB::bind_method(D_METHOD("get_lod_bias"), &FoliageLayer::get_lod_bias);
+
+	ClassDB::bind_method(D_METHOD("get_instance_count"), &FoliageLayer::get_instance_count);
+
 	ClassDB::bind_method(D_METHOD("set_visibility_range_begin", "distance"), &FoliageLayer::set_visibility_range_begin);
 	ClassDB::bind_method(D_METHOD("get_visibility_range_begin"), &FoliageLayer::get_visibility_range_begin);
 
@@ -85,6 +93,7 @@ void FoliageLayer::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "layer_name"), "set_layer_name", "get_layer_name");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"), "set_mesh", "get_mesh");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_override", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_material_override", "get_material_override");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "instance_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_instance_count");
 
 	ADD_GROUP("Randomization", "");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "min_scale", PROPERTY_HINT_RANGE, "0.01,10.0,0.001,or_greater"), "set_min_scale", "get_min_scale");
@@ -99,6 +108,8 @@ void FoliageLayer::_bind_methods() {
 
 	ADD_GROUP("Rendering", "");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cast_shadows"), "set_cast_shadows", "is_casting_shadows");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ignore_screen_space_shadows"), "set_ignore_screen_space_shadows", "is_ignoring_screen_space_shadows");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_bias", PROPERTY_HINT_RANGE, "0.001,128,0.001"), "set_lod_bias", "get_lod_bias");
 
 	ADD_GROUP("Visibility Range", "visibility_range_");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_begin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_begin", "get_visibility_range_begin");
@@ -200,6 +211,24 @@ bool FoliageLayer::is_casting_shadows() const {
 	return cast_shadows;
 }
 
+void FoliageLayer::set_ignore_screen_space_shadows(bool p_ignore) {
+	ignore_screen_space_shadows = p_ignore;
+	emit_changed();
+}
+
+bool FoliageLayer::is_ignoring_screen_space_shadows() const {
+	return ignore_screen_space_shadows;
+}
+
+void FoliageLayer::set_lod_bias(float p_bias) {
+	lod_bias = MAX(p_bias, 0.001f);
+	emit_changed();
+}
+
+float FoliageLayer::get_lod_bias() const {
+	return lod_bias;
+}
+
 void FoliageLayer::set_visibility_range_begin(float p_dist) {
 	visibility_range_begin = MAX(p_dist, 0.0f);
 	emit_changed();
@@ -243,6 +272,20 @@ void FoliageLayer::set_visibility_range_fade_mode(GeometryInstance3D::Visibility
 
 GeometryInstance3D::VisibilityRangeFadeMode FoliageLayer::get_visibility_range_fade_mode() const {
 	return visibility_range_fade_mode;
+}
+
+int FoliageLayer::get_instance_count() const {
+	return instance_count;
+}
+
+void FoliageLayer::_set_display_instance_count(int p_count) {
+	if (instance_count == p_count) {
+		return;
+	}
+	instance_count = p_count;
+	// Refreshes an open Inspector without marking the resource changed/dirty
+	// (this is derived data owned by FoliagePainter3D, not saved here).
+	notify_property_list_changed();
 }
 
 FoliageLayer::FoliageLayer() {

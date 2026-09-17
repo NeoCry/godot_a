@@ -66,6 +66,7 @@ class FoliagePainter3D : public Node3D {
 	void _sync_layer_cells(int p_layer);
 	void _prune_layers_to_size();
 	void _on_layer_changed(int p_index);
+	void _refresh_layer_instance_count(int p_layer);
 
 	// Internal, storage-only representation of layer_cells' MultiMesh
 	// resources, so painted instances are actually saved with the scene
