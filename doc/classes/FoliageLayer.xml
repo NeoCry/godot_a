@@ -19,6 +19,9 @@
 		<member name="density" type="float" setter="set_density" getter="get_density" default="4.0">
 			The approximate number of instances the brush attempts to place per paint stamp while this layer is active. Actual placement is also limited by [member min_instance_spacing] and by whether a valid surface is found under each sample point.
 		</member>
+		<member name="gi_mode" type="int" setter="set_gi_mode" getter="get_gi_mode" enum="GeometryInstance3D.GIMode" default="0">
+			Equivalent to [member GeometryInstance3D.gi_mode] for this layer's instances. Defaults to [constant GeometryInstance3D.GI_MODE_DISABLED]: grass and other small scattered foliage rarely benefit visually from baked or dynamic global illumination, and skipping it avoids [LightmapGI] trying to lightmap every scattered instance and avoids the per-instance cost of looking up nearby GI probes. Set to [constant GeometryInstance3D.GI_MODE_STATIC] or [constant GeometryInstance3D.GI_MODE_DYNAMIC] per layer (e.g. for larger foliage like bushes or trees) where the difference is worth it.
+		</member>
 		<member name="ignore_screen_space_shadows" type="bool" setter="set_ignore_screen_space_shadows" getter="is_ignoring_screen_space_shadows" default="false">
 			Equivalent to [member GeometryInstance3D.ignore_screen_space_shadows] for this layer's instances. Enable this to exclude dense, small foliage (e.g. grass) from screen-space contact shadows, which can otherwise be a relatively expensive effect to compute over thousands of small instances for little visual benefit.
 		</member>

@@ -60,6 +60,8 @@ class FoliageLayer : public Resource {
 	bool cast_shadows = true;
 	bool ignore_screen_space_shadows = false;
 	float lod_bias = 1.0;
+	// See FoliageSpawner3D's cell_gi_mode field for why this defaults to disabled.
+	GeometryInstance3D::GIMode gi_mode = GeometryInstance3D::GI_MODE_DISABLED;
 
 	// Visibility range (per vegetation type), mirrors GeometryInstance3D.
 	float visibility_range_begin = 0.0;
@@ -115,6 +117,9 @@ public:
 
 	void set_lod_bias(float p_bias);
 	float get_lod_bias() const;
+
+	void set_gi_mode(GeometryInstance3D::GIMode p_mode);
+	GeometryInstance3D::GIMode get_gi_mode() const;
 
 	void set_visibility_range_begin(float p_dist);
 	float get_visibility_range_begin() const;
