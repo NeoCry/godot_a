@@ -1833,10 +1833,11 @@ struct SSCSDispatch {
 //
 // NOTE: an earlier attempt to use this unconditionally (instead of the single bounding dispatch)
 // produced screen-space shadows that only covered part of the screen and varied with camera
-// orientation relative to the light, even though this function's math checks out against Bend's
-// reference both symbolically and numerically. The bug wasn't found by code review alone; it's
-// kept here behind debug_wave_index (which also colors the output by wavefront index, see the
-// caller) so it can be inspected visually instead of guessed at blindly.
+// orientation relative to the light. The `biased_bounds` above (and thus each dispatch's bounds
+// and group_count) turned out correct either way, but each dispatch's Y wave_offset was still
+// anchored using Bend's Y-flipped convention; see the direction fix applied to wave_offset.y
+// right before it's scaled by p_wave_size below. Left behind debug_wave_index (which also colors
+// the output by wavefront index, see the caller) until it's been visually confirmed fixed.
 static uint32_t _sscs_build_dispatch_list(const Vector2i &p_light_xy, const Size2i &p_screen_size, int p_wave_size, SSCSDispatch r_dispatches[8]) {
 	uint32_t dispatch_count = 0;
 
@@ -1929,6 +1930,20 @@ static uint32_t _sscs_build_dispatch_list(const Vector2i &p_light_xy, const Size
 				r_dispatches[disp_index] = r_dispatches[--dispatch_count];
 			}
 		}
+	}
+
+	// Bend's light Y coordinate (see the caller) is computed with the opposite vertical
+	// convention from Godot's (Bend flips it: `ndc_y * -0.5 + 0.5`, Godot doesn't). The
+	// quadrant bounds above are unaffected by this (biased_bounds[1]/[3] work out the same
+	// either way), but the *direction* baked into each dispatch's Y wave_offset is still
+	// Bend's: it walks group_offset.y away from the light in the opposite screen-space
+	// direction from what Godot's (non-flipped) organise_groups() expects, so on-screen
+	// coverage ends up mirrored across the light's Y position instead of surrounding it.
+	// Re-anchor each dispatch's Y offset so group_offset.y (which the shader always walks
+	// upward from 0) sweeps the same set of rows in the opposite, Godot-correct direction:
+	// this is the root cause of the previously observed partial/direction-dependent coverage.
+	for (uint32_t i = 0; i < dispatch_count; i++) {
+		r_dispatches[i].wave_offset.y = -(r_dispatches[i].group_count.y - 1) - r_dispatches[i].wave_offset.y;
 	}
 
 	// Scale the offsets by the wave count, the shader expects this
