@@ -441,6 +441,10 @@ void AmbientProbeVolume3D::clear_ao() {
 	baked_ao.clear();
 	last_bake_occluder_face_count = -1;
 	last_bake_min_occluder_distance = -1.0f;
+	// Also the only way to force set_ao_overlay_enabled() to re-detect an instance's real
+	// material, since it otherwise trusts this cache over material_override once populated -
+	// see ao_source_materials's own comment for why.
+	ao_source_materials.clear();
 	update_gizmos();
 	update_configuration_warnings();
 }
@@ -674,30 +678,39 @@ void AmbientProbeVolume3D::_apply_ao_overlay_recursive(Node *p_node, bool p_enab
 	}
 }
 
-Ref<Material> AmbientProbeVolume3D::_get_effective_base_material(GeometryInstance3D *p_gi) const {
+Ref<Material> AmbientProbeVolume3D::_get_effective_base_material(GeometryInstance3D *p_gi) {
+	const ObjectID id = p_gi->get_instance_id();
+	HashMap<ObjectID, Ref<Material>>::Iterator cached = ao_source_materials.find(id);
+	if (cached) {
+		// Must not re-derive from the instance's current state below: material_override may
+		// by now hold OUR OWN previously generated material (see ao_source_materials's own
+		// comment), which would make this circular. The cached value is what we detected
+		// before we ever touched it.
+		return cached->value;
+	}
+
 	// Both MeshInstance3D and MultiMeshInstance3D are handled explicitly, since grass/foliage
 	// (the main reason this matters) is generated as a MultiMeshInstance3D by FoliageSpawner3D
-	// and FoliagePainter3D, not a MeshInstance3D.
+	// and FoliagePainter3D, not a MeshInstance3D. FoliagePainter3D in particular assigns its
+	// material via GeometryInstance3D.material_override directly (not a mesh surface
+	// material), so that still needs to be checked first here, on this first-ever detection.
 	Ref<Material> base_material = p_gi->get_material_override();
-	if (base_material.is_valid()) {
-		return base_material;
+	if (base_material.is_null()) {
+		MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
+		MultiMeshInstance3D *mmi = Object::cast_to<MultiMeshInstance3D>(p_gi);
+		if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
+			base_material = mi->get_active_material(0);
+		} else if (mmi != nullptr && mmi->get_multimesh().is_valid() && mmi->get_multimesh()->get_mesh().is_valid() && mmi->get_multimesh()->get_mesh()->get_surface_count() > 0) {
+			// MultiMeshInstance3D (what FoliageSpawner3D generates for grass/foliage cards)
+			// has no get_active_material()-style helper of its own; its multimesh's mesh
+			// surface material is the equivalent of "the material this instance renders
+			// with" when GeometryInstance3D.material_override isn't set.
+			base_material = mmi->get_multimesh()->get_mesh()->surface_get_material(0);
+		}
 	}
 
-	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
-	if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
-		return mi->get_active_material(0);
-	}
-
-	MultiMeshInstance3D *mmi = Object::cast_to<MultiMeshInstance3D>(p_gi);
-	if (mmi != nullptr && mmi->get_multimesh().is_valid() && mmi->get_multimesh()->get_mesh().is_valid() && mmi->get_multimesh()->get_mesh()->get_surface_count() > 0) {
-		// MultiMeshInstance3D (what FoliageSpawner3D/FoliagePainter3D actually generate for
-		// grass/foliage cards) has no get_active_material()-style helper of its own; its
-		// multimesh's mesh surface material is the equivalent of "the material this instance
-		// renders with" when GeometryInstance3D.material_override isn't set.
-		return mmi->get_multimesh()->get_mesh()->surface_get_material(0);
-	}
-
-	return Ref<Material>();
+	ao_source_materials.insert(id, base_material);
+	return base_material;
 }
 
 void AmbientProbeVolume3D::_apply_ao_to_instance(GeometryInstance3D *p_gi, int &r_single_pass_count, int &r_overlay_count) {

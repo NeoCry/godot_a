@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/templates/hash_map.h"
 #include "scene/3d/node_3d.h"
 
 class GeometryInstance3D;
@@ -66,6 +67,17 @@ class AmbientProbeVolume3D : public Node3D {
 	Ref<ShaderMaterial> single_pass_material;
 	Ref<ImageTexture3D> ao_volume_texture;
 
+	// Caches, per-instance (keyed by its GeometryInstance3D's ObjectID), the "real" material
+	// _get_effective_base_material() found for it the first time - before set_ao_overlay_enabled()
+	// overwrote material_override with a generated one. This is necessary, not just an
+	// optimization: our own generated material lives in that very same property, so on any
+	// later refresh (a re-bake, a live ao_overlay_strength change, or simply toggling this
+	// back on) material_override reflects our own past output, not the instance's actual
+	// material - reading it again would be circular and silently fall back to the overlay
+	// technique for every instance after the first refresh. Cleared by clear_ao(), which is
+	// the way to force re-detection if an instance's real material changes afterwards.
+	HashMap<ObjectID, Ref<Material>> ao_source_materials;
+
 	PackedFloat32Array baked_ao;
 
 	// Diagnostics from the last bake_ao()/apply_to_instances() call, not persisted;
@@ -88,7 +100,7 @@ class AmbientProbeVolume3D : public Node3D {
 	void _apply_to_instances(Node *p_node, int &r_count);
 	void _set_material_override_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
 	void _apply_ao_overlay_recursive(Node *p_node, bool p_enabled, int &r_count, int &r_single_pass_count, int &r_overlay_count);
-	Ref<Material> _get_effective_base_material(GeometryInstance3D *p_gi) const;
+	Ref<Material> _get_effective_base_material(GeometryInstance3D *p_gi);
 	void _apply_ao_to_instance(GeometryInstance3D *p_gi, int &r_single_pass_count, int &r_overlay_count);
 	Node *_resolve_apply_root() const;
 	void _rebuild_ao_volume_texture();
