@@ -3595,6 +3595,14 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		RSG::light_storage->set_directional_shadow_count(lights_with_shadow.size());
 
+		int lights_with_cached_shadow = 0;
+		for (int i = 0; i < lights_with_shadow.size(); i++) {
+			if (RSG::light_storage->light_directional_get_shadow_cache_enabled(lights_with_shadow[i]->base)) {
+				lights_with_cached_shadow++;
+			}
+		}
+		RSG::light_storage->set_directional_shadow_cache_count(lights_with_cached_shadow);
+
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
 			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect);
 		}
