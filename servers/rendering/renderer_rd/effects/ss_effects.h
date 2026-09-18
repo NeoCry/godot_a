@@ -173,9 +173,8 @@ public:
 		RSE::ScreenSpaceContactShadowsLength quality = RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM;
 		float surface_thickness = 0.01f;
 		// Debug-only: colors the output by compute wavefront index instead of computing real
-		// shadows, and switches to the multi-dispatch (BuildDispatchList-style) coverage instead
-		// of a single bounding dispatch, so the wavefront layout of that path can be inspected.
-		// See rendering/lights_and_shadows/contact_shadow/debug_wave_index.
+		// shadows, so the wavefront layout of the multi-dispatch (BuildDispatchList-style)
+		// coverage can be inspected. See rendering/lights_and_shadows/contact_shadow/debug_wave_index.
 		bool debug_wave_index = false;
 	};
 

@@ -1816,12 +1816,11 @@ struct SSCSDispatch {
 	Vector2i wave_offset; // Already scaled by wave_size; matches ScreenSpaceContactShadowsPushConstant::light_offset.
 };
 
-// DEBUG ONLY: only used when SSCSSettings::debug_wave_index is true (see
-// rendering/lights_and_shadows/contact_shadow/debug_wave_index). Splits the screen into up to 8
-// quadrant-aligned dispatches around the light, instead of one dispatch covering a single
-// bounding rect around the whole screen. Each dispatch is a rectangle of wave_size x wave_size
-// tiles with one corner at the light's pixel position; non-square quadrants are split in two
-// along their longer axis to keep every wavefront's diagonal ray aligned with the light.
+// Splits the screen into up to 8 quadrant-aligned dispatches around the light, instead of one
+// dispatch covering a single bounding rect around the whole screen (which wastes threads on the
+// 3 quadrants the light isn't near). Each dispatch is a rectangle of wave_size x wave_size tiles
+// with one corner at the light's pixel position; non-square quadrants are split in two along
+// their longer axis to keep every wavefront's diagonal ray aligned with the light.
 //
 // This is a line-for-line port of the CPU dispatch-list half of Bend Studio's BuildDispatchList()
 // (bend_sss_cpu.h, Apache License 2.0): https://www.bendstudio.com/blog/inside-bend-screen-space-shadows/
@@ -1829,15 +1828,10 @@ struct SSCSDispatch {
 // screen; since this shader's light coordinate isn't Y-flipped (see the caller) and always covers
 // the whole internal render size, `biased_bounds` below is the algebraically equivalent
 // (Y-flip-free) form of Bend's formula for that specific (full-screen, non-flipped) case — the
-// rest of the quadrant/split logic is unchanged.
-//
-// NOTE: an earlier attempt to use this unconditionally (instead of the single bounding dispatch)
-// produced screen-space shadows that only covered part of the screen and varied with camera
-// orientation relative to the light. The `biased_bounds` above (and thus each dispatch's bounds
-// and group_count) turned out correct either way, but each dispatch's Y wave_offset was still
-// anchored using Bend's Y-flipped convention; see the direction fix applied to wave_offset.y
-// right before it's scaled by p_wave_size below. Left behind debug_wave_index (which also colors
-// the output by wavefront index, see the caller) until it's been visually confirmed fixed.
+// rest of the quadrant/split logic is unchanged. `biased_bounds` (and thus each dispatch's bounds
+// and group_count) works out the same either way, but each dispatch's Y wave_offset is still
+// anchored using Bend's Y-flipped convention, so it needs re-anchoring to Godot's convention;
+// see the fix applied to wave_offset.y right before it's scaled by p_wave_size below.
 static uint32_t _sscs_build_dispatch_list(const Vector2i &p_light_xy, const Size2i &p_screen_size, int p_wave_size, SSCSDispatch r_dispatches[8]) {
 	uint32_t dispatch_count = 0;
 
@@ -2012,35 +2006,22 @@ void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_
 			push_constant.light_coordinates[2] = light.z;
 			push_constant.light_coordinates[3] = light.w;
 
-			if (p_settings.debug_wave_index) {
-				// DEBUG ONLY: cover the screen with up to 8 quadrant-aligned dispatches around the
-				// light instead of a single bounding dispatch, so the wavefront layout of that
-				// (currently broken) path can be visualized. See _sscs_build_dispatch_list().
-				Vector2i light_xy = Vector2i(int(light.x + 0.5f), int(light.y + 0.5f));
-				SSCSDispatch dispatches[8];
-				uint32_t dispatch_count = _sscs_build_dispatch_list(light_xy, p_sscs_buffers.size, wave_size, dispatches);
+			// Cover the screen with up to 8 quadrant-aligned dispatches around the light instead
+			// of one dispatch bounding the whole screen; see _sscs_build_dispatch_list(). For an
+			// on-screen light this dispatches roughly a quarter as many threads as a single
+			// bounding dispatch covering all 4 quadrants around the light would. debug_wave_index
+			// only toggles the shader's visualization of this dispatch layout (see the push
+			// constant above); it doesn't change which dispatch path is used.
+			Vector2i light_xy = Vector2i(int(light.x + 0.5f), int(light.y + 0.5f));
+			SSCSDispatch dispatches[8];
+			uint32_t dispatch_count = _sscs_build_dispatch_list(light_xy, p_sscs_buffers.size, wave_size, dispatches);
 
-				for (uint32_t i = 0; i < dispatch_count; i++) {
-					push_constant.light_offset[0] = dispatches[i].wave_offset.x;
-					push_constant.light_offset[1] = dispatches[i].wave_offset.y;
-
-					RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
-					RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, dispatches[i].group_count.x, dispatches[i].group_count.y);
-				}
-			} else {
-				Vector2i bound_start = Vector2i(
-						Math::floor(-light.x / wave_size) - 1,
-						Math::floor(-light.y / wave_size) - 1);
-				Vector2i bound_end = Vector2i(
-						Math::ceil((p_sscs_buffers.size.width - light.x) / wave_size) + 2,
-						Math::ceil((p_sscs_buffers.size.height - light.y) / wave_size) + 2);
-				Size2i bound_size = bound_end - bound_start;
-
-				push_constant.light_offset[0] = bound_start.x * wave_size;
-				push_constant.light_offset[1] = bound_start.y * wave_size;
+			for (uint32_t i = 0; i < dispatch_count; i++) {
+				push_constant.light_offset[0] = dispatches[i].wave_offset.x;
+				push_constant.light_offset[1] = dispatches[i].wave_offset.y;
 
 				RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
-				RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, bound_size.x, bound_size.y);
+				RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, dispatches[i].group_count.x, dispatches[i].group_count.y);
 			}
 		} else {
 			// Light rays are (or nearly) parallel lines in screen space. This is a special case and requires special handling in the SSCS shader as well.
