@@ -494,6 +494,12 @@ layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2DArray sscs_buffer;
 #endif // USE_MULTIVIEW
 
+// Cached far cascade atlas (see DirectionalLightData's shadow_cache_* fields in light_data_inc.glsl).
+// Independent texture/binding from directional_shadow_atlas (binding 6) so cached cascades never
+// share a clear with the live ones. Declared only in this (non-MODE_RENDER_SDF) branch, like the
+// other bindings above it in this branch: the SDF voxelization pass's uniform set doesn't supply it.
+layout(set = 1, binding = 39) uniform texture2D directional_shadow_cache_atlas;
+
 #endif
 
 vec4 normal_roughness_compatibility(vec4 p_normal_roughness) {
@@ -524,12 +530,6 @@ layout(set = 1, binding = 38, std430) buffer restrict MaterialFeedbackBuffer {
 }
 material_feedback;
 #endif
-
-// Cached far cascade atlas (see DirectionalLightData's shadow_cache_* fields in light_data_inc.glsl).
-// Independent texture/binding from directional_shadow_atlas (binding 6) so cached cascades never
-// share a clear with the live ones. Declared unconditionally (unlike MaterialFeedbackBuffer above,
-// which is TEXTURE_STREAMING-only) since it is sampled unconditionally in scene_forward_clustered.glsl.
-layout(set = 1, binding = 39) uniform texture2D directional_shadow_cache_atlas;
 
 /* Set 2 Skeleton & Instancing (can change per item) */
 
