@@ -42,6 +42,10 @@ FoliageSpawner3DGizmoPlugin::FoliageSpawner3DGizmoPlugin() {
 	create_material("shape_material_internal", gizmo_color);
 
 	create_handle_material("handles");
+
+	// Distinct, unmissable color for the debug_show_cells wireframe, since it
+	// needs to stand out from both the volume box above and the scene itself.
+	create_material("debug_cells_material", Color(1.0, 0.6, 0.0));
 }
 
 bool FoliageSpawner3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
@@ -110,4 +114,20 @@ void FoliageSpawner3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	p_gizmo->add_lines(lines, material);
 	p_gizmo->add_collision_segments(lines);
 	p_gizmo->add_handles(handles, handles_material);
+
+	if (spawner->is_debug_show_cells_enabled()) {
+		const Ref<Material> debug_material = get_material("debug_cells_material", p_gizmo);
+		Vector<Vector3> cell_lines;
+		for (const AABB &cell_aabb : spawner->get_cell_local_aabbs()) {
+			for (int i = 0; i < 12; i++) {
+				Vector3 a, b;
+				cell_aabb.get_edge(i, a, b);
+				cell_lines.push_back(a);
+				cell_lines.push_back(b);
+			}
+		}
+		if (!cell_lines.is_empty()) {
+			p_gizmo->add_lines(cell_lines, debug_material);
+		}
+	}
 }
