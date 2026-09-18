@@ -67,8 +67,8 @@ ReflectionProbeGizmoPlugin::ReflectionProbeGizmoPlugin() {
 
 		preview_sphere_material.instantiate();
 		preview_sphere_material->set_metallic(1.0);
-		preview_sphere_material->set_roughness(0.0);
-		preview_sphere_material->set_albedo(Color(1, 1, 1));
+		preview_sphere_material->set_roughness(0.1);
+		preview_sphere_material->set_albedo(Color::html("d8d8d8"));
 	}
 }
 
