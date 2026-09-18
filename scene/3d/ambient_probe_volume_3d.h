@@ -75,7 +75,14 @@ class AmbientProbeVolume3D : public Node3D {
 	// back on) material_override reflects our own past output, not the instance's actual
 	// material - reading it again would be circular and silently fall back to the overlay
 	// technique for every instance after the first refresh. Cleared by clear_ao(), which is
-	// the way to force re-detection if an instance's real material changes afterwards.
+	// the way to force re-detection if an instance's real material changes afterwards - but
+	// only a clean one if set_ao_overlay_enabled(false) already ran first (or ao_overlay_enabled
+	// was never turned on), so material_override is back to whatever the instance actually
+	// has; clearing this cache while material_override still holds our own generated material
+	// (i.e. calling clear_ao() without disabling first) makes the next re-detection see that
+	// generated material as if it were real, fail the BaseMaterial3D check, and fall back to
+	// the overlay technique for that instance - a safe degrade, not a wrong result, but not
+	// the best one either.
 	HashMap<ObjectID, Ref<Material>> ao_source_materials;
 
 	PackedFloat32Array baked_ao;
