@@ -8,9 +8,8 @@
 		The volume to fill is defined by [member volume_size], centered on the node's origin. Placement is controlled by [member density] (points per square meter of the volume's footprint) and [member min_distance] (a minimum spacing enforced between instances so they don't overlap). A grayscale [member distribution_mask] can be assigned to bias or forbid placement in specific areas, and [member seed] makes generation reproducible.
 		If [member project_on_mesh] is enabled (the default), each candidate point is projected straight down onto the actual triangle surface of the [MeshInstance3D] referenced by [member ground_mesh_path] (e.g. terrain), and points whose surface is steeper than [member max_slope_degrees] are discarded; otherwise points are distributed freely throughout the volume's height. Placement only looks at that node's [Mesh] geometry, never at a [CollisionShape3D] or other physics collider, since a collider can differ noticeably in shape from the mesh it is meant to represent. Instances can optionally be tilted to align with the surface normal ([member align_to_normal]) and receive random rotation, extra random tilt, and random uniform scale for natural-looking variation.
 		Nothing is generated automatically: call [method regenerate] (or press the [b]Regenerate[/b] button in the Inspector) whenever the volume, mesh, ground mesh, or any distribution setting changes. The result is saved with the scene, so no extra runtime cost is paid on load. To scatter several kinds of vegetation in the same area, add multiple [FoliageSpawner3D] nodes, one per [Mesh].
-		[b]Cell chunking:[/b] generated instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty cell is rendered through its own internal [MultiMeshInstance3D], the same technique [FoliagePainter3D] uses for its painted layers. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Cells are rebuilt from scratch by every call to [method regenerate], so [member cell_size] and other rendering-related properties below always apply to the result of the next regeneration, not retroactively to already-generated cells.
-		[FoliageSpawner3D] defaults [member GeometryInstance3D.gi_mode] to [constant GeometryInstance3D.GI_MODE_DISABLED]: grass and other small scattered foliage rarely benefit visually from baked or dynamic global illumination, and skipping it avoids [LightmapGI] trying to lightmap every scattered instance and avoids the per-instance cost of looking up nearby GI probes. Set [member GeometryInstance3D.gi_mode] back to [constant GeometryInstance3D.GI_MODE_DYNAMIC] for larger foliage where the difference is worth it. This and other [GeometryInstance3D] properties set on [FoliageSpawner3D] itself (material override, shadow casting, LOD bias, visibility range) act as a template that [method regenerate] copies onto every cell; they are not rendered by [FoliageSpawner3D] directly, since it has no visible geometry of its own.
-		If [member ambient_occlusion_volume] is set to an [AmbientProbeVolume3D], [method regenerate] samples its baked ambient occlusion at every instance's position and stores the result (as a grayscale value) in each cell's per-instance custom data. This is a lightweight, lightmap-free way to darken foliage in occluded areas: it costs nothing at runtime beyond what's already spent rendering the cells, and needs no lightmap UVs. To use it, read [code]INSTANCE_CUSTOM.r[/code] in the mesh's shader (e.g. multiply it into [code]ALBEDO[/code] or [code]ALPHA[/code]).
+		[b]Cell chunking:[/b] generated instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty cell is rendered through its own internal [MultiMeshInstance3D], the same technique [FoliagePainter3D] uses for its painted layers. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Enable [member debug_show_cells] to draw each cell's bounds in the 3D viewport, and check [member cell_count] / [member instance_count] in the Inspector to see the result of the last [method regenerate].
+		[b]Cell rendering:[/b] [FoliageSpawner3D] itself never has any visible geometry of its own (its inherited [MultiMesh] is always empty), so its inherited [GeometryInstance3D] properties ([member GeometryInstance3D.material_override], [member GeometryInstance3D.cast_shadow], [member GeometryInstance3D.gi_mode], [member GeometryInstance3D.visibility_range_begin], etc.) would have no visible effect and are hidden in the Inspector. Use the [code]cell_*[/code] properties instead ([member cell_material_override], [member cell_cast_shadow], [member cell_gi_mode], [member cell_visibility_range_begin], and so on): they are copied onto every cell's [MultiMeshInstance3D] and, unlike every other [FoliageSpawner3D] property, apply immediately to already-generated cells without needing to press [b]Regenerate[/b] again. [member cell_gi_mode] defaults to [constant GeometryInstance3D.GI_MODE_DISABLED]: grass and other small scattered foliage rarely benefit visually from baked or dynamic global illumination, and skipping it avoids [LightmapGI] trying to lightmap every scattered instance and avoids the per-instance cost of looking up nearby GI probes. Set [member cell_gi_mode] to [constant GeometryInstance3D.GI_MODE_DYNAMIC] for larger foliage where the difference is worth it.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -29,11 +28,56 @@
 		<member name="align_to_normal_amount" type="float" setter="set_align_to_normal_amount" getter="get_align_to_normal_amount" default="1.0">
 			Blends each instance's up axis between world up ([code]0.0[/code]) and the surface normal ([code]1.0[/code]) when [member align_to_normal] is enabled.
 		</member>
-		<member name="ambient_occlusion_volume" type="NodePath" setter="set_ambient_occlusion_volume" getter="get_ambient_occlusion_volume" default="NodePath(&quot;&quot;)">
-			The path to an [AmbientProbeVolume3D] whose baked ambient occlusion is sampled into each cell's per-instance custom data by [method regenerate]. See the class description for how to use this in a shader. Leave empty to skip this (instances then have no custom data).
+		<member name="cell_cast_shadow" type="int" setter="set_cell_cast_shadow" getter="get_cell_cast_shadow" enum="GeometryInstance3D.ShadowCastingSetting" default="1">
+			The shadow casting mode applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_count" type="int" setter="" getter="get_cell_count" default="0">
+			Read-only. The number of non-empty cells created by the last [method regenerate] call. See [b]Cell chunking[/b] in the class description.
+		</member>
+		<member name="cell_extra_cull_margin" type="float" setter="set_cell_extra_cull_margin" getter="get_cell_extra_cull_margin" default="0.0">
+			The extra cull margin applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_gi_mode" type="int" setter="set_cell_gi_mode" getter="get_cell_gi_mode" enum="GeometryInstance3D.GIMode" default="0">
+			The global illumination mode applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_ignore_occlusion_culling" type="bool" setter="set_cell_ignore_occlusion_culling" getter="is_cell_ignoring_occlusion_culling" default="false">
+			Applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_ignore_screen_space_shadows" type="bool" setter="set_cell_ignore_screen_space_shadows" getter="is_cell_ignoring_screen_space_shadows" default="false">
+			Applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_lod_bias" type="float" setter="set_cell_lod_bias" getter="get_cell_lod_bias" default="1.0">
+			The LOD bias applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_material_overlay" type="Material" setter="set_cell_material_overlay" getter="get_cell_material_overlay">
+			The material overlay applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_material_override" type="Material" setter="set_cell_material_override" getter="get_cell_material_override">
+			The material override applied to every cell. See [b]Cell rendering[/b] in the class description.
 		</member>
 		<member name="cell_size" type="float" setter="set_cell_size" getter="get_cell_size" default="16.0">
 			The size (in meters, on the local XZ plane) of the grid cells that generated instances are chunked into. See [b]Cell chunking[/b] in the class description. Larger values mean fewer, bigger cells (coarser culling, less overhead); smaller values mean finer-grained culling at the cost of more internal [MultiMeshInstance3D] nodes. A good starting point is a value somewhat larger than the average distance instances need to be visible from.
+		</member>
+		<member name="cell_transparency" type="float" setter="set_cell_transparency" getter="get_cell_transparency" default="0.0">
+			The transparency applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_visibility_range_begin" type="float" setter="set_cell_visibility_range_begin" getter="get_cell_visibility_range_begin" default="0.0">
+			The visibility range start distance applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_visibility_range_begin_margin" type="float" setter="set_cell_visibility_range_begin_margin" getter="get_cell_visibility_range_begin_margin" default="0.0">
+			The visibility range start margin applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_visibility_range_end" type="float" setter="set_cell_visibility_range_end" getter="get_cell_visibility_range_end" default="0.0">
+			The visibility range end distance applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_visibility_range_end_margin" type="float" setter="set_cell_visibility_range_end_margin" getter="get_cell_visibility_range_end_margin" default="0.0">
+			The visibility range end margin applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="cell_visibility_range_fade_mode" type="int" setter="set_cell_visibility_range_fade_mode" getter="get_cell_visibility_range_fade_mode" enum="GeometryInstance3D.VisibilityRangeFadeMode" default="0">
+			The visibility range fade mode applied to every cell. See [b]Cell rendering[/b] in the class description.
+		</member>
+		<member name="debug_show_cells" type="bool" setter="set_debug_show_cells" getter="is_debug_show_cells_enabled" default="false">
+			If [code]true[/code], the editor gizmo draws the bounds of every cell created by the last [method regenerate] call, in addition to the volume box. See [b]Cell chunking[/b] in the class description.
 		</member>
 		<member name="density" type="float" setter="set_density" getter="get_density" default="1.0">
 			The target number of instances per square meter of the volume's XZ footprint ([member volume_size].x × [member volume_size].z). The actual instance count is also limited by [member max_instances], [member min_distance], [member distribution_mask], and [member project_on_mesh].
@@ -43,6 +87,9 @@
 		</member>
 		<member name="ground_mesh_path" type="NodePath" setter="set_ground_mesh_path" getter="get_ground_mesh_path" default="NodePath(&quot;&quot;)">
 			The path to a [MeshInstance3D] whose [Mesh] geometry candidate points are projected onto when [member project_on_mesh] is enabled. Only that node's mesh surface is used; its collision shape (if any) is ignored.
+		</member>
+		<member name="instance_count" type="int" setter="" getter="get_instance_count" default="0">
+			Read-only. The total number of instances across every cell created by the last [method regenerate] call. See [b]Cell chunking[/b] in the class description.
 		</member>
 		<member name="mask_invert" type="bool" setter="set_mask_invert" getter="is_mask_inverted" default="false">
 			If [code]true[/code], inverts the values sampled from [member distribution_mask] (white areas become forbidden, black areas become favored).
