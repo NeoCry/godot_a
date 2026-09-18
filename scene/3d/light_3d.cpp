@@ -576,6 +576,16 @@ bool DirectionalLight3D::is_blend_splits_enabled() const {
 	return blend_splits;
 }
 
+void DirectionalLight3D::set_shadow_cache_enabled(bool p_enable) {
+	shadow_cache_enabled = p_enable;
+	RS::get_singleton()->light_directional_set_shadow_cache_enabled(light, p_enable);
+	notify_property_list_changed();
+}
+
+bool DirectionalLight3D::is_shadow_cache_enabled() const {
+	return shadow_cache_enabled;
+}
+
 void DirectionalLight3D::set_sky_mode(SkyMode p_mode) {
 	sky_mode = p_mode;
 	RS::get_singleton()->light_directional_set_sky_mode(light, RSE::LightDirectionalSkyMode(p_mode));
@@ -596,6 +606,10 @@ void DirectionalLight3D::_validate_property(PropertyInfo &p_property) const {
 			// Splits 3 and 4 are only used with the PSSM 4 Splits shadow mode.
 			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 		}
+
+		if (!shadow_cache_enabled && (p_property.name == "directional_shadow_cache_max_distance" || p_property.name == "directional_shadow_cache_update_interval" || p_property.name == "directional_shadow_cache_margin")) {
+			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+		}
 	}
 	if (p_property.name == "light_size" || p_property.name == "light_projector") {
 		// Not implemented in DirectionalLight3D (`light_size` is replaced by `light_angular_distance`).
@@ -614,6 +628,9 @@ void DirectionalLight3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_blend_splits", "enabled"), &DirectionalLight3D::set_blend_splits);
 	ClassDB::bind_method(D_METHOD("is_blend_splits_enabled"), &DirectionalLight3D::is_blend_splits_enabled);
 
+	ClassDB::bind_method(D_METHOD("set_shadow_cache_enabled", "enabled"), &DirectionalLight3D::set_shadow_cache_enabled);
+	ClassDB::bind_method(D_METHOD("is_shadow_cache_enabled"), &DirectionalLight3D::is_shadow_cache_enabled);
+
 	ClassDB::bind_method(D_METHOD("set_sky_mode", "mode"), &DirectionalLight3D::set_sky_mode);
 	ClassDB::bind_method(D_METHOD("get_sky_mode"), &DirectionalLight3D::get_sky_mode);
 
@@ -626,6 +643,12 @@ void DirectionalLight3D::_bind_methods() {
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_fade_start", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_param", "get_param", PARAM_SHADOW_FADE_START);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_max_distance", PROPERTY_HINT_RANGE, "0,8192,0.1,or_greater,exp"), "set_param", "get_param", PARAM_SHADOW_MAX_DISTANCE);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_pancake_size", PROPERTY_HINT_RANGE, "0,1024,0.1,or_greater,exp"), "set_param", "get_param", PARAM_SHADOW_PANCAKE_SIZE);
+
+	ADD_GROUP("Directional Shadow Cache", "directional_shadow_cache_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "directional_shadow_cache_enabled"), "set_shadow_cache_enabled", "is_shadow_cache_enabled");
+	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_max_distance", PROPERTY_HINT_RANGE, "0,8192,0.1,or_greater,exp"), "set_param", "get_param", PARAM_SHADOW_CACHE_MAX_DISTANCE);
+	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_update_interval", PROPERTY_HINT_RANGE, "1,120,1,or_greater"), "set_param", "get_param", PARAM_SHADOW_CACHE_UPDATE_INTERVAL);
+	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_margin", PROPERTY_HINT_RANGE, "1,4,0.05,or_greater"), "set_param", "get_param", PARAM_SHADOW_CACHE_MARGIN);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sky_mode", PROPERTY_HINT_ENUM, "Light and Sky,Light Only,Sky Only"), "set_sky_mode", "get_sky_mode");
 
@@ -646,6 +669,9 @@ DirectionalLight3D::DirectionalLight3D() :
 	set_param(PARAM_SHADOW_NORMAL_BIAS, 2.0);
 	set_param(PARAM_INTENSITY, 100000.0); // Specified in Lux, approximate mid-day sun.
 	set_param(PARAM_SPECULAR, 1.0);
+	set_param(PARAM_SHADOW_CACHE_MAX_DISTANCE, 500);
+	set_param(PARAM_SHADOW_CACHE_UPDATE_INTERVAL, 4);
+	set_param(PARAM_SHADOW_CACHE_MARGIN, 1.25);
 	set_shadow_mode(SHADOW_PARALLEL_4_SPLITS);
 	blend_splits = false;
 	set_sky_mode(SKY_MODE_LIGHT_AND_SKY);

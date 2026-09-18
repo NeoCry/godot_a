@@ -77,6 +77,7 @@ private:
 		RSE::LightOmniShadowMode omni_shadow_mode = RSE::LIGHT_OMNI_SHADOW_DUAL_PARABOLOID;
 		RSE::LightDirectionalShadowMode directional_shadow_mode = RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL;
 		bool directional_blend_splits = false;
+		bool directional_shadow_cache_enabled = false;
 		RSE::LightDirectionalSkyMode directional_sky_mode = RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_AND_SKY;
 		Vector2 area_size = Vector2(1, 1);
 		bool area_normalize_energy = true;
@@ -120,11 +121,13 @@ private:
 		uint64_t shadow_pass = 0;
 		uint64_t last_scene_pass = 0;
 		uint64_t last_scene_shadow_pass = 0;
+		uint64_t last_scene_cache_shadow_pass = 0;
 		uint64_t last_pass = 0;
 		uint32_t cull_mask = 0;
 		uint32_t light_directional_index = 0;
 
 		Rect2 directional_rect;
+		Rect2 directional_cache_rect;
 
 		HashSet<RID> shadow_atlases; //shadow atlases where this light is registered
 
@@ -224,6 +227,18 @@ private:
 		float uv_scale2[2];
 		float uv_scale3[2];
 		float uv_scale4[2];
+
+		// Cached far cascade (see MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES). Kept as its own tail block,
+		// mirroring the vec4/mat4 grouping above, so it cannot disturb the std140 offsets of the
+		// existing fields above it.
+		uint32_t shadow_cache_enabled;
+		float shadow_cache_split_offset;
+		float shadow_cache_bias;
+		float shadow_cache_normal_bias;
+		float shadow_cache_z_range;
+		float shadow_cache_range_begin;
+		float shadow_cache_uv_scale[2];
+		float shadow_cache_matrix[16];
 	};
 
 	uint32_t max_directional_lights;
@@ -453,6 +468,11 @@ private:
 		int current_light = 0;
 	} directional_shadow;
 
+	// Second, independent atlas holding the cached far cascade of lights that have shadow caching
+	// enabled. Kept separate from `directional_shadow` above so its clear/redraw scheduling can
+	// never interact with (or corrupt) the main, every-frame cascades.
+	DirectionalShadow directional_shadow_cache;
+
 	/* SHADOW CUBEMAPS */
 
 	struct ShadowCubemap {
@@ -524,6 +544,8 @@ public:
 	virtual void light_directional_set_shadow_mode(RID p_light, RSE::LightDirectionalShadowMode p_mode) override;
 	virtual void light_directional_set_blend_splits(RID p_light, bool p_enable) override;
 	virtual bool light_directional_get_blend_splits(RID p_light) const override;
+	virtual void light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) override;
+	virtual bool light_directional_get_shadow_cache_enabled(RID p_light) const override;
 	virtual void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) override;
 	virtual RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const override;
 
@@ -828,6 +850,26 @@ public:
 	_FORCE_INLINE_ Rect2 light_instance_get_directional_rect(RID p_light_instance) {
 		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
 		return li->directional_rect;
+	}
+
+	_FORCE_INLINE_ void light_instance_set_directional_cache_rect(RID p_light_instance, const Rect2 &p_rect) {
+		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
+		li->directional_cache_rect = p_rect;
+	}
+
+	_FORCE_INLINE_ Rect2 light_instance_get_directional_cache_rect(RID p_light_instance) {
+		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
+		return li->directional_cache_rect;
+	}
+
+	_FORCE_INLINE_ void light_instance_set_shadow_cache_pass(RID p_light_instance, uint64_t p_pass) {
+		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
+		li->last_scene_cache_shadow_pass = p_pass;
+	}
+
+	_FORCE_INLINE_ uint64_t light_instance_get_shadow_cache_pass(RID p_light_instance) {
+		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
+		return li->last_scene_cache_shadow_pass;
 	}
 
 	/* LIGHT DATA */
@@ -1194,6 +1236,30 @@ public:
 
 	_FORCE_INLINE_ void directional_shadow_increase_current_light() {
 		directional_shadow.current_light++;
+	}
+
+	// Cache atlas (see DirectionalShadow above): same shape, entirely separate storage.
+	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) override;
+	virtual int get_directional_light_shadow_cache_size(RID p_light_instance) override;
+	virtual void set_directional_shadow_cache_count(int p_count) override;
+
+	Rect2i get_directional_shadow_cache_rect();
+	void update_directional_shadow_cache_atlas();
+
+	_FORCE_INLINE_ RID directional_shadow_cache_get_texture() {
+		return directional_shadow_cache.depth;
+	}
+
+	_FORCE_INLINE_ int directional_shadow_cache_get_size() {
+		return directional_shadow_cache.size;
+	}
+
+	_FORCE_INLINE_ RID direction_shadow_cache_get_fb() {
+		return directional_shadow_cache.fb;
+	}
+
+	_FORCE_INLINE_ void directional_shadow_cache_increase_current_light() {
+		directional_shadow_cache.current_light++;
 	}
 
 	/* SHADOW CUBEMAPS */

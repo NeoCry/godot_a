@@ -73,6 +73,8 @@ public:
 	virtual void light_directional_set_shadow_mode(RID p_light, RSE::LightDirectionalShadowMode p_mode) = 0;
 	virtual void light_directional_set_blend_splits(RID p_light, bool p_enable) = 0;
 	virtual bool light_directional_get_blend_splits(RID p_light) const = 0;
+	virtual void light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) = 0;
+	virtual bool light_directional_get_shadow_cache_enabled(RID p_light) const = 0;
 	virtual void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) = 0;
 	virtual RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const = 0;
 
@@ -214,4 +216,9 @@ public:
 	virtual void directional_shadow_atlas_set_size(int p_size, bool p_16_bits = true) = 0;
 	virtual int get_directional_light_shadow_size(RID p_light_instance) = 0;
 	virtual void set_directional_shadow_count(int p_count) = 0;
+
+	// Second, independent atlas for the cached far cascade (see MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES).
+	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) = 0;
+	virtual int get_directional_light_shadow_cache_size(RID p_light_instance) = 0;
+	virtual void set_directional_shadow_cache_count(int p_count) = 0;
 };

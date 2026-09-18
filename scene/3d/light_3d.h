@@ -60,6 +60,9 @@ public:
 		PARAM_INTENSITY = RSE::LIGHT_PARAM_INTENSITY,
 		PARAM_CONTACT_SHADOW_OPACITY = RSE::LIGHT_PARAM_CONTACT_SHADOW_OPACITY,
 		PARAM_CONTACT_SHADOW_BLUR = RSE::LIGHT_PARAM_CONTACT_SHADOW_BLUR,
+		PARAM_SHADOW_CACHE_MAX_DISTANCE = RSE::LIGHT_PARAM_SHADOW_CACHE_MAX_DISTANCE,
+		PARAM_SHADOW_CACHE_UPDATE_INTERVAL = RSE::LIGHT_PARAM_SHADOW_CACHE_UPDATE_INTERVAL,
+		PARAM_SHADOW_CACHE_MARGIN = RSE::LIGHT_PARAM_SHADOW_CACHE_MARGIN,
 		PARAM_MAX = RSE::LIGHT_PARAM_MAX
 	};
 
@@ -184,6 +187,7 @@ private:
 	bool blend_splits;
 	ShadowMode shadow_mode;
 	SkyMode sky_mode = SKY_MODE_LIGHT_AND_SKY;
+	bool shadow_cache_enabled = false;
 
 protected:
 	static void _bind_methods();
@@ -195,6 +199,9 @@ public:
 
 	void set_blend_splits(bool p_enable);
 	bool is_blend_splits_enabled() const;
+
+	void set_shadow_cache_enabled(bool p_enable);
+	bool is_shadow_cache_enabled() const;
 
 	void set_sky_mode(SkyMode p_mode);
 	SkyMode get_sky_mode() const;

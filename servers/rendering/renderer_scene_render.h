@@ -47,6 +47,11 @@ public:
 	enum {
 		MAX_DIRECTIONAL_LIGHTS = 8,
 		MAX_DIRECTIONAL_LIGHT_CASCADES = 4,
+		// Extra far cascade(s) that are only redrawn every N frames instead of every frame (see
+		// DirectionalLight3D's shadow_cache_enabled). Kept at 1 for now: each additional cached slot
+		// needs its own struct fields, atlas rect and shader branch, and none of that can be verified
+		// against a GPU in this environment, so the surface is deliberately minimal.
+		MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES = 1,
 		MAX_RENDER_VIEWS = 2
 	};
 

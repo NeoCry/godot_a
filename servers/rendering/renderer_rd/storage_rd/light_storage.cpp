@@ -53,6 +53,9 @@ LightStorage::LightStorage() {
 	directional_shadow.size = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/size");
 	directional_shadow.use_16_bits = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/16_bits");
 
+	directional_shadow_cache.size = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/cache_size");
+	directional_shadow_cache.use_16_bits = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/16_bits");
+
 	using_lightmap_array = true; // high end
 	if (using_lightmap_array) {
 		uint64_t textures_per_stage = RD::get_singleton()->limit_get(RD::LIMIT_MAX_TEXTURES_PER_SHADER_STAGE);
@@ -421,6 +424,22 @@ bool LightStorage::light_directional_get_blend_splits(RID p_light) const {
 	ERR_FAIL_NULL_V(light, false);
 
 	return light->directional_blend_splits;
+}
+
+void LightStorage::light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL(light);
+
+	light->directional_shadow_cache_enabled = p_enable;
+	light->version++;
+	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
+}
+
+bool LightStorage::light_directional_get_shadow_cache_enabled(RID p_light) const {
+	const Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL_V(light, false);
+
+	return light->directional_shadow_cache_enabled;
 }
 
 void LightStorage::light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) {
@@ -878,6 +897,49 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					float fade_start = light->param[RSE::LIGHT_PARAM_SHADOW_FADE_START];
 					light_data.fade_from = -light_data.shadow_split_offsets[limit] * MIN(fade_start, 0.999); //using 1.0 would break smoothstep
 					light_data.fade_to = -light_data.shadow_split_offsets[limit];
+
+					// Cached far cascade: stored one slot past the live cascades in shadow_transform
+					// (see MAX_DIRECTIONAL_LIGHT_CASCADES / MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES).
+					// `split` is only ever positive when _light_instance_setup_directional_shadow()
+					// actually populated it, so it also guards against stale data from a previous
+					// configuration where caching was on.
+					light_data.shadow_cache_enabled = 0;
+					const int cache_idx = RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES;
+					if (light->directional_shadow_cache_enabled && light_instance->shadow_transform[cache_idx].split > 0.0) {
+						Rect2 cache_atlas_rect = light_instance->shadow_transform[cache_idx].atlas_rect;
+						Projection cache_correction;
+						cache_correction.set_depth_correction(false, true, false);
+						Projection cache_matrix = cache_correction * light_instance->shadow_transform[cache_idx].camera;
+
+						Projection cache_bias;
+						cache_bias.set_light_bias();
+						Projection cache_rectm;
+						cache_rectm.set_light_atlas_rect(cache_atlas_rect);
+
+						Transform3D cache_modelview = (inverse_transform * light_instance->shadow_transform[cache_idx].transform).inverse();
+
+						Projection cache_shadow_mtx = cache_rectm * cache_bias * cache_matrix * cache_modelview;
+
+						light_data.shadow_cache_enabled = 1;
+						light_data.shadow_cache_split_offset = light_instance->shadow_transform[cache_idx].split;
+						float cache_bias_scale = light_instance->shadow_transform[cache_idx].bias_scale * light_data.soft_shadow_scale;
+						light_data.shadow_cache_bias = light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0 * cache_bias_scale;
+						light_data.shadow_cache_normal_bias = light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * light_instance->shadow_transform[cache_idx].shadow_texel_size;
+						light_data.shadow_cache_z_range = light_instance->shadow_transform[cache_idx].farplane;
+						light_data.shadow_cache_range_begin = light_instance->shadow_transform[cache_idx].range_begin;
+						RendererRD::MaterialStorage::store_camera(cache_shadow_mtx, light_data.shadow_cache_matrix);
+
+						Vector2 cache_uv_scale = light_instance->shadow_transform[cache_idx].uv_scale;
+						cache_uv_scale *= cache_atlas_rect.size; //adapt to atlas size
+						light_data.shadow_cache_uv_scale[0] = cache_uv_scale.x;
+						light_data.shadow_cache_uv_scale[1] = cache_uv_scale.y;
+
+						// Extend the shadow fade-out to the cache tier's far plane instead of the live
+						// tier's, otherwise the fade would wash the cached shadow back to "no shadow"
+						// before it ever gets sampled.
+						light_data.fade_from = -light_data.shadow_cache_split_offset * MIN(fade_start, 0.999);
+						light_data.fade_to = -light_data.shadow_cache_split_offset;
+					}
 				}
 
 				r_directional_light_count++;
@@ -2861,6 +2923,62 @@ int LightStorage::get_directional_light_shadow_size(RID p_light_instance) {
 			break;
 	}
 
+	return MAX(r.size.width, r.size.height);
+}
+
+/* DIRECTIONAL SHADOW CACHE */
+// Second, independent atlas for the cached far cascade. It never shares a tile, a clear or a
+// current_light counter with `directional_shadow` above, so redraw scheduling for one can never
+// bleed into the other. Each light gets one whole tile (no quadrant split), since
+// MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES is 1.
+
+void LightStorage::update_directional_shadow_cache_atlas() {
+	if (directional_shadow_cache.depth.is_null() && directional_shadow_cache.size > 0) {
+		RD::TextureFormat tf;
+		tf.format = get_shadow_atlas_depth_format(directional_shadow_cache.use_16_bits);
+		tf.width = directional_shadow_cache.size;
+		tf.height = directional_shadow_cache.size;
+		tf.usage_bits = get_shadow_atlas_depth_usage_bits();
+
+		directional_shadow_cache.depth = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		Vector<RID> fb_tex;
+		fb_tex.push_back(directional_shadow_cache.depth);
+		directional_shadow_cache.fb = RD::get_singleton()->framebuffer_create(fb_tex);
+	}
+}
+
+void LightStorage::directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits) {
+	p_size = Math::nearest_power_of_2_templated(p_size);
+
+	if (directional_shadow_cache.size == p_size && directional_shadow_cache.use_16_bits == p_16_bits) {
+		return;
+	}
+
+	directional_shadow_cache.size = p_size;
+	directional_shadow_cache.use_16_bits = p_16_bits;
+
+	if (directional_shadow_cache.depth.is_valid()) {
+		RD::get_singleton()->free_rid(directional_shadow_cache.depth);
+		directional_shadow_cache.depth = RID();
+		RendererSceneRenderRD::get_singleton()->base_uniforms_changed();
+	}
+}
+
+void LightStorage::set_directional_shadow_cache_count(int p_count) {
+	directional_shadow_cache.light_count = p_count;
+	directional_shadow_cache.current_light = 0;
+}
+
+Rect2i LightStorage::get_directional_shadow_cache_rect() {
+	return _get_directional_shadow_rect(directional_shadow_cache.size, directional_shadow_cache.light_count, directional_shadow_cache.current_light);
+}
+
+int LightStorage::get_directional_light_shadow_cache_size(RID p_light_instance) {
+	ERR_FAIL_COND_V(directional_shadow_cache.light_count == 0, 0);
+
+	// Unlike get_directional_light_shadow_size(), there is no quadrant split here: each light's
+	// cached cascade gets its whole tile.
+	Rect2i r = _get_directional_shadow_rect(directional_shadow_cache.size, directional_shadow_cache.light_count, 0);
 	return MAX(r.size.width, r.size.height);
 }
 

@@ -1711,7 +1711,11 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			RID base = light_storage->light_instance_get_base_light(li);
 
 			if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
-				p_render_data->directional_shadows.push_back(i);
+				if (p_render_data->render_shadows[i].pass >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES) {
+					p_render_data->directional_shadows_cached.push_back(i);
+				} else {
+					p_render_data->directional_shadows.push_back(i);
+				}
 			} else if (light_storage->light_get_type(base) == RSE::LIGHT_OMNI && light_storage->light_omni_get_shadow_mode(base) == RSE::LIGHT_OMNI_SHADOW_CUBE) {
 				p_render_data->cube_shadows.push_back(i);
 			} else {
@@ -1733,11 +1737,18 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			RD::get_singleton()->draw_list_begin(light_storage->direction_shadow_get_fb(), RD::DRAW_CLEAR_DEPTH, Vector<Color>(), 0.0f);
 			RD::get_singleton()->draw_list_end();
 		}
+
+		if (p_render_data->directional_shadows_cached.size()) {
+			// The cache atlas has no equivalent blanket clear: cached cascades that aren't being
+			// redrawn this frame must keep their previous contents, so each redraw clears only its
+			// own rect (p_clear_region = true below), the same way positional shadows already do.
+			light_storage->update_directional_shadow_cache_atlas();
+		}
 	}
 
 	// Render GI
 
-	bool render_shadows = p_render_data->directional_shadows.size() || p_render_data->shadows.size();
+	bool render_shadows = p_render_data->directional_shadows.size() || p_render_data->shadows.size() || p_render_data->directional_shadows_cached.size();
 	bool render_gi = rb.is_valid() && p_use_gi;
 
 	if (render_shadows && render_gi) {
@@ -1759,6 +1770,10 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		//render positional shadows
 		for (uint32_t i = 0; i < p_render_data->shadows.size(); i++) {
 			_render_shadow_pass(p_render_data->render_shadows[p_render_data->shadows[i]].light, p_render_data->shadow_atlas, p_render_data->render_shadows[p_render_data->shadows[i]].pass, p_render_data->render_shadows[p_render_data->shadows[i]].instances, lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, i == 0, i == p_render_data->shadows.size() - 1, true, p_render_data->render_info, viewport_size, p_render_data->scene_data->cam_transform);
+		}
+		//render cached far cascades (own atlas, own per-rect clear -- see directional_shadows_cached)
+		for (uint32_t i = 0; i < p_render_data->directional_shadows_cached.size(); i++) {
+			_render_shadow_pass(p_render_data->render_shadows[p_render_data->directional_shadows_cached[i]].light, p_render_data->shadow_atlas, p_render_data->render_shadows[p_render_data->directional_shadows_cached[i]].pass, p_render_data->render_shadows[p_render_data->directional_shadows_cached[i]].instances, lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, i == 0, i == p_render_data->directional_shadows_cached.size() - 1, true, p_render_data->render_info, viewport_size, p_render_data->scene_data->cam_transform);
 		}
 
 		_render_shadow_process();
@@ -2801,7 +2816,37 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	Projection light_projection;
 	Transform3D light_transform;
 
-	if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
+	if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL && p_pass >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES) {
+		// Cached far cascade: own atlas, own tile-assignment bookkeeping (independent from the live
+		// cascades' below, since a light may need a cache tile on a frame where none of its live
+		// cascades happen to be dispatched, or vice-versa), and no quadrant split (each light gets
+		// the whole tile, since MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES is 1).
+		uint64_t last_scene_cache_shadow_pass = light_storage->light_instance_get_shadow_cache_pass(p_light);
+		if (last_scene_cache_shadow_pass != get_scene_pass()) {
+			light_storage->light_instance_set_directional_cache_rect(p_light, light_storage->get_directional_shadow_cache_rect());
+			light_storage->directional_shadow_cache_increase_current_light();
+			light_storage->light_instance_set_shadow_cache_pass(p_light, get_scene_pass());
+		}
+
+		use_pancake = light_storage->light_get_param(base, RSE::LIGHT_PARAM_SHADOW_PANCAKE_SIZE) > 0;
+		light_projection = light_storage->light_instance_get_shadow_camera(p_light, p_pass);
+		light_transform = light_storage->light_instance_get_shadow_transform(p_light, p_pass);
+
+		atlas_rect = light_storage->light_instance_get_directional_cache_rect(p_light);
+
+		float directional_shadow_cache_size = light_storage->directional_shadow_cache_get_size();
+		Rect2 atlas_rect_norm = atlas_rect;
+		atlas_rect_norm.position /= directional_shadow_cache_size;
+		atlas_rect_norm.size /= directional_shadow_cache_size;
+		light_storage->light_instance_set_directional_shadow_atlas_rect(p_light, p_pass, atlas_rect_norm);
+
+		zfar = RSG::light_storage->light_get_param(base, RSE::LIGHT_PARAM_RANGE);
+
+		render_fb = light_storage->direction_shadow_cache_get_fb();
+		render_texture = RID();
+		flip_y = true;
+
+	} else if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
 		//set pssm stuff
 		uint64_t last_scene_shadow_pass = light_storage->light_instance_get_shadow_pass(p_light);
 		if (last_scene_shadow_pass != get_scene_pass()) {
@@ -3643,6 +3688,17 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 		if (p_use_directional_shadow_atlas && RendererRD::LightStorage::get_singleton()->directional_shadow_get_texture().is_valid()) {
 			u.append_id(RendererRD::LightStorage::get_singleton()->directional_shadow_get_texture());
+		} else {
+			u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_DEPTH));
+		}
+		uniforms.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.binding = 39;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		if (p_use_directional_shadow_atlas && RendererRD::LightStorage::get_singleton()->directional_shadow_cache_get_texture().is_valid()) {
+			u.append_id(RendererRD::LightStorage::get_singleton()->directional_shadow_cache_get_texture());
 		} else {
 			u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_DEPTH));
 		}
@@ -5498,6 +5554,7 @@ RenderForwardClustered::~RenderForwardClustered() {
 
 	RD::get_singleton()->free_rid(shadow_sampler);
 	RSG::light_storage->directional_shadow_atlas_set_size(0);
+	RSG::light_storage->directional_shadow_cache_atlas_set_size(0);
 
 	RD::get_singleton()->free_rid(best_fit_normal.pipeline);
 	RD::get_singleton()->free_rid(best_fit_normal.texture);

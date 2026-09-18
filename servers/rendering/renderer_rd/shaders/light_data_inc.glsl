@@ -90,4 +90,16 @@ struct DirectionalLightData {
 	vec2 uv_scale2;
 	vec2 uv_scale3;
 	vec2 uv_scale4;
+
+	// Cached far cascade (see MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES). Kept as its own tail block, in
+	// the same order as light_storage.h's DirectionalLightData, so it cannot shift the std140 offsets
+	// of the fields above it.
+	bool shadow_cache_enabled;
+	float shadow_cache_split_offset;
+	float shadow_cache_bias;
+	float shadow_cache_normal_bias;
+	float shadow_cache_z_range;
+	float shadow_cache_range_begin;
+	vec2 shadow_cache_uv_scale;
+	mat4 shadow_cache_matrix;
 };

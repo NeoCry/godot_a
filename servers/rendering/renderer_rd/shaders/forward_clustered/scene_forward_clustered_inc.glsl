@@ -523,6 +523,11 @@ layout(set = 1, binding = 38, std430) buffer restrict MaterialFeedbackBuffer {
 	uint data[];
 }
 material_feedback;
+
+// Cached far cascade atlas (see DirectionalLightData's shadow_cache_* fields in light_data_inc.glsl).
+// Independent texture/binding from directional_shadow_atlas (binding 6) so cached cascades never
+// share a clear with the live ones.
+layout(set = 1, binding = 39) uniform texture2D directional_shadow_cache_atlas;
 #endif
 
 /* Set 2 Skeleton & Instancing (can change per item) */
