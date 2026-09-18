@@ -1927,5 +1927,6 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	memdelete_arr(soft_shadow_kernel);
 
 	RSG::light_storage->directional_shadow_atlas_set_size(0);
+	RSG::light_storage->directional_shadow_cache_atlas_set_size(0);
 	cull_argument.reset(); //avoid exit error
 }

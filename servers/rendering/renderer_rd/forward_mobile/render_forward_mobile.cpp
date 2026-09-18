@@ -807,6 +807,12 @@ void RenderForwardMobile::_pre_opaque_render(RenderDataRD *p_render_data) {
 			RID base = light_storage->light_instance_get_base_light(li);
 
 			if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
+				if (p_render_data->render_shadows[i].pass >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES) {
+					// Cached far cascades (DirectionalLight3D's shadow_cache_enabled) have no GPU
+					// render path on the Mobile renderer -- skip rather than mis-render into the
+					// wrong slot/atlas. cull.cpp still schedules these regardless of active backend.
+					continue;
+				}
 				p_render_data->directional_shadows.push_back(i);
 			} else if (light_storage->light_get_type(base) == RSE::LIGHT_OMNI && light_storage->light_omni_get_shadow_mode(base) == RSE::LIGHT_OMNI_SHADOW_CUBE) {
 				p_render_data->cube_shadows.push_back(i);
@@ -3669,6 +3675,7 @@ RenderForwardMobile::RenderForwardMobile() {
 
 RenderForwardMobile::~RenderForwardMobile() {
 	RSG::light_storage->directional_shadow_atlas_set_size(0);
+	RSG::light_storage->directional_shadow_cache_atlas_set_size(0);
 
 	if (ltc.lut1_texture.is_valid()) {
 		RS::get_singleton()->free_rid(ltc.lut1_texture);

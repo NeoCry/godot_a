@@ -2527,7 +2527,45 @@ void fragment_shader(in SceneData scene_data) {
 							}
 						}
 
+						// Cached far cascade: only used past every live split (blend_count stayed 0,
+						// i.e. `shadow` is still its initial 1.0), so it never overrides a live sample.
+						if (blend_count == 0 && bool(directional_lights.data[i].shadow_cache_enabled) && depth_z < directional_lights.data[i].shadow_cache_split_offset) {
+							vec4 v = vec4(vertex, 1.0);
+
+							v.xyz += light_dir * directional_lights.data[i].shadow_cache_bias;
+							vec3 normal_bias = base_normal_bias * directional_lights.data[i].shadow_cache_normal_bias;
+							normal_bias -= light_dir * dot(light_dir, normal_bias);
+							v.xyz += normal_bias;
+
+							vec4 pssm_coord = (directional_lights.data[i].shadow_cache_matrix * v);
+							pssm_coord /= pssm_coord.w;
+
+							float range_pos = dot(directional_lights.data[i].direction, v.xyz);
+							float range_begin = directional_lights.data[i].shadow_cache_range_begin;
+							float test_radius = (range_pos - range_begin) * directional_lights.data[i].softshadow_angle;
+							vec2 tex_scale = directional_lights.data[i].shadow_cache_uv_scale * test_radius;
+							shadow = sample_directional_soft_shadow(directional_shadow_cache_atlas, pssm_coord.xyz, tex_scale * directional_lights.data[i].soft_shadow_scale, scene_data.taa_frame_count);
+						}
+
 					} else { //no soft shadows
+
+						// Cached far cascade: only sampled past every live split's far plane, so it
+						// can never override a live sample. Self-contained (computes and samples in
+						// one go) rather than feeding the shared pssm_coord/blur_factor path below,
+						// since that path always samples directional_shadow_atlas, not the cache atlas.
+						if (bool(directional_lights.data[i].shadow_cache_enabled) && depth_z >= directional_lights.data[i].shadow_split_offsets.w && depth_z < directional_lights.data[i].shadow_cache_split_offset) {
+							vec4 v = vec4(vertex, 1.0);
+
+							v.xyz += light_dir * directional_lights.data[i].shadow_cache_bias;
+							vec3 normal_bias = base_normal_bias * directional_lights.data[i].shadow_cache_normal_bias;
+							normal_bias -= light_dir * dot(light_dir, normal_bias);
+							v.xyz += normal_bias;
+
+							vec4 cache_pssm_coord = (directional_lights.data[i].shadow_cache_matrix * v);
+							cache_pssm_coord /= cache_pssm_coord.w;
+
+							shadow = sample_directional_pcf_shadow(directional_shadow_cache_atlas, scene_data.directional_shadow_pixel_size * directional_lights.data[i].soft_shadow_scale, cache_pssm_coord, scene_data.taa_frame_count);
+						} else {
 
 						vec4 pssm_coord;
 						float blur_factor;
@@ -2604,6 +2642,7 @@ void fragment_shader(in SceneData scene_data) {
 							float shadow2 = sample_directional_pcf_shadow(directional_shadow_atlas, scene_data.directional_shadow_pixel_size * directional_lights.data[i].soft_shadow_scale * (blur_factor2 + (1.0 - blur_factor2) * float(directional_lights.data[i].blend_splits)), pssm_coord, scene_data.taa_frame_count);
 							shadow = mix(shadow, shadow2, pssm_blend);
 						}
+						} // shadow_cache_enabled (no soft shadows)
 					}
 
 #ifdef USE_LIGHTMAP
