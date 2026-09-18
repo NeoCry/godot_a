@@ -102,6 +102,9 @@ public:
 	Vector<Vector2i> get_layer_cell_coords(int p_layer) const;
 	int get_cell_instance_count(int p_layer, const Vector2i &p_cell) const;
 	Transform3D get_cell_instance_transform(int p_layer, const Vector2i &p_cell, int p_index) const;
+	// Local-space AABB actually used by the renderer to cull that cell's
+	// MultiMeshInstance3D (used by FoliagePainter3DGizmoPlugin's debug view).
+	AABB get_cell_aabb(int p_layer, const Vector2i &p_cell) const;
 
 	PackedStringArray get_configuration_warnings() const override;
 

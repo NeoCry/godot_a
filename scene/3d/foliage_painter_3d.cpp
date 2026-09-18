@@ -250,6 +250,7 @@ void FoliagePainter3D::insert_instance(int p_layer, const Vector2i &p_cell, int 
 	}
 
 	_refresh_layer_instance_count(p_layer);
+	update_gizmos();
 }
 
 void FoliagePainter3D::remove_instance(int p_layer, const Vector2i &p_cell, int p_index) {
@@ -288,6 +289,7 @@ void FoliagePainter3D::remove_instance(int p_layer, const Vector2i &p_cell, int 
 	}
 
 	_refresh_layer_instance_count(p_layer);
+	update_gizmos();
 }
 
 int FoliagePainter3D::add_instance(int p_layer, const Vector2i &p_cell, const Transform3D &p_transform) {
@@ -338,6 +340,17 @@ Transform3D FoliagePainter3D::get_cell_instance_transform(int p_layer, const Vec
 		return Transform3D();
 	}
 	return cell->multimesh->get_instance_transform(p_index);
+}
+
+AABB FoliagePainter3D::get_cell_aabb(int p_layer, const Vector2i &p_cell) const {
+	if (p_layer < 0 || p_layer >= (int)layer_cells.size()) {
+		return AABB();
+	}
+	const FoliageCell *cell = layer_cells[p_layer].getptr(p_cell);
+	if (cell == nullptr || cell->multimesh.is_null()) {
+		return AABB();
+	}
+	return cell->multimesh->get_aabb();
 }
 
 Array FoliagePainter3D::_get_cell_data() const {
@@ -393,6 +406,7 @@ void FoliagePainter3D::_set_cell_data(const Array &p_data) {
 	for (int i = 0; i < layers.size(); i++) {
 		_refresh_layer_instance_count(i);
 	}
+	update_gizmos();
 }
 
 PackedStringArray FoliagePainter3D::get_configuration_warnings() const {
