@@ -29,6 +29,7 @@ layout(push_constant, std430) uniform Params {
 	float blur;
 	float taa_frame_count;
 	uint exclusion_rect_count;
+	uint debug_wave_index; // Debug only, see rendering/lights_and_shadows/contact_shadow/debug_wave_index.
 }
 params;
 
@@ -255,5 +256,14 @@ void main() {
 	// Average the 4 buckets, then take the harder of hard_shadow and averaged result
 	float shadow = min(hard_shadow, dot(shadow_value, vec4(0.25)));
 	shadow = mix(1.0, shadow, params.opacity);
+
+	if (params.debug_wave_index != 0u) {
+		// Debug visualization: color by which of the WAVE_SIZE "diagonal" wavefronts this pixel
+		// belongs to, instead of computing a real shadow value. Wavefronts should appear aligned
+		// and projected towards the light position/direction; if they don't, the dispatch list
+		// (or the light coordinate) is wrong. See rendering/lights_and_shadows/contact_shadow/debug_wave_index.
+		shadow = fract(float(group_id) / float(WAVE_SIZE));
+	}
+
 	imageStore(output_shadow, write_xy, vec4(shadow, 0.0, 0.0, 0.0));
 }

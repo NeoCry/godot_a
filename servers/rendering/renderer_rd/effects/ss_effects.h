@@ -172,6 +172,11 @@ public:
 	struct SSCSSettings {
 		RSE::ScreenSpaceContactShadowsLength quality = RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM;
 		float surface_thickness = 0.01f;
+		// Debug-only: colors the output by compute wavefront index instead of computing real
+		// shadows, and switches to the multi-dispatch (BuildDispatchList-style) coverage instead
+		// of a single bounding dispatch, so the wavefront layout of that path can be inspected.
+		// See rendering/lights_and_shadows/contact_shadow/debug_wave_index.
+		bool debug_wave_index = false;
 	};
 
 	// Maximum number of GeometryInstance3D objects that can opt out of casting screen space
@@ -558,6 +563,7 @@ private:
 		float blur;
 		float taa_frame_count;
 		uint32_t exclusion_rect_count;
+		uint32_t debug_wave_index;
 	};
 
 	/* Subsurface scattering */
