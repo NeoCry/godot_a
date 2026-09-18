@@ -97,6 +97,8 @@ public:
 	// Screen-space UV rects (min_x, min_y, max_x, max_y) of GeometryInstance3D objects that opted
 	// out of casting screen space shadows this frame (GeometryInstance3D.ignore_screen_space_shadows).
 	LocalVector<Vector4> sscs_exclusion_rects;
+	// Device-depth (min, max) range of the same instances, matching sscs_exclusion_rects by index.
+	LocalVector<Vector2> sscs_exclusion_depth_ranges;
 
 	/* GI info */
 	const RendererSceneRender::RenderSDFGIData *render_sdfgi_regions = nullptr;

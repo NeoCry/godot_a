@@ -14,9 +14,14 @@ layout(r8, set = 0, binding = 1) uniform restrict writeonly image2D output_shado
 // Screen-space (UV) rects of GeometryInstance3D objects that opted out of casting screen space
 // shadows (GeometryInstance3D.ignore_screen_space_shadows). Each rect is
 // vec4(min_x, min_y, max_x, max_y) in [0, 1] UV space, approximating the instance's on-screen
-// bounding box. Samples that fall inside a rect are treated as non-occluding.
+// bounding box. depth_range[i] is that same instance's (min, max) device depth (same space as
+// depth_buffer; .zw unused). A sample is only treated as non-occluding when it falls inside the
+// rect *and* its sampled depth is within the matching depth range, so an unrelated instance that
+// merely overlaps the excluded instance's screen-space rect at a different depth isn't also
+// excluded.
 layout(set = 0, binding = 2, std140) uniform ExclusionRects {
 	vec4 rects[SSCS_MAX_EXCLUSION_RECTS];
+	vec4 depth_range[SSCS_MAX_EXCLUSION_RECTS];
 }
 exclusion_rects;
 
@@ -190,10 +195,14 @@ void main() {
 		}
 
 		// Instances that opt out of casting screen space shadows don't contribute occlusion:
-		// treat this ray sample as if there was no surface there.
+		// treat this ray sample as if there was no surface there. Both the screen-space rect and
+		// the instance's own depth range must match, so an unrelated surface that merely projects
+		// behind/in front of the excluded instance isn't also treated as non-occluding.
 		for (uint r = 0u; r < params.exclusion_rect_count; r++) {
 			vec4 rect = exclusion_rects.rects[r];
-			if (all(greaterThanEqual(uv, rect.xy)) && all(lessThanEqual(uv, rect.zw))) {
+			vec2 depth_range = exclusion_rects.depth_range[r].xy;
+			if (all(greaterThanEqual(uv, rect.xy)) && all(lessThanEqual(uv, rect.zw)) &&
+					depths.x >= depth_range.x && depths.x <= depth_range.y) {
 				stored_depth = 1e10;
 				break;
 			}

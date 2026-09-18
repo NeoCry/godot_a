@@ -1793,7 +1793,7 @@ void SSEffects::sscs_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers
 	}
 }
 
-void SSEffects::sscs_set_exclusion_rects(const Vector4 *p_rects, uint32_t p_rect_count) {
+void SSEffects::sscs_set_exclusion_rects(const Vector4 *p_rects, const Vector2 *p_depth_ranges, uint32_t p_rect_count) {
 	sscs.exclusion_rect_count = MIN(p_rect_count, SSCS_MAX_EXCLUSION_RECTS);
 
 	if (sscs.exclusion_rect_count == 0) {
@@ -1806,9 +1806,15 @@ void SSEffects::sscs_set_exclusion_rects(const Vector4 *p_rects, uint32_t p_rect
 		buffer_data.rects[i][1] = p_rects[i].y;
 		buffer_data.rects[i][2] = p_rects[i].z;
 		buffer_data.rects[i][3] = p_rects[i].w;
+
+		buffer_data.depth_ranges[i][0] = p_depth_ranges[i].x;
+		buffer_data.depth_ranges[i][1] = p_depth_ranges[i].y;
+		buffer_data.depth_ranges[i][2] = 0.0f;
+		buffer_data.depth_ranges[i][3] = 0.0f;
 	}
 
 	RD::get_singleton()->buffer_update(sscs.exclusion_rects_buffer, 0, sizeof(float) * 4 * sscs.exclusion_rect_count, buffer_data.rects);
+	RD::get_singleton()->buffer_update(sscs.exclusion_rects_buffer, sizeof(float) * 4 * SSCS_MAX_EXCLUSION_RECTS, sizeof(float) * 4 * sscs.exclusion_rect_count, buffer_data.depth_ranges);
 }
 
 struct SSCSDispatch {

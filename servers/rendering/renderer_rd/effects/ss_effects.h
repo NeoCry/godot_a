@@ -186,10 +186,15 @@ public:
 
 	void sscs_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, uint32_t p_contact_shadow_count);
 	// Uploads the screen-space rects (in [0,1] UV space, as vec4(min_x, min_y, max_x, max_y)) of
-	// instances that should not cast screen space shadows. Call once per frame before
-	// screen_space_contact_shadows(); the same set of rects is used for every light processed
-	// that frame, since exclusion is purely geometric, not light-dependent.
-	void sscs_set_exclusion_rects(const Vector4 *p_rects, uint32_t p_rect_count);
+	// instances that should not cast screen space shadows, along with each rect's device-depth
+	// range (min, max; same space as the depth buffer, i.e. clip.z / clip.w of the instance's
+	// AABB corners). The SSCS ray march only treats a sample as excluded when it falls inside
+	// the rect *and* its sampled depth is within the matching depth range, so instances that
+	// merely happen to project behind/in front of an excluded instance on screen aren't also
+	// excluded. Call once per frame before screen_space_contact_shadows(); the same set of rects
+	// is used for every light processed that frame, since exclusion is purely geometric, not
+	// light-dependent.
+	void sscs_set_exclusion_rects(const Vector4 *p_rects, const Vector2 *p_depth_ranges, uint32_t p_rect_count);
 	void screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, const SSCSSettings &p_settings, const Projection *p_projections, Vector3 p_light_direction, uint32_t p_light_index, float p_opacity, float p_blur, float p_taa_frame_count);
 
 private:
@@ -551,6 +556,9 @@ private:
 
 	struct SSCSExclusionRectsBuffer {
 		float rects[SSCS_MAX_EXCLUSION_RECTS][4];
+		// Only [0]/[1] (min/max) of each entry are used; padded to vec4 to match std140's array
+		// stride in the shader (a vec2 array would still take 16 bytes per element there).
+		float depth_ranges[SSCS_MAX_EXCLUSION_RECTS][4];
 	};
 
 	struct ScreenSpaceContactShadowsPushConstant {
