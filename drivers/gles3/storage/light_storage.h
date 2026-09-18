@@ -345,6 +345,10 @@ public:
 	virtual void light_directional_set_shadow_mode(RID p_light, RSE::LightDirectionalShadowMode p_mode) override;
 	virtual void light_directional_set_blend_splits(RID p_light, bool p_enable) override;
 	virtual bool light_directional_get_blend_splits(RID p_light) const override;
+	// Cached far cascade (see RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES) is a
+	// Forward+/Clustered-only feature for now; GLES3/Compatibility just never enables it.
+	virtual void light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) override {}
+	virtual bool light_directional_get_shadow_cache_enabled(RID p_light) const override { return false; }
 	virtual void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) override;
 	virtual RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const override;
 
@@ -904,6 +908,11 @@ public:
 	virtual void directional_shadow_atlas_set_size(int p_size, bool p_16_bits = true) override;
 	virtual int get_directional_light_shadow_size(RID p_light_instance) override;
 	virtual void set_directional_shadow_count(int p_count) override;
+
+	// See the shadow_cache_enabled note above: no cache atlas on this backend.
+	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) override {}
+	virtual int get_directional_light_shadow_cache_size(RID p_light_instance) override { return 0; }
+	virtual void set_directional_shadow_cache_count(int p_count) override {}
 
 	Rect2i get_directional_shadow_rect();
 	void update_directional_shadow_atlas();
