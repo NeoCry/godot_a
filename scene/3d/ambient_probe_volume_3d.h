@@ -63,6 +63,7 @@ class AmbientProbeVolume3D : public Node3D {
 	float ao_overlay_strength = 1.0f;
 	Ref<ShaderMaterial> debug_material;
 	Ref<ShaderMaterial> overlay_material;
+	Ref<ShaderMaterial> single_pass_material;
 	Ref<ImageTexture3D> ao_volume_texture;
 
 	PackedFloat32Array baked_ao;
@@ -86,8 +87,9 @@ class AmbientProbeVolume3D : public Node3D {
 
 	void _apply_to_instances(Node *p_node, int &r_count);
 	void _set_material_override_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
-	void _set_material_overlay_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count);
-	void _configure_overlay_alpha_scissor(GeometryInstance3D *p_gi);
+	void _apply_ao_overlay_recursive(Node *p_node, bool p_enabled, int &r_count, int &r_single_pass_count, int &r_overlay_count);
+	Ref<Material> _get_effective_base_material(GeometryInstance3D *p_gi) const;
+	void _apply_ao_to_instance(GeometryInstance3D *p_gi, int &r_single_pass_count, int &r_overlay_count);
 	Node *_resolve_apply_root() const;
 	void _rebuild_ao_volume_texture();
 	void _push_ao_volume_uniforms(const Ref<ShaderMaterial> &p_material);
@@ -174,18 +176,35 @@ public:
 	bool is_debug_preview_on_meshes() const;
 
 	// The actual, shippable way to make baked AO visible on ordinary meshes without
-	// writing a shader or touching their material: when enabled, every GeometryInstance3D
-	// under apply_target gets a generated material_overlay (not material_override, so the
-	// mesh's own material/textures are untouched) that draws pure black with alpha =
-	// (1 - AO) at each fragment's world position, standard alpha-blended on top. Since
-	// blending gives final = base * ao + black * (1 - ao) = base * ao, this is a correct
-	// multiplicative darkening of whatever was already rendered, not an approximation.
-	// Costs one extra draw per affected instance (the overlay pass), same as any other
-	// use of material_overlay. ao_overlay_strength scales how strong the darkening is.
-	// For an instance whose surface 0 uses a BaseMaterial3D with alpha scissor/hash/depth
-	// pre-pass transparency and an albedo texture (the common setup for cutout foliage
-	// cards), the overlay samples that same texture/threshold and discards to match, so it
-	// doesn't paint over the parts the base material already treats as fully transparent.
+	// writing a shader: when enabled, every GeometryInstance3D under apply_target is
+	// affected in one of two ways, depending on whether its surface 0 material can be
+	// safely reproduced:
+	// - If it's a BaseMaterial3D (the common case: StandardMaterial3D, e.g. what
+	//   FoliageSpawner3D/FoliagePainter3D generate for foliage cards), this instance gets a
+	//   generated material_override that replicates its albedo texture/color, vertex color,
+	//   alpha scissor/hash cutout, roughness, and metallic, and *additionally* samples the
+	//   baked AO 3D texture at each fragment's world position and writes it to the shader's
+	//   built-in AO output (with AO_LIGHT_AFFECT driven by ao_overlay_strength). Because the
+	//   exact same shader invocation both decides which pixels are visible and how dark AO
+	//   makes them, there is no second pass that could disagree about what counts as
+	//   "transparent" - matching the technique described in McGuire/Mara/Majercik's "Real-
+	//   Time Global Illumination using Precomputed Light Field Probes" (probes sampled
+	//   inside the surface's own shading pass, not a bolt-on pass over the finished image).
+	//   Known simplifications versus the original material: no normal/ORM texture maps, and
+	//   always double-sided (cull_disabled) regardless of the source's cull mode.
+	// - Otherwise (e.g. a custom ShaderMaterial, which can't be safely introspected or
+	//   reproduced), this instance instead gets a generated material_overlay - an
+	//   *additional* alpha-blended draw pass, not a replacement - that draws pure black with
+	//   alpha = (1 - AO) at each fragment's world position. Since blending gives
+	//   final = base * ao + black * (1 - ao) = base * ao, this is still a correct
+	//   multiplicative darkening of whatever was already rendered, just without any
+	//   guarantee of matching that material's own alpha test (it has no threshold to match
+	//   against by default, so it never discards - meaning a custom cutout ShaderMaterial
+	//   can still show the dark-rectangle artifact this overlay fallback cannot fix).
+	// Disabling it clears both material_override and material_overlay on every instance it
+	// finds; it does not remember or restore whatever those instances had before. Note this
+	// shares material_override with set_debug_preview_on_meshes(), so enabling both at once
+	// on the same instances is not meaningful - the one applied last wins.
 	void set_ao_overlay_enabled(bool p_enabled);
 	bool is_ao_overlay_enabled() const;
 

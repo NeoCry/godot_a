@@ -79,13 +79,17 @@ static const char *AMBIENT_PROBE_VOLUME_DEBUG_SHADER_CODE =
 		"\tALBEDO = vec3(ao);\n"
 		"}\n";
 
-// Unshaded, alpha-blended spatial shader used by set_ao_overlay_enabled(). Unlike the
-// debug preview shader above (which replaces the mesh's material entirely via
-// material_override), this is meant to be used as a material_overlay: an extra draw pass
-// on top of whatever the mesh already renders. It draws pure black with alpha = (1 - ao),
-// so standard alpha blending (render_mode blend_mix) works out to
-// final = base * (1 - alpha) + black * alpha = base * ao, i.e. a correct multiplicative
-// darkening of the mesh's own shading rather than a replacement of it.
+// Unshaded, alpha-blended spatial shader used by set_ao_overlay_enabled() as a fallback for
+// any instance whose base material can't be safely introspected/reproduced (e.g. a custom
+// ShaderMaterial - see AMBIENT_PROBE_VOLUME_SINGLE_PASS_SHADER_CODE for the preferred path,
+// used whenever the base material is a BaseMaterial3D). This is meant to be used as a
+// material_overlay: an extra draw pass on top of whatever the mesh already renders. It draws
+// pure black with alpha = (1 - ao), so standard alpha blending (render_mode blend_mix) works
+// out to final = base * (1 - alpha) + black * alpha = base * ao, i.e. a correct multiplicative
+// darkening of the mesh's own shading rather than a replacement of it. Since this is a second
+// pass with no knowledge of what the first pass (the actual material) discarded, it has no
+// way to skip pixels that material treats as transparent - a real limitation for a cutout
+// material we can't introspect, documented on set_ao_overlay_enabled().
 static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"shader_type spatial;\n"
 		"render_mode blend_mix, unshaded, cull_back;\n"
@@ -95,18 +99,6 @@ static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"uniform vec3 ao_volume_size = vec3(1.0, 1.0, 1.0);\n"
 		"uniform float ao_overlay_strength : hint_range(0.0, 1.0) = 1.0;\n"
 		"\n"
-		// Set (see _configure_overlay_alpha_scissor()) to the same albedo texture/threshold
-		// the instance's own base material already uses to cut out transparent pixels (e.g.
-		// a foliage card), so this overlay discards at exactly the same pixels instead of
-		// painting a solid darkened quad over them. Godot's "instance uniform"s only support
-		// scalar/vector types, not samplers, so an instance that needs this gets its own
-		// duplicated copy of this material with these two set instead of sharing the one
-		// overlay_material every other instance uses; the default (0.0 threshold, so the
-		// branch below never discards) is correct for every instance with no such material,
-		// since a fully opaque surface has nothing to cut out.
-		"uniform sampler2D ao_overlay_base_albedo_texture : hint_default_white, filter_linear;\n"
-		"uniform float ao_overlay_alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.0;\n"
-		"\n"
 		"varying vec3 world_position;\n"
 		"\n"
 		"void vertex() {\n"
@@ -114,9 +106,6 @@ static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"}\n"
 		"\n"
 		"void fragment() {\n"
-		"\tif (ao_overlay_alpha_scissor_threshold > 0.0 && texture(ao_overlay_base_albedo_texture, UV).a < ao_overlay_alpha_scissor_threshold) {\n"
-		"\t\tdiscard;\n"
-		"\t}\n"
 		"\tvec3 local_position = (ao_volume_inverse_transform * vec4(world_position, 1.0)).xyz;\n"
 		"\tvec3 uvw = local_position / ao_volume_size + 0.5;\n"
 		"\tfloat ao = 1.0;\n"
@@ -125,6 +114,62 @@ static const char *AMBIENT_PROBE_VOLUME_OVERLAY_SHADER_CODE =
 		"\t}\n"
 		"\tALBEDO = vec3(0.0);\n"
 		"\tALPHA = clamp((1.0 - ao) * ao_overlay_strength, 0.0, 1.0);\n"
+		"}\n";
+
+// Single-pass alternative to the overlay shader above, used by set_ao_overlay_enabled()
+// via material_override for any instance whose base material is a BaseMaterial3D (so it can
+// be safely reproduced). Unlike the overlay - a second draw pass that has to *guess* which
+// pixels the first pass already discarded - this shader IS the only pass: the exact same
+// fragment invocation decides both which pixels are visible (mirroring the source
+// material's own albedo/vertex color/alpha scissor) and how dark AO makes them (via the
+// built-in AO/AO_LIGHT_AFFECT outputs, which Godot's own lighting already knows how to
+// blend correctly - including leaving direct light untouched when ao_overlay_strength is
+// low, unlike the overlay's flat post-multiply). This mirrors the core idea in
+// McGuire/Mara/Majercik's "Real-Time Global Illumination using Precomputed Light Field
+// Probes": probes are sampled inside the surface's own shading pass, not a bolt-on pass
+// over the finished image, so there is no second pass left to disagree about what counts
+// as transparent. Known simplifications versus the original material: no normal/ORM
+// texture maps, and always double-sided (cull_disabled) regardless of the source's cull
+// mode - reasonable defaults for foliage cards, the main reason this exists.
+static const char *AMBIENT_PROBE_VOLUME_SINGLE_PASS_SHADER_CODE =
+		"shader_type spatial;\n"
+		"render_mode cull_disabled;\n"
+		"\n"
+		"uniform sampler3D ao_volume_texture : filter_linear, repeat_disable;\n"
+		"uniform mat4 ao_volume_inverse_transform;\n"
+		"uniform vec3 ao_volume_size = vec3(1.0, 1.0, 1.0);\n"
+		"uniform float ao_overlay_strength : hint_range(0.0, 1.0) = 1.0;\n"
+		"\n"
+		"uniform sampler2D albedo_texture : source_color, filter_linear, repeat_enable, hint_default_white;\n"
+		"uniform vec4 albedo_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);\n"
+		"uniform float roughness : hint_range(0.0, 1.0) = 1.0;\n"
+		"uniform float metallic : hint_range(0.0, 1.0) = 0.0;\n"
+		// 0.0 is a sentinel for "this instance's base material isn't a cutout material" - see
+		// ALPHA_SCISSOR_THRESHOLD's own semantics, where 0.0 already means "never discard".
+		"uniform float alpha_scissor_threshold : hint_range(0.0, 1.0) = 0.0;\n"
+		"\n"
+		"varying vec3 world_position;\n"
+		"\n"
+		"void vertex() {\n"
+		"\tworld_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;\n"
+		"}\n"
+		"\n"
+		"void fragment() {\n"
+		"\tvec4 tex = texture(albedo_texture, UV);\n"
+		"\tALBEDO = albedo_color.rgb * tex.rgb * COLOR.rgb;\n"
+		"\tALPHA = albedo_color.a * tex.a * COLOR.a;\n"
+		"\tALPHA_SCISSOR_THRESHOLD = alpha_scissor_threshold;\n"
+		"\tROUGHNESS = roughness;\n"
+		"\tMETALLIC = metallic;\n"
+		"\n"
+		"\tvec3 local_position = (ao_volume_inverse_transform * vec4(world_position, 1.0)).xyz;\n"
+		"\tvec3 uvw = local_position / ao_volume_size + 0.5;\n"
+		"\tfloat ao = 1.0;\n"
+		"\tif (all(greaterThanEqual(uvw, vec3(0.0))) && all(lessThanEqual(uvw, vec3(1.0)))) {\n"
+		"\t\tao = texture(ao_volume_texture, uvw).r;\n"
+		"\t}\n"
+		"\tAO = ao;\n"
+		"\tAO_LIGHT_AFFECT = ao_overlay_strength;\n"
 		"}\n";
 
 namespace {
@@ -612,68 +657,84 @@ void AmbientProbeVolume3D::_set_material_override_recursive(Node *p_node, const 
 	}
 }
 
-void AmbientProbeVolume3D::_set_material_overlay_recursive(Node *p_node, const Ref<Material> &p_material, int &r_count) {
+void AmbientProbeVolume3D::_apply_ao_overlay_recursive(Node *p_node, bool p_enabled, int &r_count, int &r_single_pass_count, int &r_overlay_count) {
 	GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(p_node);
 	if (gi != nullptr) {
-		gi->set_material_overlay(p_material);
-		if (p_material.is_valid()) {
-			_configure_overlay_alpha_scissor(gi);
+		if (p_enabled) {
+			_apply_ao_to_instance(gi, r_single_pass_count, r_overlay_count);
+		} else {
+			gi->set_material_override(Ref<Material>());
+			gi->set_material_overlay(Ref<Material>());
 		}
 		r_count++;
 	}
 
 	for (int i = 0; i < p_node->get_child_count(); i++) {
-		_set_material_overlay_recursive(p_node->get_child(i), p_material, r_count);
+		_apply_ao_overlay_recursive(p_node->get_child(i), p_enabled, r_count, r_single_pass_count, r_overlay_count);
 	}
 }
 
-void AmbientProbeVolume3D::_configure_overlay_alpha_scissor(GeometryInstance3D *p_gi) {
-	// If this instance's own surface 0 material already cuts out transparent pixels (the
-	// common setup for foliage cards: a BaseMaterial3D with alpha scissor/hash/depth
-	// pre-pass transparency and an albedo texture), give this instance its own duplicated
-	// copy of overlay_material with that same texture/threshold set as regular shader
-	// parameters, so it discards at exactly the same pixels instead of painting a solid
-	// darkened quad over the "empty" parts of the card. Godot's instance shader parameters
-	// only support scalar/vector types, not samplers, so a shared per-instance uniform
-	// texture isn't an option here - a duplicated Material (cheap; it doesn't copy the
-	// textures it references, just points at them) is the only way to vary a texture
-	// between instances of the same base material. Every other instance keeps sharing the
-	// one overlay_material (already assigned by the caller), whose default threshold of
-	// 0.0 means "never discard", correct for an opaque surface with nothing to cut out.
+Ref<Material> AmbientProbeVolume3D::_get_effective_base_material(GeometryInstance3D *p_gi) const {
 	// Both MeshInstance3D and MultiMeshInstance3D are handled explicitly, since grass/foliage
 	// (the main reason this matters) is generated as a MultiMeshInstance3D by FoliageSpawner3D
 	// and FoliagePainter3D, not a MeshInstance3D.
 	Ref<Material> base_material = p_gi->get_material_override();
-	if (base_material.is_null()) {
-		MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
-		MultiMeshInstance3D *mmi = Object::cast_to<MultiMeshInstance3D>(p_gi);
-		if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
-			base_material = mi->get_active_material(0);
-		} else if (mmi != nullptr && mmi->get_multimesh().is_valid() && mmi->get_multimesh()->get_mesh().is_valid() && mmi->get_multimesh()->get_mesh()->get_surface_count() > 0) {
-			// MultiMeshInstance3D (what FoliageSpawner3D/FoliagePainter3D actually generate
-			// for grass/foliage cards) has no get_active_material()-style helper of its own;
-			// its multimesh's mesh surface material is the equivalent of "the material this
-			// instance renders with" when GeometryInstance3D.material_override isn't set.
-			base_material = mmi->get_multimesh()->get_mesh()->surface_get_material(0);
-		}
+	if (base_material.is_valid()) {
+		return base_material;
 	}
 
-	Ref<BaseMaterial3D> base_std = base_material;
-	if (base_std.is_null() ||
-			!(base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR ||
-					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_HASH ||
-					base_std->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_DEPTH_PRE_PASS) ||
-			base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO).is_null()) {
+	MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(p_gi);
+	if (mi != nullptr && mi->get_mesh().is_valid() && mi->get_mesh()->get_surface_count() > 0) {
+		return mi->get_active_material(0);
+	}
+
+	MultiMeshInstance3D *mmi = Object::cast_to<MultiMeshInstance3D>(p_gi);
+	if (mmi != nullptr && mmi->get_multimesh().is_valid() && mmi->get_multimesh()->get_mesh().is_valid() && mmi->get_multimesh()->get_mesh()->get_surface_count() > 0) {
+		// MultiMeshInstance3D (what FoliageSpawner3D/FoliagePainter3D actually generate for
+		// grass/foliage cards) has no get_active_material()-style helper of its own; its
+		// multimesh's mesh surface material is the equivalent of "the material this instance
+		// renders with" when GeometryInstance3D.material_override isn't set.
+		return mmi->get_multimesh()->get_mesh()->surface_get_material(0);
+	}
+
+	return Ref<Material>();
+}
+
+void AmbientProbeVolume3D::_apply_ao_to_instance(GeometryInstance3D *p_gi, int &r_single_pass_count, int &r_overlay_count) {
+	Ref<BaseMaterial3D> base_std = _get_effective_base_material(p_gi);
+	if (base_std.is_null()) {
+		// Can't safely reproduce an arbitrary material (e.g. a custom ShaderMaterial), so
+		// fall back to the overlay: still darkens the instance, just without any guarantee
+		// of matching that material's own alpha test. See set_ao_overlay_enabled().
+		p_gi->set_material_override(Ref<Material>());
+		p_gi->set_material_overlay(overlay_material);
+		r_overlay_count++;
 		return;
 	}
 
-	Ref<ShaderMaterial> variant = overlay_material->duplicate();
+	// Single-pass replacement: the exact same fragment shader invocation decides both which
+	// pixels are visible (mirroring this material's own albedo/vertex color/alpha scissor)
+	// and how dark AO makes them, so there is no second pass left to disagree about what
+	// counts as transparent. See AMBIENT_PROBE_VOLUME_SINGLE_PASS_SHADER_CODE and
+	// set_ao_overlay_enabled() for the full rationale.
+	Ref<ShaderMaterial> variant = single_pass_material->duplicate();
+	variant->set_shader_parameter("albedo_color", base_std->get_albedo());
+	variant->set_shader_parameter("albedo_texture", base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+	variant->set_shader_parameter("roughness", base_std->get_roughness());
+	variant->set_shader_parameter("metallic", base_std->get_metallic());
+
+	const BaseMaterial3D::Transparency transparency = base_std->get_transparency();
+	const bool is_cutout = transparency == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR ||
+			transparency == BaseMaterial3D::TRANSPARENCY_ALPHA_HASH ||
+			transparency == BaseMaterial3D::TRANSPARENCY_ALPHA_DEPTH_PRE_PASS;
 	// A user-configured threshold of exactly 0.0 still means "cut out fully transparent
-	// pixels" for the base material's own alpha-scissor test, so floor it just above our
-	// own "disabled" sentinel rather than passing 0.0 through unchanged.
-	variant->set_shader_parameter("ao_overlay_base_albedo_texture", base_std->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
-	variant->set_shader_parameter("ao_overlay_alpha_scissor_threshold", MAX(base_std->get_alpha_scissor_threshold(), 0.001f));
-	p_gi->set_material_overlay(variant);
+	// pixels" for the base material's own alpha-scissor test, so floor it just above our own
+	// "not a cutout material" sentinel rather than passing 0.0 through unchanged.
+	variant->set_shader_parameter("alpha_scissor_threshold", is_cutout ? MAX(base_std->get_alpha_scissor_threshold(), 0.001f) : 0.0f);
+
+	p_gi->set_material_override(variant);
+	p_gi->set_material_overlay(Ref<Material>());
+	r_single_pass_count++;
 }
 
 void AmbientProbeVolume3D::_rebuild_ao_volume_texture() {
@@ -755,7 +816,6 @@ void AmbientProbeVolume3D::set_ao_overlay_enabled(bool p_enabled) {
 		return;
 	}
 
-	Ref<Material> material;
 	if (p_enabled) {
 		if (overlay_material.is_null()) {
 			Ref<Shader> shader;
@@ -764,18 +824,27 @@ void AmbientProbeVolume3D::set_ao_overlay_enabled(bool p_enabled) {
 			overlay_material.instantiate();
 			overlay_material->set_shader(shader);
 		}
+		if (single_pass_material.is_null()) {
+			Ref<Shader> shader;
+			shader.instantiate();
+			shader->set_code(AMBIENT_PROBE_VOLUME_SINGLE_PASS_SHADER_CODE);
+			single_pass_material.instantiate();
+			single_pass_material->set_shader(shader);
+		}
 		_rebuild_ao_volume_texture();
 		_push_ao_volume_uniforms(overlay_material);
+		_push_ao_volume_uniforms(single_pass_material);
 		overlay_material->set_shader_parameter("ao_overlay_strength", ao_overlay_strength);
-		material = overlay_material;
+		single_pass_material->set_shader_parameter("ao_overlay_strength", ao_overlay_strength);
 	}
 
-	int count = 0;
-	_set_material_overlay_recursive(root, material, count);
+	int count = 0, single_pass_count = 0, overlay_count = 0;
+	_apply_ao_overlay_recursive(root, p_enabled, count, single_pass_count, overlay_count);
 
-	print_line(vformat("AmbientProbeVolume3D \"%s\": AO overlay %s on %d GeometryInstance3D node(s) under \"%s\"%s.",
+	print_line(vformat("AmbientProbeVolume3D \"%s\": AO overlay %s on %d GeometryInstance3D node(s) under \"%s\"%s%s.",
 			String(get_name()), p_enabled ? "enabled" : "disabled", count, root->get_name(),
-			(p_enabled && !is_baked()) ? " (not baked yet, so nothing will be darkened)" : ""));
+			p_enabled ? vformat(" (%d via single-pass material replacement, %d via unshaded overlay fallback)", single_pass_count, overlay_count) : "",
+			(p_enabled && !is_baked()) ? " - not baked yet, so nothing will be darkened" : ""));
 }
 
 bool AmbientProbeVolume3D::is_ao_overlay_enabled() const {
@@ -784,8 +853,12 @@ bool AmbientProbeVolume3D::is_ao_overlay_enabled() const {
 
 void AmbientProbeVolume3D::set_ao_overlay_strength(float p_strength) {
 	ao_overlay_strength = CLAMP(p_strength, 0.0f, 1.0f);
-	if (overlay_material.is_valid()) {
-		overlay_material->set_shader_parameter("ao_overlay_strength", ao_overlay_strength);
+	// Per-instance single-pass/overlay materials are duplicates that each carry their own
+	// frozen copy of this value, so a live change needs a full refresh to actually reach
+	// them - updating just the shared templates wouldn't affect instances already using a
+	// duplicated variant.
+	if (ao_overlay_enabled) {
+		set_ao_overlay_enabled(true);
 	}
 }
 
@@ -885,6 +958,10 @@ PackedStringArray AmbientProbeVolume3D::get_configuration_warnings() const {
 
 	if (ao_overlay_enabled && !is_baked()) {
 		warnings.push_back(RTR("AO Overlay is enabled, but this volume hasn't been baked yet, so it has nothing to darken. Press Bake AO."));
+	}
+
+	if (debug_preview_on_meshes && ao_overlay_enabled) {
+		warnings.push_back(RTR("Both Debug Preview On Meshes and AO Overlay are enabled. They can share the same GeometryInstance3D.material_override (AO Overlay uses it for any instance whose base material it can safely reproduce), so whichever was (re-)applied last wins on those instances. Turn Debug Preview On Meshes back off once you're done checking the bake."));
 	}
 
 	return warnings;
