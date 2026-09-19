@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="FoliageLODLevel" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		One level of detail inside a [FoliageLayer].
+	</brief_description>
+	<description>
+		[FoliageLayer] normally holds several [FoliageLODLevel]s (e.g. a close-up LOD_0, a mid-range LOD_1, and a distant LOD_2). Each one has its own [member mesh], its own optional [member material_override], and its own visibility/fade distance range - but all levels of the same layer always share the exact same painted instance positions, rotations, and scales. [FoliagePainter3D] renders every level as its own [MultiMeshInstance3D] per cell, so at any given camera distance the renderer shows whichever level's visibility range currently covers it (and cross-fades between two levels if their ranges overlap, using a margin and [member visibility_range_fade_mode]).
+		Levels are ordered by their position in [member FoliageLayer.lod_levels]; there is no separate index property. A level with no [member mesh] assigned renders nothing (useful, for instance, to make the farthest LOD simply disappear beyond a distance instead of showing a mesh).
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="material_override" type="Material" setter="set_material_override" getter="get_material_override">
+			If set, overrides the material used to render this LOD level's instances (equivalent to [member GeometryInstance3D.material_override] on the level's internal [MultiMeshInstance3D]). Leave unset to use [member mesh]'s own surface material(s).
+		</member>
+		<member name="mesh" type="Mesh" setter="set_mesh" getter="get_mesh">
+			The [Mesh] used for this LOD level. Leave unset to render nothing while this level's visibility range is active.
+		</member>
+		<member name="visibility_range_begin" type="float" setter="set_visibility_range_begin" getter="get_visibility_range_begin" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_begin]: the distance from the camera at which this level starts being visible (if greater than [code]0.0[/code]).
+		</member>
+		<member name="visibility_range_begin_margin" type="float" setter="set_visibility_range_begin_margin" getter="get_visibility_range_begin_margin" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_begin_margin]: how far before [member visibility_range_begin] this level starts fading in, when [member visibility_range_fade_mode] is not [constant GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED].
+		</member>
+		<member name="visibility_range_end" type="float" setter="set_visibility_range_end" getter="get_visibility_range_end" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_end]: the distance from the camera beyond which this level stops being visible (if greater than [code]0.0[/code]).
+		</member>
+		<member name="visibility_range_end_margin" type="float" setter="set_visibility_range_end_margin" getter="get_visibility_range_end_margin" default="0.0">
+			Equivalent to [member GeometryInstance3D.visibility_range_end_margin]: how far before [member visibility_range_end] this level starts fading out, when [member visibility_range_fade_mode] is not [constant GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED].
+		</member>
+		<member name="visibility_range_fade_mode" type="int" setter="set_visibility_range_fade_mode" getter="get_visibility_range_fade_mode" enum="GeometryInstance3D.VisibilityRangeFadeMode" default="0">
+			Equivalent to [member GeometryInstance3D.visibility_range_fade_mode]: whether and how this level fades in/out across its margins instead of popping. Use [constant GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF] to crossfade smoothly with neighboring LOD levels whose ranges overlap this one's margins.
+		</member>
+	</members>
+</class>

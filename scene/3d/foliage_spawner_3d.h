@@ -32,10 +32,10 @@
 
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
+#include "scene/3d/foliage_lod_level.h"
 #include "scene/3d/multimesh_instance_3d.h"
 
 class Image;
-class Mesh;
 class RandomPCG;
 class Texture2D;
 
@@ -46,19 +46,23 @@ class Texture2D;
 //
 // Generated instances are spatially chunked into a grid of cells on the local XZ
 // plane (see cell_size), the same technique FoliagePainter3D uses for painted
-// instances: each non-empty cell gets its own small MultiMesh and internal
-// MultiMeshInstance3D child with a tight bounding box, so the renderer's normal
-// per-node AABB frustum culling naturally skips whole cells that are off-screen,
-// instead of always submitting every instance in one giant draw call.
+// instances: each non-empty cell gets one small MultiMesh and internal
+// MultiMeshInstance3D child per FoliageLODLevel of lod_levels, all with a tight
+// bounding box, so the renderer's normal per-node AABB frustum culling naturally
+// skips whole cells that are off-screen, instead of always submitting every
+// instance in one giant draw call.
 class FoliageSpawner3D : public MultiMeshInstance3D {
 	GDCLASS(FoliageSpawner3D, MultiMeshInstance3D);
 
+	// One MultiMesh + MultiMeshInstance3D per FoliageLODLevel of lod_levels,
+	// index-for-index; every multimesh in lod_multimeshes always has the exact
+	// same instance transforms as the others (see _sync_cell_lods).
 	struct FoliageCell {
-		Ref<MultiMesh> multimesh;
-		MultiMeshInstance3D *node = nullptr;
+		LocalVector<Ref<MultiMesh>> lod_multimeshes;
+		LocalVector<MultiMeshInstance3D *> lod_nodes;
 	};
 
-	Ref<Mesh> mesh;
+	TypedArray<FoliageLODLevel> lod_levels;
 
 	// Volume.
 	Vector3 volume_size = Vector3(10, 4, 10);
@@ -96,11 +100,12 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	// regenerate()), so its own inherited GeometryInstance3D properties
 	// (material_override, cast_shadow, gi_mode, visibility_range_*, etc.) are
 	// hidden in _validate_property and have no effect. These cell_* properties
-	// are the real, working equivalents: they're copied onto every cell's
+	// are the real, working equivalents, shared across every LOD level (the
+	// per-level mesh/material_override/visibility_range_* equivalents live on
+	// FoliageLODLevel instead): they're copied onto every cell's
 	// MultiMeshInstance3D by _configure_cell_node, and (unlike every other
 	// FoliageSpawner3D setting) apply immediately to already-generated cells
 	// instead of waiting for the next Regenerate.
-	Ref<Material> cell_material_override;
 	Ref<Material> cell_material_overlay;
 	float cell_transparency = 0.0f;
 	ShadowCastingSetting cell_cast_shadow = SHADOW_CASTING_SETTING_ON;
@@ -109,14 +114,11 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	bool cell_ignore_occlusion_culling = false;
 	bool cell_ignore_screen_space_shadows = false;
 	GIMode cell_gi_mode = GI_MODE_DISABLED;
-	float cell_visibility_range_begin = 0.0f;
-	float cell_visibility_range_begin_margin = 0.0f;
-	float cell_visibility_range_end = 0.0f;
-	float cell_visibility_range_end_margin = 0.0f;
-	VisibilityRangeFadeMode cell_visibility_range_fade_mode = VISIBILITY_RANGE_FADE_DISABLED;
 
 	// Debug.
 	bool debug_show_cells = false;
+
+	void _on_lod_level_changed();
 
 	Ref<Image> _get_mask_image() const;
 	bool _sample_mask(const Ref<Image> &p_image, const Vector2 &p_uv, RandomPCG &p_rng) const;
@@ -124,9 +126,16 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 
 	void _clear_cells();
 	FoliageCell &_get_or_create_cell(const Vector2i &p_cell);
-	void _sync_cell_node(FoliageCell &p_cell);
-	void _configure_cell_node(MultiMeshInstance3D *p_node) const;
+	// Reconciles a cell's lod_multimeshes/lod_nodes count and configuration
+	// (mesh, material, visibility range, shared cell_* settings) to match
+	// lod_levels. Safe to call at any time: creates/frees MultiMeshInstance3D
+	// children and copies existing transforms into any newly added LOD level.
+	void _sync_cell_lods(FoliageCell &p_cell);
+	void _configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level) const;
 	void _sync_all_cells_settings();
+
+	static LocalVector<Transform3D> _read_transforms(const Ref<MultiMesh> &p_multimesh);
+	static void _write_transforms(const Ref<MultiMesh> &p_multimesh, const LocalVector<Transform3D> &p_transforms);
 
 	// Internal, storage-only representation of cells' MultiMesh resources, so
 	// generated instances are actually saved with the scene (the
@@ -141,8 +150,12 @@ protected:
 	void _notification(int p_what);
 
 public:
-	void set_mesh(const Ref<Mesh> &p_mesh);
-	Ref<Mesh> get_mesh() const;
+	void set_lod_levels(const TypedArray<FoliageLODLevel> &p_levels);
+	TypedArray<FoliageLODLevel> get_lod_levels() const;
+
+	// True if at least one LOD level has a Mesh assigned (i.e. this spawner
+	// actually renders something).
+	bool has_any_mesh() const;
 
 	void set_volume_size(const Vector3 &p_size);
 	Vector3 get_volume_size() const;
@@ -198,9 +211,6 @@ public:
 	void set_max_scale(float p_scale);
 	float get_max_scale() const;
 
-	void set_cell_material_override(const Ref<Material> &p_material);
-	Ref<Material> get_cell_material_override() const;
-
 	void set_cell_material_overlay(const Ref<Material> &p_material);
 	Ref<Material> get_cell_material_overlay() const;
 
@@ -224,21 +234,6 @@ public:
 
 	void set_cell_gi_mode(GIMode p_mode);
 	GIMode get_cell_gi_mode() const;
-
-	void set_cell_visibility_range_begin(float p_dist);
-	float get_cell_visibility_range_begin() const;
-
-	void set_cell_visibility_range_begin_margin(float p_dist);
-	float get_cell_visibility_range_begin_margin() const;
-
-	void set_cell_visibility_range_end(float p_dist);
-	float get_cell_visibility_range_end() const;
-
-	void set_cell_visibility_range_end_margin(float p_dist);
-	float get_cell_visibility_range_end_margin() const;
-
-	void set_cell_visibility_range_fade_mode(VisibilityRangeFadeMode p_mode);
-	VisibilityRangeFadeMode get_cell_visibility_range_fade_mode() const;
 
 	void set_debug_show_cells(bool p_enabled);
 	bool is_debug_show_cells_enabled() const;

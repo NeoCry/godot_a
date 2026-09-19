@@ -30,10 +30,12 @@
 
 #include "foliage_spawner_3d.h"
 
+#include "core/core_string_names.h"
 #include "core/io/image.h"
 #include "core/math/face3.h"
 #include "core/math/math_funcs.h"
 #include "core/math/random_pcg.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
@@ -44,8 +46,9 @@
 #include "scene/resources/texture.h"
 
 void FoliageSpawner3D::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_mesh", "mesh"), &FoliageSpawner3D::set_mesh);
-	ClassDB::bind_method(D_METHOD("get_mesh"), &FoliageSpawner3D::get_mesh);
+	ClassDB::bind_method(D_METHOD("set_lod_levels", "levels"), &FoliageSpawner3D::set_lod_levels);
+	ClassDB::bind_method(D_METHOD("get_lod_levels"), &FoliageSpawner3D::get_lod_levels);
+	ClassDB::bind_method(D_METHOD("has_any_mesh"), &FoliageSpawner3D::has_any_mesh);
 
 	ClassDB::bind_method(D_METHOD("set_volume_size", "size"), &FoliageSpawner3D::set_volume_size);
 	ClassDB::bind_method(D_METHOD("get_volume_size"), &FoliageSpawner3D::get_volume_size);
@@ -101,9 +104,6 @@ void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_max_scale", "scale"), &FoliageSpawner3D::set_max_scale);
 	ClassDB::bind_method(D_METHOD("get_max_scale"), &FoliageSpawner3D::get_max_scale);
 
-	ClassDB::bind_method(D_METHOD("set_cell_material_override", "material"), &FoliageSpawner3D::set_cell_material_override);
-	ClassDB::bind_method(D_METHOD("get_cell_material_override"), &FoliageSpawner3D::get_cell_material_override);
-
 	ClassDB::bind_method(D_METHOD("set_cell_material_overlay", "material"), &FoliageSpawner3D::set_cell_material_overlay);
 	ClassDB::bind_method(D_METHOD("get_cell_material_overlay"), &FoliageSpawner3D::get_cell_material_overlay);
 
@@ -128,21 +128,6 @@ void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_cell_gi_mode", "mode"), &FoliageSpawner3D::set_cell_gi_mode);
 	ClassDB::bind_method(D_METHOD("get_cell_gi_mode"), &FoliageSpawner3D::get_cell_gi_mode);
 
-	ClassDB::bind_method(D_METHOD("set_cell_visibility_range_begin", "distance"), &FoliageSpawner3D::set_cell_visibility_range_begin);
-	ClassDB::bind_method(D_METHOD("get_cell_visibility_range_begin"), &FoliageSpawner3D::get_cell_visibility_range_begin);
-
-	ClassDB::bind_method(D_METHOD("set_cell_visibility_range_begin_margin", "distance"), &FoliageSpawner3D::set_cell_visibility_range_begin_margin);
-	ClassDB::bind_method(D_METHOD("get_cell_visibility_range_begin_margin"), &FoliageSpawner3D::get_cell_visibility_range_begin_margin);
-
-	ClassDB::bind_method(D_METHOD("set_cell_visibility_range_end", "distance"), &FoliageSpawner3D::set_cell_visibility_range_end);
-	ClassDB::bind_method(D_METHOD("get_cell_visibility_range_end"), &FoliageSpawner3D::get_cell_visibility_range_end);
-
-	ClassDB::bind_method(D_METHOD("set_cell_visibility_range_end_margin", "distance"), &FoliageSpawner3D::set_cell_visibility_range_end_margin);
-	ClassDB::bind_method(D_METHOD("get_cell_visibility_range_end_margin"), &FoliageSpawner3D::get_cell_visibility_range_end_margin);
-
-	ClassDB::bind_method(D_METHOD("set_cell_visibility_range_fade_mode", "mode"), &FoliageSpawner3D::set_cell_visibility_range_fade_mode);
-	ClassDB::bind_method(D_METHOD("get_cell_visibility_range_fade_mode"), &FoliageSpawner3D::get_cell_visibility_range_fade_mode);
-
 	ClassDB::bind_method(D_METHOD("set_debug_show_cells", "enabled"), &FoliageSpawner3D::set_debug_show_cells);
 	ClassDB::bind_method(D_METHOD("is_debug_show_cells_enabled"), &FoliageSpawner3D::is_debug_show_cells_enabled);
 
@@ -155,7 +140,7 @@ void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_get_cell_data"), &FoliageSpawner3D::_get_cell_data);
 	ClassDB::bind_method(D_METHOD("_set_cell_data", "data"), &FoliageSpawner3D::_set_cell_data);
 
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "mesh", PROPERTY_HINT_RESOURCE_TYPE, "BoxMesh,SphereMesh,CapsuleMesh,CylinderMesh,PrismMesh,TorusMesh,PlaneMesh,QuadMesh,TextMesh,RibbonTrailMesh,TubeTrailMesh,PointMesh,ArrayMesh,ImmediateMesh,PlaceholderMesh,Mesh", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_INSTANTIATE_OBJECT), "set_mesh", "get_mesh");
+	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "lod_levels", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("FoliageLODLevel")), "set_lod_levels", "get_lod_levels");
 
 	ADD_GROUP("Volume", "");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "volume_size", PROPERTY_HINT_RANGE, "0.01,4096,0.01,or_greater,suffix:m"), "set_volume_size", "get_volume_size");
@@ -190,10 +175,11 @@ void FoliageSpawner3D::_bind_methods() {
 
 	// This node itself never has any visible geometry (see regenerate()), so
 	// its inherited GeometryInstance3D properties are hidden in
-	// _validate_property; these cell_* properties are the working equivalents,
-	// applied to every cell's MultiMeshInstance3D and kept in sync live.
+	// _validate_property; these cell_* properties are the working equivalents
+	// (shared across every LOD level; see FoliageLODLevel for the per-level
+	// mesh/material_override/visibility_range_* equivalents), applied to every
+	// cell's MultiMeshInstance3D and kept in sync live.
 	ADD_GROUP("Cell Rendering", "cell_");
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "cell_material_override", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_cell_material_override", "get_cell_material_override");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "cell_material_overlay", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_cell_material_overlay", "get_cell_material_overlay");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_transparency", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), "set_cell_transparency", "get_cell_transparency");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "cell_cast_shadow", PROPERTY_HINT_ENUM, "Off,On,Double-Sided,Shadows Only"), "set_cell_cast_shadow", "get_cell_cast_shadow");
@@ -202,11 +188,6 @@ void FoliageSpawner3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cell_ignore_occlusion_culling"), "set_cell_ignore_occlusion_culling", "is_cell_ignoring_occlusion_culling");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cell_ignore_screen_space_shadows"), "set_cell_ignore_screen_space_shadows", "is_cell_ignoring_screen_space_shadows");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "cell_gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_cell_gi_mode", "get_cell_gi_mode");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_visibility_range_begin", PROPERTY_HINT_RANGE, "0.0,4096.0,0.01,or_greater,suffix:m"), "set_cell_visibility_range_begin", "get_cell_visibility_range_begin");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_visibility_range_begin_margin", PROPERTY_HINT_RANGE, "0.0,4096.0,0.01,or_greater,suffix:m"), "set_cell_visibility_range_begin_margin", "get_cell_visibility_range_begin_margin");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_visibility_range_end", PROPERTY_HINT_RANGE, "0.0,4096.0,0.01,or_greater,suffix:m"), "set_cell_visibility_range_end", "get_cell_visibility_range_end");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_visibility_range_end_margin", PROPERTY_HINT_RANGE, "0.0,4096.0,0.01,or_greater,suffix:m"), "set_cell_visibility_range_end_margin", "get_cell_visibility_range_end_margin");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "cell_visibility_range_fade_mode", PROPERTY_HINT_ENUM, "Disabled,Self,Dependencies"), "set_cell_visibility_range_fade_mode", "get_cell_visibility_range_fade_mode");
 
 	ADD_GROUP("Debug", "debug_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_show_cells"), "set_debug_show_cells", "is_debug_show_cells_enabled");
@@ -265,7 +246,7 @@ void FoliageSpawner3D::_notification(int p_what) {
 		// after _cell_data during scene loading (GeometryInstance3D-derived
 		// FoliageSpawner3D properties are declared after this node's own).
 		for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
-			_sync_cell_node(kv.value);
+			_sync_cell_lods(kv.value);
 		}
 	}
 }
@@ -276,9 +257,11 @@ Callable FoliageSpawner3D::_get_regenerate_button() const {
 
 void FoliageSpawner3D::_clear_cells() {
 	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		if (kv.value.node != nullptr) {
-			remove_child(kv.value.node);
-			kv.value.node->queue_free();
+		for (MultiMeshInstance3D *node : kv.value.lod_nodes) {
+			if (node != nullptr) {
+				remove_child(node);
+				node->queue_free();
+			}
 		}
 	}
 	cells.clear();
@@ -288,33 +271,98 @@ FoliageSpawner3D::FoliageCell &FoliageSpawner3D::_get_or_create_cell(const Vecto
 	const bool is_new = !cells.has(p_cell);
 	FoliageCell &cell = cells[p_cell];
 	if (is_new) {
-		cell.multimesh.instantiate();
-		cell.multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
-		cell.multimesh->set_mesh(mesh);
-		cell.multimesh->set_instance_count(0);
-		_sync_cell_node(cell);
+		_sync_cell_lods(cell);
 	}
 	return cell;
 }
 
-void FoliageSpawner3D::_sync_cell_node(FoliageCell &p_cell) {
-	if (p_cell.multimesh.is_null()) {
-		return;
+LocalVector<Transform3D> FoliageSpawner3D::_read_transforms(const Ref<MultiMesh> &p_multimesh) {
+	LocalVector<Transform3D> result;
+	if (p_multimesh.is_null()) {
+		return result;
 	}
-	if (p_cell.node == nullptr) {
-		p_cell.node = memnew(MultiMeshInstance3D);
-		add_child(p_cell.node, false, INTERNAL_MODE_FRONT);
+	const int count = p_multimesh->get_instance_count();
+	result.resize(count);
+	for (int i = 0; i < count; i++) {
+		result[i] = p_multimesh->get_instance_transform(i);
 	}
-	p_cell.node->set_multimesh(p_cell.multimesh);
-	_configure_cell_node(p_cell.node);
+	return result;
 }
 
-void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node) const {
+void FoliageSpawner3D::_write_transforms(const Ref<MultiMesh> &p_multimesh, const LocalVector<Transform3D> &p_transforms) {
+	if (p_multimesh.is_null()) {
+		return;
+	}
+	// MultiMesh.instance_count "clears and (re)sizes the buffers" on every
+	// set, so this always writes the *entire* array back, never just a diff.
+	p_multimesh->set_instance_count((int)p_transforms.size());
+	for (uint32_t i = 0; i < p_transforms.size(); i++) {
+		p_multimesh->set_instance_transform(i, p_transforms[i]);
+	}
+}
+
+void FoliageSpawner3D::_sync_cell_lods(FoliageCell &p_cell) {
+	const int lod_count = lod_levels.size();
+
+	// Shrink extra LOD multimeshes/nodes if lod_levels now has fewer levels
+	// than this cell was last synced with.
+	while ((int)p_cell.lod_multimeshes.size() > lod_count) {
+		const int last = p_cell.lod_multimeshes.size() - 1;
+		if (last < (int)p_cell.lod_nodes.size()) {
+			if (p_cell.lod_nodes[last] != nullptr) {
+				remove_child(p_cell.lod_nodes[last]);
+				p_cell.lod_nodes[last]->queue_free();
+			}
+			p_cell.lod_nodes.remove_at(last);
+		}
+		p_cell.lod_multimeshes.remove_at(last);
+	}
+
+	// Grow: new LOD levels start out with the same instance transforms as
+	// the rest of the cell (read from any existing multimesh) instead of
+	// being empty, so a newly added LOD level doesn't need a Regenerate.
+	const LocalVector<Transform3D> existing_transforms = p_cell.lod_multimeshes.is_empty() ? LocalVector<Transform3D>() : _read_transforms(p_cell.lod_multimeshes[0]);
+	while ((int)p_cell.lod_multimeshes.size() < lod_count) {
+		Ref<MultiMesh> mm;
+		mm.instantiate();
+		mm->set_transform_format(MultiMesh::TRANSFORM_3D);
+		_write_transforms(mm, existing_transforms);
+		p_cell.lod_multimeshes.push_back(mm);
+	}
+
+	// Ensure every multimesh has a MultiMeshInstance3D to be rendered through.
+	while ((int)p_cell.lod_nodes.size() < (int)p_cell.lod_multimeshes.size()) {
+		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
+		add_child(node, false, INTERNAL_MODE_FRONT);
+		p_cell.lod_nodes.push_back(node);
+	}
+
+	// Apply each LOD level's own mesh/material/visibility range, plus the
+	// cell_* properties shared by the whole spawner, to every node.
+	for (int i = 0; i < lod_count; i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		MultiMeshInstance3D *node = p_cell.lod_nodes[i];
+		Ref<MultiMesh> mm = p_cell.lod_multimeshes[i];
+		if (level.is_null() || node == nullptr || mm.is_null()) {
+			continue;
+		}
+
+		mm->set_mesh(level->get_mesh());
+
+		node->set_multimesh(mm);
+		_configure_cell_node(node, level);
+	}
+}
+
+void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level) const {
 	// Cells mirror this node's cell_* rendering settings, the same way
 	// FoliagePainter3D's FoliageLayer settings are copied to its cell nodes.
 	// See the "Cell Rendering" comment above the cell_* fields for why these
-	// aren't just the plain inherited GeometryInstance3D properties.
-	p_node->set_material_override(cell_material_override);
+	// aren't just the plain inherited GeometryInstance3D properties. The
+	// per-level mesh/material_override/visibility_range_* come from p_level
+	// instead (see FoliageLODLevel); it is only ever null defensively (a
+	// mismatch between lod_nodes and lod_levels), in which case those are
+	// simply left unchanged.
 	p_node->set_material_overlay(cell_material_overlay);
 	p_node->set_transparency(cell_transparency);
 	p_node->set_cast_shadows_setting(cell_cast_shadow);
@@ -323,17 +371,24 @@ void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node) const {
 	p_node->set_ignore_occlusion_culling(cell_ignore_occlusion_culling);
 	p_node->set_ignore_screen_space_shadows(cell_ignore_screen_space_shadows);
 	p_node->set_gi_mode(cell_gi_mode);
-	p_node->set_visibility_range_begin(cell_visibility_range_begin);
-	p_node->set_visibility_range_begin_margin(cell_visibility_range_begin_margin);
-	p_node->set_visibility_range_end(cell_visibility_range_end);
-	p_node->set_visibility_range_end_margin(cell_visibility_range_end_margin);
-	p_node->set_visibility_range_fade_mode(cell_visibility_range_fade_mode);
+	if (p_level.is_valid()) {
+		p_node->set_material_override(p_level->get_material_override());
+		p_node->set_visibility_range_begin(p_level->get_visibility_range_begin());
+		p_node->set_visibility_range_begin_margin(p_level->get_visibility_range_begin_margin());
+		p_node->set_visibility_range_end(p_level->get_visibility_range_end());
+		p_node->set_visibility_range_end_margin(p_level->get_visibility_range_end_margin());
+		p_node->set_visibility_range_fade_mode(p_level->get_visibility_range_fade_mode());
+	}
 }
 
 void FoliageSpawner3D::_sync_all_cells_settings() {
 	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		if (kv.value.node != nullptr) {
-			_configure_cell_node(kv.value.node);
+		for (int i = 0; i < (int)kv.value.lod_nodes.size(); i++) {
+			if (kv.value.lod_nodes[i] == nullptr) {
+				continue;
+			}
+			Ref<FoliageLODLevel> level = i < lod_levels.size() ? Ref<FoliageLODLevel>(lod_levels[i]) : Ref<FoliageLODLevel>();
+			_configure_cell_node(kv.value.lod_nodes[i], level);
 		}
 	}
 }
@@ -341,12 +396,16 @@ void FoliageSpawner3D::_sync_all_cells_settings() {
 Array FoliageSpawner3D::_get_cell_data() const {
 	Array result;
 	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		if (kv.value.multimesh.is_null() || kv.value.multimesh->get_instance_count() == 0) {
+		if (kv.value.lod_multimeshes.is_empty() || kv.value.lod_multimeshes[0].is_null() || kv.value.lod_multimeshes[0]->get_instance_count() == 0) {
 			continue;
+		}
+		Array lod_multimeshes;
+		for (const Ref<MultiMesh> &mm : kv.value.lod_multimeshes) {
+			lod_multimeshes.push_back(mm);
 		}
 		Array entry;
 		entry.push_back(kv.key);
-		entry.push_back(kv.value.multimesh);
+		entry.push_back(lod_multimeshes);
 		result.push_back(entry);
 	}
 	return result;
@@ -361,30 +420,68 @@ void FoliageSpawner3D::_set_cell_data(const Array &p_data) {
 			continue;
 		}
 		const Vector2i cell_coord = entry[0];
-		Ref<MultiMesh> mm = entry[1];
-		if (mm.is_null()) {
+		Array lod_multimeshes = entry[1];
+		if (lod_multimeshes.is_empty()) {
 			continue;
 		}
 
 		FoliageCell cell;
-		cell.multimesh = mm;
+		for (int j = 0; j < lod_multimeshes.size(); j++) {
+			Ref<MultiMesh> mm = lod_multimeshes[j];
+			if (mm.is_valid()) {
+				cell.lod_multimeshes.push_back(mm);
+			}
+		}
+		if (cell.lod_multimeshes.is_empty()) {
+			continue;
+		}
 		cells[cell_coord] = cell;
-		_sync_cell_node(cells[cell_coord]);
+		_sync_cell_lods(cells[cell_coord]);
 	}
 }
 
-void FoliageSpawner3D::set_mesh(const Ref<Mesh> &p_mesh) {
-	mesh = p_mesh;
-	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		if (kv.value.multimesh.is_valid()) {
-			kv.value.multimesh->set_mesh(mesh);
+void FoliageSpawner3D::set_lod_levels(const TypedArray<FoliageLODLevel> &p_levels) {
+	for (int i = 0; i < lod_levels.size(); i++) {
+		Ref<FoliageLODLevel> old_level = lod_levels[i];
+		if (old_level.is_valid()) {
+			old_level->disconnect(CoreStringName(changed), callable_mp(this, &FoliageSpawner3D::_on_lod_level_changed));
 		}
+	}
+
+	lod_levels = p_levels;
+
+	for (int i = 0; i < lod_levels.size(); i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		if (level.is_valid()) {
+			level->connect(CoreStringName(changed), callable_mp(this, &FoliageSpawner3D::_on_lod_level_changed));
+		}
+	}
+
+	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
+		_sync_cell_lods(kv.value);
 	}
 	update_configuration_warnings();
 }
 
-Ref<Mesh> FoliageSpawner3D::get_mesh() const {
-	return mesh;
+TypedArray<FoliageLODLevel> FoliageSpawner3D::get_lod_levels() const {
+	return lod_levels;
+}
+
+void FoliageSpawner3D::_on_lod_level_changed() {
+	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
+		_sync_cell_lods(kv.value);
+	}
+	update_configuration_warnings();
+}
+
+bool FoliageSpawner3D::has_any_mesh() const {
+	for (int i = 0; i < lod_levels.size(); i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		if (level.is_valid() && level->get_mesh().is_valid()) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void FoliageSpawner3D::set_volume_size(const Vector3 &p_size) {
@@ -536,15 +633,6 @@ float FoliageSpawner3D::get_max_scale() const {
 	return max_scale;
 }
 
-void FoliageSpawner3D::set_cell_material_override(const Ref<Material> &p_material) {
-	cell_material_override = p_material;
-	_sync_all_cells_settings();
-}
-
-Ref<Material> FoliageSpawner3D::get_cell_material_override() const {
-	return cell_material_override;
-}
-
 void FoliageSpawner3D::set_cell_material_overlay(const Ref<Material> &p_material) {
 	cell_material_overlay = p_material;
 	_sync_all_cells_settings();
@@ -617,51 +705,6 @@ FoliageSpawner3D::GIMode FoliageSpawner3D::get_cell_gi_mode() const {
 	return cell_gi_mode;
 }
 
-void FoliageSpawner3D::set_cell_visibility_range_begin(float p_dist) {
-	cell_visibility_range_begin = MAX(p_dist, 0.0f);
-	_sync_all_cells_settings();
-}
-
-float FoliageSpawner3D::get_cell_visibility_range_begin() const {
-	return cell_visibility_range_begin;
-}
-
-void FoliageSpawner3D::set_cell_visibility_range_begin_margin(float p_dist) {
-	cell_visibility_range_begin_margin = MAX(p_dist, 0.0f);
-	_sync_all_cells_settings();
-}
-
-float FoliageSpawner3D::get_cell_visibility_range_begin_margin() const {
-	return cell_visibility_range_begin_margin;
-}
-
-void FoliageSpawner3D::set_cell_visibility_range_end(float p_dist) {
-	cell_visibility_range_end = MAX(p_dist, 0.0f);
-	_sync_all_cells_settings();
-}
-
-float FoliageSpawner3D::get_cell_visibility_range_end() const {
-	return cell_visibility_range_end;
-}
-
-void FoliageSpawner3D::set_cell_visibility_range_end_margin(float p_dist) {
-	cell_visibility_range_end_margin = MAX(p_dist, 0.0f);
-	_sync_all_cells_settings();
-}
-
-float FoliageSpawner3D::get_cell_visibility_range_end_margin() const {
-	return cell_visibility_range_end_margin;
-}
-
-void FoliageSpawner3D::set_cell_visibility_range_fade_mode(VisibilityRangeFadeMode p_mode) {
-	cell_visibility_range_fade_mode = p_mode;
-	_sync_all_cells_settings();
-}
-
-FoliageSpawner3D::VisibilityRangeFadeMode FoliageSpawner3D::get_cell_visibility_range_fade_mode() const {
-	return cell_visibility_range_fade_mode;
-}
-
 void FoliageSpawner3D::set_debug_show_cells(bool p_enabled) {
 	debug_show_cells = p_enabled;
 	update_gizmos();
@@ -678,8 +721,8 @@ int FoliageSpawner3D::get_cell_count() const {
 int FoliageSpawner3D::get_instance_count() const {
 	int total = 0;
 	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		if (kv.value.multimesh.is_valid()) {
-			total += kv.value.multimesh->get_instance_count();
+		if (!kv.value.lod_multimeshes.is_empty() && kv.value.lod_multimeshes[0].is_valid()) {
+			total += kv.value.lod_multimeshes[0]->get_instance_count();
 		}
 	}
 	return total;
@@ -724,7 +767,7 @@ void FoliageSpawner3D::regenerate() {
 	set_multimesh(Ref<MultiMesh>());
 	_clear_cells();
 
-	if (mesh.is_null()) {
+	if (!has_any_mesh()) {
 		update_configuration_warnings();
 		return;
 	}
@@ -948,10 +991,8 @@ void FoliageSpawner3D::regenerate() {
 
 	for (KeyValue<Vector2i, LocalVector<Transform3D>> &kv : cell_transforms) {
 		FoliageCell &fc = _get_or_create_cell(kv.key);
-		Ref<MultiMesh> mm = fc.multimesh;
-		mm->set_instance_count(kv.value.size());
-		for (uint32_t i = 0; i < kv.value.size(); i++) {
-			mm->set_instance_transform(i, kv.value[i]);
+		for (const Ref<MultiMesh> &mm : fc.lod_multimeshes) {
+			_write_transforms(mm, kv.value);
 		}
 	}
 
@@ -964,11 +1005,13 @@ void FoliageSpawner3D::regenerate() {
 AABB FoliageSpawner3D::get_aabb() const {
 	const Vector3 sz = volume_size.abs();
 	AABB box(sz * -0.5f, sz);
-	// Cell nodes sit at this node's own local origin (see _sync_cell_node), so
+	// Cell nodes sit at this node's own local origin (see _sync_cell_lods), so
 	// their MultiMesh AABBs are already in the same local space as `box`.
 	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		if (kv.value.multimesh.is_valid()) {
-			box.merge_with(kv.value.multimesh->get_aabb());
+		for (const Ref<MultiMesh> &mm : kv.value.lod_multimeshes) {
+			if (mm.is_valid()) {
+				box.merge_with(mm->get_aabb());
+			}
 		}
 	}
 	return box;
@@ -979,7 +1022,20 @@ Vector<AABB> FoliageSpawner3D::get_cell_local_aabbs() const {
 	result.resize(cells.size());
 	int i = 0;
 	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
-		result.write[i++] = kv.value.multimesh.is_valid() ? kv.value.multimesh->get_aabb() : AABB();
+		AABB cell_aabb;
+		bool first = true;
+		for (const Ref<MultiMesh> &mm : kv.value.lod_multimeshes) {
+			if (mm.is_null()) {
+				continue;
+			}
+			if (first) {
+				cell_aabb = mm->get_aabb();
+				first = false;
+			} else {
+				cell_aabb.merge_with(mm->get_aabb());
+			}
+		}
+		result.write[i++] = cell_aabb;
 	}
 	return result;
 }
@@ -987,8 +1043,8 @@ Vector<AABB> FoliageSpawner3D::get_cell_local_aabbs() const {
 PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 	PackedStringArray warnings = MultiMeshInstance3D::get_configuration_warnings();
 
-	if (mesh.is_null()) {
-		warnings.push_back(RTR("No Mesh assigned. Set a Mesh and press Regenerate to scatter instances."));
+	if (!has_any_mesh()) {
+		warnings.push_back(RTR("No Mesh assigned on any LOD level. Add a Mesh via Lod Levels and press Regenerate to scatter instances."));
 	}
 
 	if (project_on_mesh) {
@@ -1000,7 +1056,7 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 		}
 	}
 
-	if (mesh.is_valid() && cells.is_empty()) {
+	if (has_any_mesh() && cells.is_empty()) {
 		warnings.push_back(RTR("No instances have been generated yet (or none matched the current settings). Press Regenerate after adjusting Density, Min Distance, the Distribution Mask, or the ground projection settings."));
 	}
 
@@ -1020,4 +1076,31 @@ FoliageSpawner3D::FoliageSpawner3D() {
 	// and dynamic per-instance GI probe lookups add up with thousands of
 	// MultiMesh instances. Users who do want it can switch Cell GI Mode back
 	// to Dynamic in the inspector.
+
+	TypedArray<FoliageLODLevel> defaults;
+
+	Ref<FoliageLODLevel> lod0;
+	lod0.instantiate();
+	lod0->set_visibility_range_end(30.0f);
+	lod0->set_visibility_range_end_margin(5.0f);
+	lod0->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+	defaults.push_back(lod0);
+
+	Ref<FoliageLODLevel> lod1;
+	lod1.instantiate();
+	lod1->set_visibility_range_begin(25.0f);
+	lod1->set_visibility_range_begin_margin(5.0f);
+	lod1->set_visibility_range_end(80.0f);
+	lod1->set_visibility_range_end_margin(10.0f);
+	lod1->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+	defaults.push_back(lod1);
+
+	Ref<FoliageLODLevel> lod2;
+	lod2.instantiate();
+	lod2->set_visibility_range_begin(70.0f);
+	lod2->set_visibility_range_begin_margin(10.0f);
+	lod2->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+	defaults.push_back(lod2);
+
+	set_lod_levels(defaults);
 }

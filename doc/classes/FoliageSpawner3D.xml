@@ -1,19 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <class name="FoliageSpawner3D" inherits="MultiMeshInstance3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
-		Scatters instances of a [Mesh] procedurally inside a configurable box volume.
+		Scatters instances of a [Mesh] (with optional LOD levels) procedurally inside a configurable box volume.
 	</brief_description>
 	<description>
-		[FoliageSpawner3D] fills a box-shaped volume with randomly placed and oriented copies of [member mesh], similar to Unreal Engine's Procedural Foliage Spawner. It is a specialized [MultiMeshInstance3D], but its own inherited [member MultiMeshInstance3D.multimesh] is left empty and should not be edited directly: generated instances are instead stored and rendered through internal per-cell [MultiMesh]es (see [b]Cell chunking[/b] below).
+		[FoliageSpawner3D] fills a box-shaped volume with randomly placed and oriented copies of a mesh (see [member lod_levels]), similar to Unreal Engine's Procedural Foliage Spawner. It is a specialized [MultiMeshInstance3D], but its own inherited [member MultiMeshInstance3D.multimesh] is left empty and should not be edited directly: generated instances are instead stored and rendered through internal per-cell [MultiMesh]es (see [b]Cell chunking[/b] below).
 		The volume to fill is defined by [member volume_size], centered on the node's origin. Placement is controlled by [member density] (points per square meter of the volume's footprint) and [member min_distance] (a minimum spacing enforced between instances so they don't overlap). A grayscale [member distribution_mask] can be assigned to bias or forbid placement in specific areas, and [member seed] makes generation reproducible.
 		If [member project_on_mesh] is enabled (the default), each candidate point is projected straight down onto the actual triangle surface of the [MeshInstance3D] referenced by [member ground_mesh_path] (e.g. terrain), and points whose surface is steeper than [member max_slope_degrees] are discarded; otherwise points are distributed freely throughout the volume's height. Placement only looks at that node's [Mesh] geometry, never at a [CollisionShape3D] or other physics collider, since a collider can differ noticeably in shape from the mesh it is meant to represent. Instances can optionally be tilted to align with the surface normal ([member align_to_normal]) and receive random rotation, extra random tilt, and random uniform scale for natural-looking variation.
-		Nothing is generated automatically: call [method regenerate] (or press the [b]Regenerate[/b] button in the Inspector) whenever the volume, mesh, ground mesh, or any distribution setting changes. The result is saved with the scene, so no extra runtime cost is paid on load. To scatter several kinds of vegetation in the same area, add multiple [FoliageSpawner3D] nodes, one per [Mesh].
-		[b]Cell chunking:[/b] generated instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty cell is rendered through its own internal [MultiMeshInstance3D], the same technique [FoliagePainter3D] uses for its painted layers. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Enable [member debug_show_cells] to draw each cell's bounds in the 3D viewport, and check [member cell_count] / [member instance_count] in the Inspector to see the result of the last [method regenerate].
-		[b]Cell rendering:[/b] [FoliageSpawner3D] itself never has any visible geometry of its own (its inherited [MultiMesh] is always empty), so its inherited [GeometryInstance3D] properties ([member GeometryInstance3D.material_override], [member GeometryInstance3D.cast_shadow], [member GeometryInstance3D.gi_mode], [member GeometryInstance3D.visibility_range_begin], etc.) would have no visible effect and are hidden in the Inspector. Use the [code]cell_*[/code] properties instead ([member cell_material_override], [member cell_cast_shadow], [member cell_gi_mode], [member cell_visibility_range_begin], and so on): they are copied onto every cell's [MultiMeshInstance3D] and, unlike every other [FoliageSpawner3D] property, apply immediately to already-generated cells without needing to press [b]Regenerate[/b] again. [member cell_gi_mode] defaults to [constant GeometryInstance3D.GI_MODE_DISABLED]: grass and other small scattered foliage rarely benefit visually from baked or dynamic global illumination, and skipping it avoids [LightmapGI] trying to lightmap every scattered instance and avoids the per-instance cost of looking up nearby GI probes. Set [member cell_gi_mode] to [constant GeometryInstance3D.GI_MODE_DYNAMIC] for larger foliage where the difference is worth it.
+		Nothing is generated automatically: call [method regenerate] (or press the [b]Regenerate[/b] button in the Inspector) whenever the volume, mesh, ground mesh, or any distribution setting changes. The result is saved with the scene, so no extra runtime cost is paid on load. To scatter several kinds of vegetation in the same area, add multiple [FoliageSpawner3D] nodes.
+		[b]LOD levels:[/b] generated instances are rendered through a chain of [FoliageLODLevel]s (see [member lod_levels]), e.g. a detailed mesh up close and a cheaper one (or none at all) far away, each with its own visibility/fade distance range and optional material override - all levels share the exact same generated instance transforms, only their mesh/material/range differ. A newly created [FoliageSpawner3D] starts with three levels with reasonable default distances; add a [Mesh] to at least the first one before calling [method regenerate].
+		[b]Cell chunking:[/b] generated instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty cell is rendered through one internal [MultiMeshInstance3D] per LOD level, the same technique [FoliagePainter3D] uses for its painted layers. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Enable [member debug_show_cells] to draw each cell's bounds in the 3D viewport, and check [member cell_count] / [member instance_count] in the Inspector to see the result of the last [method regenerate].
+		[b]Cell rendering:[/b] [FoliageSpawner3D] itself never has any visible geometry of its own (its inherited [MultiMesh] is always empty), so its inherited [GeometryInstance3D] properties ([member GeometryInstance3D.material_override], [member GeometryInstance3D.cast_shadow], [member GeometryInstance3D.gi_mode], [member GeometryInstance3D.visibility_range_begin], etc.) would have no visible effect and are hidden in the Inspector. Use the [code]cell_*[/code] properties instead ([member cell_cast_shadow], [member cell_gi_mode], and so on, shared across every LOD level - the per-level [member FoliageLODLevel.material_override] and [member FoliageLODLevel.visibility_range_begin] and related properties live on [member lod_levels] instead): they are copied onto every cell's [MultiMeshInstance3D] and, unlike every other [FoliageSpawner3D] property, apply immediately to already-generated cells without needing to press [b]Regenerate[/b] again. [member cell_gi_mode] defaults to [constant GeometryInstance3D.GI_MODE_DISABLED]: grass and other small scattered foliage rarely benefit visually from baked or dynamic global illumination, and skipping it avoids [LightmapGI] trying to lightmap every scattered instance and avoids the per-instance cost of looking up nearby GI probes. Set [member cell_gi_mode] to [constant GeometryInstance3D.GI_MODE_DYNAMIC] for larger foliage where the difference is worth it.
 	</description>
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="has_any_mesh" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if at least one entry in [member lod_levels] has a [member FoliageLODLevel.mesh] assigned, i.e. this spawner actually generates something. [method regenerate] does nothing while this returns [code]false[/code].
+			</description>
+		</method>
 		<method name="regenerate">
 			<return type="void" />
 			<description>
@@ -52,29 +59,11 @@
 		<member name="cell_material_overlay" type="Material" setter="set_cell_material_overlay" getter="get_cell_material_overlay">
 			The material overlay applied to every cell. See [b]Cell rendering[/b] in the class description.
 		</member>
-		<member name="cell_material_override" type="Material" setter="set_cell_material_override" getter="get_cell_material_override">
-			The material override applied to every cell. See [b]Cell rendering[/b] in the class description.
-		</member>
 		<member name="cell_size" type="float" setter="set_cell_size" getter="get_cell_size" default="16.0">
 			The size (in meters, on the local XZ plane) of the grid cells that generated instances are chunked into. See [b]Cell chunking[/b] in the class description. Larger values mean fewer, bigger cells (coarser culling, less overhead); smaller values mean finer-grained culling at the cost of more internal [MultiMeshInstance3D] nodes. A good starting point is a value somewhat larger than the average distance instances need to be visible from.
 		</member>
 		<member name="cell_transparency" type="float" setter="set_cell_transparency" getter="get_cell_transparency" default="0.0">
 			The transparency applied to every cell. See [b]Cell rendering[/b] in the class description.
-		</member>
-		<member name="cell_visibility_range_begin" type="float" setter="set_cell_visibility_range_begin" getter="get_cell_visibility_range_begin" default="0.0">
-			The visibility range start distance applied to every cell. See [b]Cell rendering[/b] in the class description.
-		</member>
-		<member name="cell_visibility_range_begin_margin" type="float" setter="set_cell_visibility_range_begin_margin" getter="get_cell_visibility_range_begin_margin" default="0.0">
-			The visibility range start margin applied to every cell. See [b]Cell rendering[/b] in the class description.
-		</member>
-		<member name="cell_visibility_range_end" type="float" setter="set_cell_visibility_range_end" getter="get_cell_visibility_range_end" default="0.0">
-			The visibility range end distance applied to every cell. See [b]Cell rendering[/b] in the class description.
-		</member>
-		<member name="cell_visibility_range_end_margin" type="float" setter="set_cell_visibility_range_end_margin" getter="get_cell_visibility_range_end_margin" default="0.0">
-			The visibility range end margin applied to every cell. See [b]Cell rendering[/b] in the class description.
-		</member>
-		<member name="cell_visibility_range_fade_mode" type="int" setter="set_cell_visibility_range_fade_mode" getter="get_cell_visibility_range_fade_mode" enum="GeometryInstance3D.VisibilityRangeFadeMode" default="0">
-			The visibility range fade mode applied to every cell. See [b]Cell rendering[/b] in the class description.
 		</member>
 		<member name="debug_show_cells" type="bool" setter="set_debug_show_cells" getter="is_debug_show_cells_enabled" default="false">
 			If [code]true[/code], the editor gizmo draws the bounds of every cell created by the last [method regenerate] call, in addition to the volume box. See [b]Cell chunking[/b] in the class description.
@@ -91,6 +80,9 @@
 		<member name="instance_count" type="int" setter="" getter="get_instance_count" default="0">
 			Read-only. The total number of instances across every cell created by the last [method regenerate] call. See [b]Cell chunking[/b] in the class description.
 		</member>
+		<member name="lod_levels" type="FoliageLODLevel[]" setter="set_lod_levels" getter="get_lod_levels" default="[]">
+			The chain of [FoliageLODLevel]s (e.g. LOD_0, LOD_1, LOD_2) this spawner generates through, in order from highest to lowest detail. Every level shares the exact same generated instance transforms; only its mesh, material, and visibility/fade distance range differ (see [FoliageLODLevel]). A newly created [FoliageSpawner3D] starts with three levels with reasonable default distances, but this array can hold any number of levels, including just one (no LOD switching) or zero (nothing renders; see [method has_any_mesh]).
+		</member>
 		<member name="mask_invert" type="bool" setter="set_mask_invert" getter="is_mask_inverted" default="false">
 			If [code]true[/code], inverts the values sampled from [member distribution_mask] (white areas become forbidden, black areas become favored).
 		</member>
@@ -105,9 +97,6 @@
 		</member>
 		<member name="max_slope_degrees" type="float" setter="set_max_slope_degrees" getter="get_max_slope_degrees" default="45.0">
 			When [member project_on_mesh] is enabled, candidate points whose surface normal is tilted more than this many degrees from world up are discarded.
-		</member>
-		<member name="mesh" type="Mesh" setter="set_mesh" getter="get_mesh">
-			The [Mesh] to scatter throughout the volume. [FoliageSpawner3D] generates nothing until this is set.
 		</member>
 		<member name="min_distance" type="float" setter="set_min_distance" getter="get_min_distance" default="0.5">
 			The minimum horizontal distance enforced between any two instances, measured on the volume's XZ footprint. Set to [code]0.0[/code] to disable spacing checks.
