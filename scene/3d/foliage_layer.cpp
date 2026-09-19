@@ -73,6 +73,9 @@ void FoliageLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_lod_bias", "bias"), &FoliageLayer::set_lod_bias);
 	ClassDB::bind_method(D_METHOD("get_lod_bias"), &FoliageLayer::get_lod_bias);
 
+	ClassDB::bind_method(D_METHOD("set_gi_mode", "mode"), &FoliageLayer::set_gi_mode);
+	ClassDB::bind_method(D_METHOD("get_gi_mode"), &FoliageLayer::get_gi_mode);
+
 	ClassDB::bind_method(D_METHOD("get_instance_count"), &FoliageLayer::get_instance_count);
 
 	ClassDB::bind_method(D_METHOD("set_visibility_range_begin", "distance"), &FoliageLayer::set_visibility_range_begin);
@@ -110,6 +113,7 @@ void FoliageLayer::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cast_shadows"), "set_cast_shadows", "is_casting_shadows");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ignore_screen_space_shadows"), "set_ignore_screen_space_shadows", "is_ignoring_screen_space_shadows");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_bias", PROPERTY_HINT_RANGE, "0.001,128,0.001"), "set_lod_bias", "get_lod_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
 
 	ADD_GROUP("Visibility Range", "visibility_range_");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_begin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_begin", "get_visibility_range_begin");
@@ -227,6 +231,15 @@ void FoliageLayer::set_lod_bias(float p_bias) {
 
 float FoliageLayer::get_lod_bias() const {
 	return lod_bias;
+}
+
+void FoliageLayer::set_gi_mode(GeometryInstance3D::GIMode p_mode) {
+	gi_mode = p_mode;
+	emit_changed();
+}
+
+GeometryInstance3D::GIMode FoliageLayer::get_gi_mode() const {
+	return gi_mode;
 }
 
 void FoliageLayer::set_visibility_range_begin(float p_dist) {
