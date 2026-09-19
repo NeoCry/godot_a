@@ -365,7 +365,6 @@ SSEffects::SSEffects() {
 			}
 
 			sscs.border_sampler = border_sampler;
-			sscs.exclusion_rects_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(SSCSExclusionRectsBuffer));
 		}
 	}
 
@@ -478,7 +477,6 @@ SSEffects::~SSEffects() {
 		sscs.sscs_shader.version_free(sscs.sscs_shader_version);
 
 		RD::get_singleton()->free_rid(sscs.border_sampler);
-		RD::get_singleton()->free_rid(sscs.exclusion_rects_buffer);
 	}
 
 	{
@@ -1793,25 +1791,144 @@ void SSEffects::sscs_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers
 	}
 }
 
-void SSEffects::sscs_set_exclusion_rects(const Vector4 *p_rects, uint32_t p_rect_count) {
-	sscs.exclusion_rect_count = MIN(p_rect_count, SSCS_MAX_EXCLUSION_RECTS);
+struct SSCSDispatch {
+	Vector2i group_count; // Compute dispatch(wave_size, group_count.x, group_count.y).
+	Vector2i wave_offset; // Already scaled by wave_size; matches ScreenSpaceContactShadowsPushConstant::light_offset.
+};
 
-	if (sscs.exclusion_rect_count == 0) {
-		return;
+// Splits the screen into up to 8 quadrant-aligned dispatches around the light, instead of one
+// dispatch covering a single bounding rect around the whole screen (which wastes threads on the
+// 3 quadrants the light isn't near). Each dispatch is a rectangle of wave_size x wave_size tiles
+// with one corner at the light's pixel position; non-square quadrants are split in two along
+// their longer axis to keep every wavefront's diagonal ray aligned with the light.
+//
+// This is a line-for-line port of the CPU dispatch-list half of Bend Studio's BuildDispatchList()
+// (bend_sss_cpu.h, Apache License 2.0): https://www.bendstudio.com/blog/inside-bend-screen-space-shadows/
+// Bend's version accounts for a Y-flipped light coordinate and an arbitrary sub-region of the
+// screen; since this shader's light coordinate isn't Y-flipped (see the caller) and always covers
+// the whole internal render size, `biased_bounds` below is the algebraically equivalent
+// (Y-flip-free) form of Bend's formula for that specific (full-screen, non-flipped) case — the
+// rest of the quadrant/split logic is unchanged. `biased_bounds` (and thus each dispatch's bounds
+// and group_count) works out the same either way, but each dispatch's Y wave_offset is still
+// anchored using Bend's Y-flipped convention, so it needs re-anchoring to Godot's convention;
+// see the fix applied to wave_offset.y right before it's scaled by p_wave_size below.
+static uint32_t _sscs_build_dispatch_list(const Vector2i &p_light_xy, const Size2i &p_screen_size, int p_wave_size, SSCSDispatch r_dispatches[8]) {
+	uint32_t dispatch_count = 0;
+
+	const int biased_bounds[4] = {
+		-p_light_xy.x,
+		-p_light_xy.y,
+		p_screen_size.width - p_light_xy.x,
+		p_screen_size.height - p_light_xy.y,
+	};
+
+	// Process 4 quadrants around the light center,
+	// They each form a rectangle with one corner on the light XY coordinate
+	// If the rectangle isn't square, it will need breaking in two on the larger axis
+	// 0 = bottom left, 1 = bottom right, 2 = top left, 3 = top right
+	for (int q = 0; q < 4; q++) {
+		// Quads 0 and 3 needs to be +1 vertically, 1 and 2 need to be +1 horizontally
+		bool vertical = q == 0 || q == 3;
+
+		// Bounds relative to the quadrant
+		const int bounds[4] = {
+			MAX(0, ((q & 1) ? biased_bounds[0] : -biased_bounds[2])) / p_wave_size,
+			MAX(0, ((q & 2) ? biased_bounds[1] : -biased_bounds[3])) / p_wave_size,
+			MAX(0, (((q & 1) ? biased_bounds[2] : -biased_bounds[0]) + p_wave_size * (vertical ? 1 : 2) - 1)) / p_wave_size,
+			MAX(0, (((q & 2) ? biased_bounds[3] : -biased_bounds[1]) + p_wave_size * (vertical ? 2 : 1) - 1)) / p_wave_size,
+		};
+
+		if ((bounds[2] - bounds[0]) <= 0 || (bounds[3] - bounds[1]) <= 0) {
+			continue;
+		}
+
+		int bias_x = (q == 2 || q == 3) ? 1 : 0;
+		int bias_y = (q == 1 || q == 3) ? 1 : 0;
+
+		uint32_t disp_index = dispatch_count++;
+		r_dispatches[disp_index].group_count = Vector2i(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+		r_dispatches[disp_index].wave_offset = Vector2i(
+				((q & 1) ? bounds[0] : -bounds[2]) + bias_x,
+				((q & 2) ? -bounds[3] : bounds[1]) + bias_y);
+
+		// We want the far corner of this quadrant relative to the light,
+		// as we need to know where the diagonal light ray intersects with the edge of the bounds
+		int axis_delta = biased_bounds[0] - biased_bounds[1];
+		if (q == 1) {
+			axis_delta = biased_bounds[2] + biased_bounds[1];
+		} else if (q == 2) {
+			axis_delta = -biased_bounds[0] - biased_bounds[3];
+		} else if (q == 3) {
+			axis_delta = -biased_bounds[2] + biased_bounds[3];
+		}
+
+		axis_delta = (axis_delta + p_wave_size - 1) / p_wave_size;
+
+		if (axis_delta > 0) {
+			uint32_t disp2_index = dispatch_count++;
+			r_dispatches[disp2_index] = r_dispatches[disp_index]; // Take copy of current volume.
+
+			if (q == 0) {
+				// Split on Y, split becomes -1 larger on x
+				r_dispatches[disp2_index].group_count.y = MIN(r_dispatches[disp_index].group_count.y, axis_delta);
+				r_dispatches[disp_index].group_count.y -= r_dispatches[disp2_index].group_count.y;
+				r_dispatches[disp2_index].wave_offset.y = r_dispatches[disp_index].wave_offset.y + r_dispatches[disp_index].group_count.y;
+				r_dispatches[disp2_index].wave_offset.x--;
+				r_dispatches[disp2_index].group_count.x++;
+			} else if (q == 1) {
+				// Split on X, split becomes +1 larger on y
+				r_dispatches[disp2_index].group_count.x = MIN(r_dispatches[disp_index].group_count.x, axis_delta);
+				r_dispatches[disp_index].group_count.x -= r_dispatches[disp2_index].group_count.x;
+				r_dispatches[disp2_index].wave_offset.x = r_dispatches[disp_index].wave_offset.x + r_dispatches[disp_index].group_count.x;
+				r_dispatches[disp2_index].group_count.y++;
+			} else if (q == 2) {
+				// Split on X, split becomes -1 larger on y
+				r_dispatches[disp2_index].group_count.x = MIN(r_dispatches[disp_index].group_count.x, axis_delta);
+				r_dispatches[disp_index].group_count.x -= r_dispatches[disp2_index].group_count.x;
+				r_dispatches[disp_index].wave_offset.x += r_dispatches[disp2_index].group_count.x;
+				r_dispatches[disp2_index].group_count.y++;
+				r_dispatches[disp2_index].wave_offset.y--;
+			} else if (q == 3) {
+				// Split on Y, split becomes +1 larger on x
+				r_dispatches[disp2_index].group_count.y = MIN(r_dispatches[disp_index].group_count.y, axis_delta);
+				r_dispatches[disp_index].group_count.y -= r_dispatches[disp2_index].group_count.y;
+				r_dispatches[disp_index].wave_offset.y += r_dispatches[disp2_index].group_count.y;
+				r_dispatches[disp2_index].group_count.x++;
+			}
+
+			// Remove if too small
+			if (r_dispatches[disp2_index].group_count.x <= 0 || r_dispatches[disp2_index].group_count.y <= 0) {
+				dispatch_count--;
+			}
+			if (r_dispatches[disp_index].group_count.x <= 0 || r_dispatches[disp_index].group_count.y <= 0) {
+				r_dispatches[disp_index] = r_dispatches[--dispatch_count];
+			}
+		}
 	}
 
-	SSCSExclusionRectsBuffer buffer_data;
-	for (uint32_t i = 0; i < sscs.exclusion_rect_count; i++) {
-		buffer_data.rects[i][0] = p_rects[i].x;
-		buffer_data.rects[i][1] = p_rects[i].y;
-		buffer_data.rects[i][2] = p_rects[i].z;
-		buffer_data.rects[i][3] = p_rects[i].w;
+	// Bend's light Y coordinate (see the caller) is computed with the opposite vertical
+	// convention from Godot's (Bend flips it: `ndc_y * -0.5 + 0.5`, Godot doesn't). The
+	// quadrant bounds above are unaffected by this (biased_bounds[1]/[3] work out the same
+	// either way), but the *direction* baked into each dispatch's Y wave_offset is still
+	// Bend's: it walks group_offset.y away from the light in the opposite screen-space
+	// direction from what Godot's (non-flipped) organise_groups() expects, so on-screen
+	// coverage ends up mirrored across the light's Y position instead of surrounding it.
+	// Re-anchor each dispatch's Y offset so group_offset.y (which the shader always walks
+	// upward from 0) sweeps the same set of rows in the opposite, Godot-correct direction:
+	// this is the root cause of the previously observed partial/direction-dependent coverage.
+	for (uint32_t i = 0; i < dispatch_count; i++) {
+		r_dispatches[i].wave_offset.y = -(r_dispatches[i].group_count.y - 1) - r_dispatches[i].wave_offset.y;
 	}
 
-	RD::get_singleton()->buffer_update(sscs.exclusion_rects_buffer, 0, sizeof(float) * 4 * sscs.exclusion_rect_count, buffer_data.rects);
+	// Scale the offsets by the wave count, the shader expects this
+	for (uint32_t i = 0; i < dispatch_count; i++) {
+		r_dispatches[i].wave_offset *= p_wave_size;
+	}
+
+	return dispatch_count;
 }
 
-void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, const SSCSSettings &p_settings, const Projection *p_projections, Vector3 p_light_direction, uint32_t p_light_index, float p_opacity, float p_blur, float p_taa_frame_count) {
+void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_buffers, SSCSRenderBuffers &p_sscs_buffers, const SSCSSettings &p_settings, const Projection *p_projections, const RID *p_exclusion_depth_textures, Vector3 p_light_direction, uint32_t p_light_index, float p_opacity, float p_blur, float p_taa_frame_count) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	ERR_FAIL_NULL(uniform_set_cache);
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
@@ -1832,8 +1949,29 @@ void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_
 
 		const int wave_size = 64;
 		Vector4 light;
-		Vector2i bound_start;
-		Vector2i bound_end;
+
+		RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, sscs.sscs_pipelines[p_settings.quality].get_rid());
+
+		RID depth_buffer = p_render_buffers->get_depth_texture(v);
+		uint32_t layer = p_light_index * view_count + v;
+		RID sscs_texture = p_render_buffers->get_texture_slice(RB_SCOPE_SSCS, RB_SSCS, layer, 0);
+
+		RD::Uniform u_depth_buffer(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>{ sscs.border_sampler, depth_buffer });
+		RD::Uniform u_sscs(RD::UNIFORM_TYPE_IMAGE, 1, sscs_texture);
+		RD::Uniform u_exclusion_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, Vector<RID>{ sscs.border_sampler, p_exclusion_depth_textures[v] });
+
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(sscs_shader, 0, u_depth_buffer, u_sscs, u_exclusion_depth), 0);
+
+		ScreenSpaceContactShadowsPushConstant push_constant;
+		push_constant.screen_size[0] = p_sscs_buffers.size.width;
+		push_constant.screen_size[1] = p_sscs_buffers.size.height;
+		push_constant.surface_thickness = p_settings.surface_thickness;
+		push_constant.opacity = p_opacity;
+		push_constant.blur = p_blur;
+		push_constant.taa_frame_count = p_taa_frame_count;
+		push_constant.debug_wave_index = p_settings.debug_wave_index ? 1 : 0;
+
 		if (Math::abs(projected_light.w) > 1e-6) {
 			// Need precise XY pixel coordinates of the light
 			light = Vector4(
@@ -1841,12 +1979,29 @@ void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_
 					(projected_light.y / projected_light.w * 0.5f + 0.5f) * p_sscs_buffers.size.height,
 					projected_light.z / projected_light.w,
 					projected_light.w > 0 ? 1 : -1);
-			bound_start = Vector2i(
-					Math::floor(-light.x / wave_size) - 1,
-					Math::floor(-light.y / wave_size) - 1);
-			bound_end = Vector2i(
-					Math::ceil((p_sscs_buffers.size.width - light.x) / wave_size) + 2,
-					Math::ceil((p_sscs_buffers.size.height - light.y) / wave_size) + 2);
+
+			push_constant.light_coordinates[0] = light.x;
+			push_constant.light_coordinates[1] = light.y;
+			push_constant.light_coordinates[2] = light.z;
+			push_constant.light_coordinates[3] = light.w;
+
+			// Cover the screen with up to 8 quadrant-aligned dispatches around the light instead
+			// of one dispatch bounding the whole screen; see _sscs_build_dispatch_list(). For an
+			// on-screen light this dispatches roughly a quarter as many threads as a single
+			// bounding dispatch covering all 4 quadrants around the light would. debug_wave_index
+			// only toggles the shader's visualization of this dispatch layout (see the push
+			// constant above); it doesn't change which dispatch path is used.
+			Vector2i light_xy = Vector2i(int(light.x + 0.5f), int(light.y + 0.5f));
+			SSCSDispatch dispatches[8];
+			uint32_t dispatch_count = _sscs_build_dispatch_list(light_xy, p_sscs_buffers.size, wave_size, dispatches);
+
+			for (uint32_t i = 0; i < dispatch_count; i++) {
+				push_constant.light_offset[0] = dispatches[i].wave_offset.x;
+				push_constant.light_offset[1] = dispatches[i].wave_offset.y;
+
+				RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
+				RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, dispatches[i].group_count.x, dispatches[i].group_count.y);
+			}
 		} else {
 			// Light rays are (or nearly) parallel lines in screen space. This is a special case and requires special handling in the SSCS shader as well.
 			light = Vector4(
@@ -1856,46 +2011,26 @@ void SSEffects::screen_space_contact_shadows(Ref<RenderSceneBuffersRD> p_render_
 					0);
 			light = light / MAX(Math::abs(light.x), Math::abs(light.y));
 
-			bound_start = Vector2i(
+			push_constant.light_coordinates[0] = light.x;
+			push_constant.light_coordinates[1] = light.y;
+			push_constant.light_coordinates[2] = light.z;
+			push_constant.light_coordinates[3] = light.w;
+
+			Vector2i bound_start = Vector2i(
 					light.x > 0 && light.x < Math::abs(light.y) ? -1 : 0,
 					light.y > 0 && light.y < Math::abs(light.x) ? -1 : 0);
-			bound_end = Vector2i(
+			Vector2i bound_end = Vector2i(
 					Math::ceil(p_sscs_buffers.size.width / float(wave_size)) + (light.x < 0 ? 1 : 0),
 					Math::ceil(p_sscs_buffers.size.height / float(wave_size)) + (light.y < 0 ? 1 : 0));
+			Size2i bound_size = bound_end - bound_start;
+
+			push_constant.light_offset[0] = bound_start.x * wave_size;
+			push_constant.light_offset[1] = bound_start.y * wave_size;
+
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
+			RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, bound_size.x, bound_size.y);
 		}
 
-		Size2i bound_size = bound_end - bound_start;
-
-		RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
-		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, sscs.sscs_pipelines[p_settings.quality].get_rid());
-
-		ScreenSpaceContactShadowsPushConstant push_constant;
-		push_constant.screen_size[0] = p_sscs_buffers.size.width;
-		push_constant.screen_size[1] = p_sscs_buffers.size.height;
-		push_constant.surface_thickness = p_settings.surface_thickness;
-		push_constant.opacity = p_opacity;
-		push_constant.blur = p_blur;
-		push_constant.taa_frame_count = p_taa_frame_count;
-		push_constant.light_coordinates[0] = light.x;
-		push_constant.light_coordinates[1] = light.y;
-		push_constant.light_coordinates[2] = light.z;
-		push_constant.light_coordinates[3] = light.w;
-		push_constant.light_offset[0] = bound_start.x * wave_size;
-		push_constant.light_offset[1] = bound_start.y * wave_size;
-		push_constant.exclusion_rect_count = sscs.exclusion_rect_count;
-
-		RID depth_buffer = p_render_buffers->get_depth_texture(v);
-		uint32_t layer = p_light_index * view_count + v;
-		RID sscs_texture = p_render_buffers->get_texture_slice(RB_SCOPE_SSCS, RB_SSCS, layer, 0);
-
-		RD::Uniform u_depth_buffer(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>{ sscs.border_sampler, depth_buffer });
-		RD::Uniform u_sscs(RD::UNIFORM_TYPE_IMAGE, 1, sscs_texture);
-		RD::Uniform u_exclusion_rects(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 2, sscs.exclusion_rects_buffer);
-
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(sscs_shader, 0, u_depth_buffer, u_sscs, u_exclusion_rects), 0);
-
-		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(push_constant));
-		RD::get_singleton()->compute_list_dispatch(compute_list, wave_size, bound_size.x, bound_size.y);
 		RD::get_singleton()->compute_list_end();
 	}
 

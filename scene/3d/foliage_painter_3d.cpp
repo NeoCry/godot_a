@@ -155,8 +155,6 @@ void FoliagePainter3D::_sync_cell_lods(int p_layer, FoliageCell &p_cell) {
 	// Ensure every multimesh has a MultiMeshInstance3D to be rendered through.
 	while ((int)p_cell.lod_nodes.size() < (int)p_cell.lod_multimeshes.size()) {
 		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
-		// Baked GI is generally not worth it for scattered foliage (see FoliageSpawner3D).
-		node->set_gi_mode(GeometryInstance3D::GI_MODE_DISABLED);
 		add_child(node, false, INTERNAL_MODE_FRONT);
 		p_cell.lod_nodes.push_back(node);
 	}
@@ -178,6 +176,10 @@ void FoliagePainter3D::_sync_cell_lods(int p_layer, FoliageCell &p_cell) {
 		node->set_cast_shadows_setting(layer->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 		node->set_ignore_screen_space_shadows(layer->is_ignoring_screen_space_shadows());
 		node->set_lod_bias(layer->get_lod_bias());
+		// Per-layer, like FoliageSpawner3D's cell_gi_mode: defaults to disabled
+		// (see FoliageLayer::gi_mode), but can be switched to Static/Dynamic per
+		// vegetation type. Shared by every LOD level, same as the properties above.
+		node->set_gi_mode(layer->get_gi_mode());
 		node->set_visibility_range_begin(level->get_visibility_range_begin());
 		node->set_visibility_range_begin_margin(level->get_visibility_range_begin_margin());
 		node->set_visibility_range_end(level->get_visibility_range_end());

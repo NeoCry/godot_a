@@ -59,6 +59,8 @@ class FoliageLayer : public Resource {
 	bool cast_shadows = true;
 	bool ignore_screen_space_shadows = false;
 	float lod_bias = 1.0;
+	// See FoliageSpawner3D's cell_gi_mode field for why this defaults to disabled.
+	GeometryInstance3D::GIMode gi_mode = GeometryInstance3D::GI_MODE_DISABLED;
 
 	// Informational only: kept in sync by FoliagePainter3D (which owns the
 	// actual per-cell instance data) purely so the Inspector can show it.
@@ -110,6 +112,9 @@ public:
 
 	void set_lod_bias(float p_bias);
 	float get_lod_bias() const;
+
+	void set_gi_mode(GeometryInstance3D::GIMode p_mode);
+	GeometryInstance3D::GIMode get_gi_mode() const;
 
 	int get_instance_count() const;
 	// Called only by FoliagePainter3D to keep the display-only instance_count
