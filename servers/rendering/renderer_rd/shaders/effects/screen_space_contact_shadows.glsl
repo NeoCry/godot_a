@@ -9,16 +9,13 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform sampler2D depth_buffer;
 layout(r8, set = 0, binding = 1) uniform restrict writeonly image2D output_shadow;
 
-#define SSCS_MAX_EXCLUSION_RECTS 32
-
-// Screen-space (UV) rects of GeometryInstance3D objects that opted out of casting screen space
-// shadows (GeometryInstance3D.ignore_screen_space_shadows). Each rect is
-// vec4(min_x, min_y, max_x, max_y) in [0, 1] UV space, approximating the instance's on-screen
-// bounding box. Samples that fall inside a rect are treated as non-occluding.
-layout(set = 0, binding = 2, std140) uniform ExclusionRects {
-	vec4 rects[SSCS_MAX_EXCLUSION_RECTS];
-}
-exclusion_rects;
+// Depth-only buffer containing just the GeometryInstance3D.ignore_screen_space_shadows instances,
+// rendered from the same camera as depth_buffer (see
+// RenderForwardClustered::_render_sscs_exclusion_depth()). A ray-march sample is treated as
+// non-occluding when this buffer's depth matches depth_buffer's at the same pixel, i.e. the
+// visible surface there actually belongs to an excluded instance, rather than an unrelated
+// surface that merely happens to be nearby or at a similar depth on screen.
+layout(set = 0, binding = 2) uniform sampler2D exclusion_depth_buffer;
 
 layout(push_constant, std430) uniform Params {
 	ivec2 screen_size;
@@ -28,7 +25,6 @@ layout(push_constant, std430) uniform Params {
 	float opacity;
 	float blur;
 	float taa_frame_count;
-	uint exclusion_rect_count;
 	uint debug_wave_index; // Debug only, see rendering/lights_and_shadows/contact_shadow/debug_wave_index.
 }
 params;
@@ -190,13 +186,12 @@ void main() {
 		}
 
 		// Instances that opt out of casting screen space shadows don't contribute occlusion:
-		// treat this ray sample as if there was no surface there.
-		for (uint r = 0u; r < params.exclusion_rect_count; r++) {
-			vec4 rect = exclusion_rects.rects[r];
-			if (all(greaterThanEqual(uv, rect.xy)) && all(lessThanEqual(uv, rect.zw))) {
-				stored_depth = 1e10;
-				break;
-			}
+		// treat this ray sample as if there was no surface there. exclusion_depth_buffer is
+		// cleared to DEPTH_FAR wherever no excluded instance is present, which (being the "no
+		// surface" sentinel) never matches a real sample's depth, so this is a no-op there.
+		float exclusion_depth = textureLod(exclusion_depth_buffer, uv, 0.0).x;
+		if (abs(exclusion_depth - depths.x) < 1e-5) {
+			stored_depth = 1e10;
 		}
 
 		int idx = (i * WAVE_SIZE) + thread_id;

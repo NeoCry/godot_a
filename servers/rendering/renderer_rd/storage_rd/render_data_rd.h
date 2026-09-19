@@ -94,9 +94,6 @@ public:
 	// Populated independently of whether the light actually has a shadow map rendered,
 	// so screen space shadows work for the whole scene even without real-time shadows.
 	LocalVector<RID> contact_shadow_lights;
-	// Screen-space UV rects (min_x, min_y, max_x, max_y) of GeometryInstance3D objects that opted
-	// out of casting screen space shadows this frame (GeometryInstance3D.ignore_screen_space_shadows).
-	LocalVector<Vector4> sscs_exclusion_rects;
 
 	/* GI info */
 	const RendererSceneRender::RenderSDFGIData *render_sdfgi_regions = nullptr;
