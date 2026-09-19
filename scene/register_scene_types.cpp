@@ -770,8 +770,8 @@ void register_scene_types() {
 	GDREGISTER_CLASS(ShapeCast3D);
 #endif // PHYSICS_3D_DISABLED
 	GDREGISTER_CLASS(MultiMeshInstance3D);
-	GDREGISTER_CLASS(FoliageSpawner3D);
 	GDREGISTER_CLASS(FoliageLODLevel);
+	GDREGISTER_CLASS(FoliageSpawner3D);
 	GDREGISTER_CLASS(FoliageLayer);
 	GDREGISTER_CLASS(FoliagePainter3D);
 
