@@ -144,7 +144,7 @@ Vector<int> FoliagePainter3DEditorPlugin::_get_active_layers() const {
 			continue;
 		}
 		Ref<FoliageLayer> layer = painter->get_layer(i);
-		if (layer.is_valid() && layer->get_mesh().is_valid()) {
+		if (layer.is_valid() && layer->has_any_mesh()) {
 			result.push_back(i);
 		}
 	}
@@ -411,7 +411,7 @@ void FoliagePainter3DEditorPlugin::_stamp_paint(const Vector3 &p_position, const
 
 		const int layer_idx = active[(int)rng.rand((uint32_t)active.size())];
 		Ref<FoliageLayer> layer = painter->get_layer(layer_idx);
-		if (layer.is_null() || layer->get_mesh().is_null()) {
+		if (layer.is_null() || !layer->has_any_mesh()) {
 			continue;
 		}
 

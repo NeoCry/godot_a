@@ -4,41 +4,46 @@
 		A single paintable vegetation type inside a [FoliagePainter3D].
 	</brief_description>
 	<description>
-		[FoliageLayer] describes one kind of vegetation that a [FoliagePainter3D]'s brush can paint: which [Mesh] to use, how much random scale/rotation/normal deviation to apply to each instance, how densely and how far apart the brush places them, and at what distance the layer should fade out (see the [member visibility_range_begin] group).
+		[FoliageLayer] describes one kind of vegetation that a [FoliagePainter3D]'s brush can paint: how much random scale/rotation/normal deviation to apply to each instance, how densely and how far apart the brush places them, and - through [member lod_levels] - which mesh(es) to actually render at which distance.
 		This resource is pure configuration; it does not store any instance data itself. [FoliagePainter3D] paints and stores this layer's instances, spatially chunked into a grid of cells (see [member FoliagePainter3D.cell_size]) so that off-screen cells can be culled by the renderer independently. Use [FoliagePainter3D]'s brush tool, or its [method FoliagePainter3D.insert_instance] / [method FoliagePainter3D.remove_instance] / [method FoliagePainter3D.add_instance] methods, to add or remove instances.
 	</description>
 	<tutorials>
 	</tutorials>
+	<methods>
+		<method name="has_any_mesh" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if at least one entry in [member lod_levels] has a [member FoliageLODLevel.mesh] assigned, i.e. this layer actually renders something. The brush refuses to paint a layer for which this returns [code]false[/code].
+			</description>
+		</method>
+	</methods>
 	<members>
 		<member name="align_to_normal_amount" type="float" setter="set_align_to_normal_amount" getter="get_align_to_normal_amount" default="0.0">
 			Blends each instance's up axis between world up ([code]0.0[/code]) and the surface normal at the paint location ([code]1.0[/code]). Combined with [member random_tilt_degrees], this controls how much instances deviate from the surface normal.
 		</member>
 		<member name="cast_shadows" type="bool" setter="set_cast_shadows" getter="is_casting_shadows" default="true">
-			If [code]false[/code], this layer's instances do not cast shadows (equivalent to setting [member GeometryInstance3D.cast_shadow] to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF] on the layer's internal [MultiMeshInstance3D]).
+			If [code]false[/code], this layer's instances do not cast shadows (equivalent to setting [member GeometryInstance3D.cast_shadow] to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF] on every LOD level's internal [MultiMeshInstance3D]). Shared by every entry in [member lod_levels]; there is no per-LOD override.
 		</member>
 		<member name="density" type="float" setter="set_density" getter="get_density" default="4.0">
 			The approximate number of instances the brush attempts to place per paint stamp while this layer is active. Actual placement is also limited by [member min_instance_spacing] and by whether a valid surface is found under each sample point.
 		</member>
 		<member name="ignore_screen_space_shadows" type="bool" setter="set_ignore_screen_space_shadows" getter="is_ignoring_screen_space_shadows" default="false">
-			Equivalent to [member GeometryInstance3D.ignore_screen_space_shadows] for this layer's instances. Enable this to exclude dense, small foliage (e.g. grass) from screen-space contact shadows, which can otherwise be a relatively expensive effect to compute over thousands of small instances for little visual benefit.
+			Equivalent to [member GeometryInstance3D.ignore_screen_space_shadows] for this layer's instances. Enable this to exclude dense, small foliage (e.g. grass) from screen-space contact shadows, which can otherwise be a relatively expensive effect to compute over thousands of small instances for little visual benefit. Shared by every entry in [member lod_levels].
 		</member>
 		<member name="instance_count" type="int" setter="" getter="get_instance_count" default="0">
 			The number of instances currently painted for this layer, summed across all of [FoliagePainter3D]'s cells. This is read-only and for informational display in the Inspector only; it is kept up to date automatically and is not saved with this resource.
 		</member>
 		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
-			A display name for this layer, shown in [FoliagePainter3D]'s brush layer list and used to name its internal [MultiMeshInstance3D].
+			A display name for this layer, shown in [FoliagePainter3D]'s brush layer list and used to name its internal [MultiMeshInstance3D] nodes.
 		</member>
 		<member name="lod_bias" type="float" setter="set_lod_bias" getter="get_lod_bias" default="1.0">
-			Equivalent to [member GeometryInstance3D.lod_bias] for this layer's instances: values above [code]1.0[/code] make the mesh's LODs switch to a lower level of detail sooner, values below [code]1.0[/code] delay switching.
+			Equivalent to [member GeometryInstance3D.lod_bias] for this layer's instances: values above [code]1.0[/code] make each LOD level's own mesh-internal LODs (if any) switch to a lower level of detail sooner, values below [code]1.0[/code] delay switching. This is unrelated to - and stacks with - the level selection done via [member lod_levels]' own visibility ranges. Shared by every entry in [member lod_levels].
 		</member>
-		<member name="material_override" type="Material" setter="set_material_override" getter="get_material_override">
-			If set, overrides the material used to render this layer's instances (equivalent to [member GeometryInstance3D.material_override] on the layer's internal [MultiMeshInstance3D]).
+		<member name="lod_levels" type="FoliageLODLevel[]" setter="set_lod_levels" getter="get_lod_levels" default="[]">
+			The chain of [FoliageLODLevel]s (e.g. LOD_0, LOD_1, LOD_2) this layer renders through, in order from highest to lowest detail. Every level shares the exact same painted instance transforms; only its mesh, material, and visibility/fade distance range differ (see [FoliageLODLevel]). A newly created [FoliageLayer] starts with three levels with reasonable default distances, but this array can hold any number of levels, including just one (no LOD switching) or zero (nothing renders; see [method has_any_mesh]).
 		</member>
 		<member name="max_scale" type="float" setter="set_max_scale" getter="get_max_scale" default="1.1">
 			The upper bound of the random uniform scale applied to each painted instance. See also [member min_scale].
-		</member>
-		<member name="mesh" type="Mesh" setter="set_mesh" getter="get_mesh">
-			The [Mesh] painted for this layer. The brush places nothing for a layer until this is set.
 		</member>
 		<member name="min_instance_spacing" type="float" setter="set_min_instance_spacing" getter="get_min_instance_spacing" default="0.5">
 			The minimum distance the brush enforces between two instances of this layer. Set to [code]0.0[/code] to allow instances to be placed arbitrarily close together.
@@ -51,21 +56,6 @@
 		</member>
 		<member name="random_tilt_degrees" type="float" setter="set_random_tilt_degrees" getter="get_random_tilt_degrees" default="0.0">
 			The maximum random tilt, in degrees, applied on top of [member align_to_normal_amount] for natural-looking variation from instance to instance.
-		</member>
-		<member name="visibility_range_begin" type="float" setter="set_visibility_range_begin" getter="get_visibility_range_begin" default="0.0">
-			Equivalent to [member GeometryInstance3D.visibility_range_begin] for this layer's instances: the distance from the camera at which they start being visible (if greater than [code]0.0[/code]).
-		</member>
-		<member name="visibility_range_begin_margin" type="float" setter="set_visibility_range_begin_margin" getter="get_visibility_range_begin_margin" default="0.0">
-			Equivalent to [member GeometryInstance3D.visibility_range_begin_margin] for this layer's instances.
-		</member>
-		<member name="visibility_range_end" type="float" setter="set_visibility_range_end" getter="get_visibility_range_end" default="0.0">
-			Equivalent to [member GeometryInstance3D.visibility_range_end] for this layer's instances: the distance from the camera beyond which they stop being visible (if greater than [code]0.0[/code]). Use this to keep dense grass or small foliage from rendering far away.
-		</member>
-		<member name="visibility_range_end_margin" type="float" setter="set_visibility_range_end_margin" getter="get_visibility_range_end_margin" default="0.0">
-			Equivalent to [member GeometryInstance3D.visibility_range_end_margin] for this layer's instances.
-		</member>
-		<member name="visibility_range_fade_mode" type="int" setter="set_visibility_range_fade_mode" getter="get_visibility_range_fade_mode" enum="GeometryInstance3D.VisibilityRangeFadeMode" default="0">
-			Equivalent to [member GeometryInstance3D.visibility_range_fade_mode] for this layer's instances: whether and how they fade in/out across [member visibility_range_begin_margin] and [member visibility_range_end_margin] instead of popping.
 		</member>
 	</members>
 </class>
