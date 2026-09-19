@@ -1578,7 +1578,7 @@ void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_bu
 		settings.quality = RSE::ScreenSpaceContactShadowsLength(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/contact_shadow/shadow_length"));
 		settings.surface_thickness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/contact_shadow/surface_thickness");
 	}
-	settings.debug_wave_index = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/contact_shadow/debug_wave_index");
+	settings.debug_wave_index = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SSCS_WAVE_INDEX;
 
 	Transform3D inverse_transform = p_transform.affine_inverse();
 

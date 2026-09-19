@@ -174,7 +174,8 @@ public:
 		float surface_thickness = 0.01f;
 		// Debug-only: colors the output by compute wavefront index instead of computing real
 		// shadows, so the wavefront layout of the multi-dispatch (BuildDispatchList-style)
-		// coverage can be inspected. See rendering/lights_and_shadows/contact_shadow/debug_wave_index.
+		// coverage can be inspected. Driven by the viewport's debug draw mode, see
+		// RSE::VIEWPORT_DEBUG_DRAW_SSCS_WAVE_INDEX.
 		bool debug_wave_index = false;
 	};
 

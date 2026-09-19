@@ -767,6 +767,10 @@
 			Draws the atlas used by [AreaLight3D] nodes in the upper left quadrant of the [Viewport].
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering method.
 		</constant>
+		<constant name="DEBUG_DRAW_SSCS_WAVE_INDEX" value="29" enum="DebugDraw">
+			Colors screen-space contact shadow output by compute wavefront index instead of computing real shadows, so the wavefront layout can be visually verified (wavefronts should appear aligned and projected towards the light).
+			[b]Note:[/b] Only supported when using the Forward+ rendering method. Requires screen-space contact shadows to be enabled (see [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] and [member Environment.sscs_enabled]) to have a visible effect.
+		</constant>
 		<constant name="DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST" value="0" enum="DefaultCanvasItemTextureFilter">
 			The texture filter reads from the nearest pixel only. This makes the texture look pixelated from up close, and grainy from a distance (due to mipmaps not being sampled).
 		</constant>

@@ -1043,6 +1043,7 @@ bool RendererSceneRenderRD::_debug_draw_can_use_effects(RSE::ViewportDebugDraw p
 		case RSE::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS:
 		case RSE::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES:
 		case RSE::VIEWPORT_DEBUG_DRAW_DISABLE_LOD:
+		case RSE::VIEWPORT_DEBUG_DRAW_SSCS_WAVE_INDEX:
 			can_use_effects = true;
 			break;
 		default:

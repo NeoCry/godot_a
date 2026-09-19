@@ -25,7 +25,7 @@ layout(push_constant, std430) uniform Params {
 	float opacity;
 	float blur;
 	float taa_frame_count;
-	uint debug_wave_index; // Debug only, see rendering/lights_and_shadows/contact_shadow/debug_wave_index.
+	uint debug_wave_index; // Debug only, driven by the viewport's Debug Draw > SSCS Wave Index mode.
 }
 params;
 
@@ -256,7 +256,8 @@ void main() {
 		// Debug visualization: color by which of the WAVE_SIZE "diagonal" wavefronts this pixel
 		// belongs to, instead of computing a real shadow value. Wavefronts should appear aligned
 		// and projected towards the light position/direction; if they don't, the dispatch list
-		// (or the light coordinate) is wrong. See rendering/lights_and_shadows/contact_shadow/debug_wave_index.
+		// (or the light coordinate) is wrong. Enabled via the viewport's Debug Draw > SSCS Wave
+		// Index mode.
 		shadow = fract(float(group_id) / float(WAVE_SIZE));
 	}
 
