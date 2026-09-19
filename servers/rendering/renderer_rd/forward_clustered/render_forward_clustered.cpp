@@ -3077,9 +3077,26 @@ void RenderForwardClustered::_render_sscs_exclusion_depth(RenderDataRD *p_render
 	scene_data.cam_projection = p_render_data->scene_data->cam_projection;
 	scene_data.cam_transform = p_render_data->scene_data->cam_transform;
 	scene_data.view_projection[0] = p_render_data->scene_data->cam_projection;
+	scene_data.camera_visible_layers = p_render_data->scene_data->camera_visible_layers;
+	// Must match the main pass's sub-pixel jitter (TAA/upscaling): it's baked directly into the
+	// projection matrix the vertex shader receives (see RenderSceneDataRD::get_cam_projection()),
+	// so leaving this at its zero default would rasterize excluded instances at a different
+	// sub-pixel offset than the main depth pre-pass every frame, breaking the exact depth match
+	// screen_space_contact_shadows.glsl relies on right at silhouette edges - most visible on
+	// thin, detailed geometry like foliage, especially once it's also animated.
+	scene_data.taa_jitter = p_render_data->scene_data->taa_jitter;
 	scene_data.z_near = 0.0;
 	scene_data.z_far = p_render_data->scene_data->cam_projection.get_z_far();
 	scene_data.dual_paraboloid_side = 0;
+	// Match the main pass's LOD selection too (see _render_shadow_append()'s identical handling),
+	// so a mesh's LOD level - which can change its geometry/vertex count - doesn't differ between
+	// the two passes.
+	scene_data.lod_distance_multiplier = p_render_data->scene_data->lod_distance_multiplier;
+	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_DISABLE_LOD) {
+		scene_data.screen_mesh_lod_threshold = 0.0;
+	} else {
+		scene_data.screen_mesh_lod_threshold = p_render_data->scene_data->screen_mesh_lod_threshold;
+	}
 	// Match the alpha-scissor threshold the real opaque depth pre-pass is using this frame (see
 	// _render_scene()), so alpha-cutout materials (e.g. foliage) are masked the same way there.
 	scene_data.opaque_prepass_threshold = p_render_data->scene_data->opaque_prepass_threshold;
@@ -3111,7 +3128,7 @@ void RenderForwardClustered::_render_sscs_exclusion_depth(RenderDataRD *p_render
 	// Always clears (even with zero instances, e.g. no excluded instances this frame): the
 	// resulting depth of 0.0 (far, see DEPTH_FAR in screen_space_contact_shadows.glsl) never
 	// matches a real surface's depth, so nothing is treated as excluded.
-	RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), false, pass_mode, 0, true, false, rp_uniform_set);
+	RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), false, pass_mode, 0, true, false, rp_uniform_set, false, Vector2(), scene_data.lod_distance_multiplier, scene_data.screen_mesh_lod_threshold);
 	_render_list_with_draw_list(&render_list_params, p_framebuffer, RD::DRAW_CLEAR_ALL);
 
 	RD::get_singleton()->draw_command_end_label();
