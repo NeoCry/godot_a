@@ -55,6 +55,10 @@ void FoliagePainter3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 
 	p_gizmo->clear();
 
+	if (!painter->is_debug_show_cells_enabled()) {
+		return;
+	}
+
 	const Ref<Material> material = get_material("cell_material", p_gizmo);
 
 	Vector<Vector3> lines;

@@ -43,6 +43,9 @@ void FoliagePainter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_cell_size", "size"), &FoliagePainter3D::set_cell_size);
 	ClassDB::bind_method(D_METHOD("get_cell_size"), &FoliagePainter3D::get_cell_size);
 
+	ClassDB::bind_method(D_METHOD("set_debug_show_cells", "enabled"), &FoliagePainter3D::set_debug_show_cells);
+	ClassDB::bind_method(D_METHOD("is_debug_show_cells_enabled"), &FoliagePainter3D::is_debug_show_cells_enabled);
+
 	ClassDB::bind_method(D_METHOD("get_layer_count"), &FoliagePainter3D::get_layer_count);
 	ClassDB::bind_method(D_METHOD("get_layer", "layer_index"), &FoliagePainter3D::get_layer);
 
@@ -56,6 +59,9 @@ void FoliagePainter3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("FoliageLayer")), "set_layers", "get_layers");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_size", PROPERTY_HINT_RANGE, "1,256,0.5,or_greater,suffix:m"), "set_cell_size", "get_cell_size");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "_cell_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_cell_data", "_get_cell_data");
+
+	ADD_GROUP("Debug", "debug_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_show_cells"), "set_debug_show_cells", "is_debug_show_cells_enabled");
 }
 
 void FoliagePainter3D::_notification(int p_what) {
@@ -283,6 +289,15 @@ void FoliagePainter3D::set_cell_size(float p_size) {
 
 float FoliagePainter3D::get_cell_size() const {
 	return cell_size;
+}
+
+void FoliagePainter3D::set_debug_show_cells(bool p_enabled) {
+	debug_show_cells = p_enabled;
+	update_gizmos();
+}
+
+bool FoliagePainter3D::is_debug_show_cells_enabled() const {
+	return debug_show_cells;
 }
 
 int FoliagePainter3D::get_layer_count() const {

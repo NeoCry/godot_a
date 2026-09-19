@@ -12,7 +12,7 @@
 		- [b]Remove Single[/b]: click to delete the single closest instance to the clicked point.
 		Painting only looks at [MeshInstance3D] geometry; no physics bodies or collision shapes are required on the painted-on meshes.
 		[b]LOD levels:[/b] each [FoliageLayer] renders through a chain of [FoliageLODLevel]s (see [member FoliageLayer.lod_levels]), e.g. a detailed mesh up close and a cheaper one (or none at all) far away, each with its own visibility/fade distance range and optional material override - all levels of a layer share the exact same painted instance transforms, only their mesh/material/range differ. This lets nearby dense foliage (e.g. grass) switch to a simpler representation, or disappear, at a much shorter distance than larger background vegetation.
-		[b]Cell chunking:[/b] each layer's instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty (layer, cell) pair is rendered through one internal [MultiMeshInstance3D] per LOD level. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Set [member cell_size] before painting a large area — changing it later does not move already-painted instances into the new grid.
+		[b]Cell chunking:[/b] each layer's instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty (layer, cell) pair is rendered through one internal [MultiMeshInstance3D] per LOD level. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. Set [member cell_size] before painting a large area — changing it later does not move already-painted instances into the new grid. Enable [member debug_show_cells] to visualize the resulting cell boundaries in the 3D viewport.
 		While instances are usually added and removed through the brush, [method insert_instance], [method remove_instance], and [method add_instance] are also available for scripted or procedural editing.
 	</description>
 	<tutorials>
@@ -64,8 +64,11 @@
 		<member name="cell_size" type="float" setter="set_cell_size" getter="get_cell_size" default="16.0">
 			The size (in meters, on the local XZ plane) of the grid cells that each layer's instances are chunked into. See the class description for why this matters. Larger values mean fewer, bigger cells (coarser culling, less overhead); smaller values mean finer-grained culling at the cost of more internal [MultiMeshInstance3D] nodes. It should generally stay well above the brush radius and above [member FoliageLayer.min_instance_spacing], which only checks for nearby instances within the same cell and its immediate neighbors.
 		</member>
+		<member name="debug_show_cells" type="bool" setter="set_debug_show_cells" getter="is_debug_show_cells_enabled" default="false">
+			If [code]true[/code], the editor gizmo draws the bounds of every non-empty cell (see [member cell_size]). See [b]Cell chunking[/b] in the class description. Off by default since it can clutter the viewport once a large area has been painted.
+		</member>
 		<member name="layers" type="FoliageLayer[]" setter="set_layers" getter="get_layers" default="[]">
-			The vegetation types this node can paint. Each entry is a [FoliageLayer] with its own [Mesh], randomization settings, brush density/spacing, and visibility range. Add and configure entries from the Inspector, then select this node to paint with the brush tool in the 3D viewport.
+			The vegetation types this node can paint. Each entry is a [FoliageLayer] with its own [member FoliageLayer.lod_levels], randomization settings, and brush density/spacing. Add and configure entries from the Inspector, then select this node to paint with the brush tool in the 3D viewport.
 		</member>
 	</members>
 </class>

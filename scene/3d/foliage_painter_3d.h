@@ -61,6 +61,7 @@ class FoliagePainter3D : public Node3D {
 
 	TypedArray<FoliageLayer> layers;
 	float cell_size = 16.0f;
+	bool debug_show_cells = false;
 
 	// One cell map per layer (indexed the same as `layers`).
 	LocalVector<HashMap<Vector2i, FoliageCell>> layer_cells;
@@ -98,6 +99,12 @@ public:
 
 	void set_cell_size(float p_size);
 	float get_cell_size() const;
+
+	// Off by default: draws every non-empty cell's bounding box via
+	// FoliagePainter3DGizmoPlugin, which can otherwise clutter the viewport
+	// once many cells are painted.
+	void set_debug_show_cells(bool p_enabled);
+	bool is_debug_show_cells_enabled() const;
 
 	int get_layer_count() const;
 	Ref<FoliageLayer> get_layer(int p_index) const;

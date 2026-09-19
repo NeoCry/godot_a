@@ -32,13 +32,14 @@
 
 #include "editor/scene/3d/node_3d_editor_gizmos.h"
 
-// Debug view for FoliagePainter3D: draws a wireframe box around every
-// non-empty cell's actual bounding box (the same AABB the renderer uses to
-// frustum-cull that cell's internal MultiMeshInstance3D), so the effect of
-// FoliagePainter3D.cell_size can be seen directly. Modeled after
-// FoliageSpawner3DGizmoPlugin; unlike it, there is no draggable size to
-// expose as a handle here (cell_size is a single scalar edited in the
-// Inspector), so no handle-related overrides are needed.
+// Debug view for FoliagePainter3D: while FoliagePainter3D.debug_show_cells is
+// enabled, draws a wireframe box around every non-empty cell's actual
+// bounding box (the same AABB the renderer uses to frustum-cull that cell's
+// internal MultiMeshInstance3D), so the effect of FoliagePainter3D.cell_size
+// can be seen directly. Modeled after FoliageSpawner3DGizmoPlugin; unlike it,
+// there is no draggable size to expose as a handle here (cell_size is a
+// single scalar edited in the Inspector), so no handle-related overrides are
+// needed.
 class FoliagePainter3DGizmoPlugin : public EditorNode3DGizmoPlugin {
 	GDCLASS(FoliagePainter3DGizmoPlugin, EditorNode3DGizmoPlugin);
 
