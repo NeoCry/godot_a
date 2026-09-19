@@ -83,6 +83,7 @@
 			<param index="2" name="height_max" type="float" />
 			<description>
 				Replaces the heightmap by importing [param image], which must be square and uncompressed. [member resolution] is set to the image's size, and each pixel's red channel (expected to be in the [code]0.0[/code] to [code]1.0[/code] range, as with a normal grayscale heightmap image) is linearly mapped from [param height_min] to [param height_max] to produce that sample's height.
+				[b]Prefer an EXR or HDR source image over PNG or any lossy format (e.g. JPEG):[/b] Godot always decodes a loaded PNG (even a 16-bit one) to 8 bits per channel, i.e. only 256 distinct heights across the whole [param height_min]-[param height_max] range, and a lossy format's compression artifacts become actual bumps in the terrain surface on top of that. EXR and HDR decode to real floating-point precision instead. Check [member Image.format] after loading if you need to detect this in a script; [constant Image.FORMAT_RF], [constant Image.FORMAT_RH], and their multi-channel/[constant Image.FORMAT_RGBE9995] variants are the high-precision ones.
 			</description>
 		</method>
 		<method name="is_hole" qualifiers="const">

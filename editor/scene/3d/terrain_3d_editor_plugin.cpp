@@ -144,6 +144,29 @@ void Terrain3DEditorPlugin::_import_file_selected(const String &p_path) {
 	import_height_range_dialog->popup_centered();
 }
 
+namespace {
+// EXR/HDR decode to one of these (real float or half-float height data, or
+// HDR's shared-exponent RGBE); every other loadable format (PNG included,
+// since Godot's PNG loader always decodes to 8 bits per channel even for a
+// 16-bit source file) only has 256 representable values per channel.
+bool _is_high_precision_image_format(Image::Format p_format) {
+	switch (p_format) {
+		case Image::FORMAT_RF:
+		case Image::FORMAT_RGF:
+		case Image::FORMAT_RGBF:
+		case Image::FORMAT_RGBAF:
+		case Image::FORMAT_RH:
+		case Image::FORMAT_RGH:
+		case Image::FORMAT_RGBH:
+		case Image::FORMAT_RGBAH:
+		case Image::FORMAT_RGBE9995:
+			return true;
+		default:
+			return false;
+	}
+}
+} // namespace
+
 void Terrain3DEditorPlugin::_do_import_heightmap() {
 	if (terrain == nullptr || pending_import_path.is_empty()) {
 		return;
@@ -159,6 +182,16 @@ void Terrain3DEditorPlugin::_do_import_heightmap() {
 		return;
 	}
 
+	const float height_min = import_height_min_spin->get_value();
+	const float height_max = import_height_max_spin->get_value();
+
+	if (!_is_high_precision_image_format(image->get_format())) {
+		const float step = (height_max - height_min) / 255.0f;
+		EditorNode::get_singleton()->show_warning(
+				vformat(TTR("\"%s\" only has 8-bit precision (256 possible height values). Across the %.2f m range you set, that means about %.4f m between adjacent representable heights, which can show up as visible stepping/terracing. For smooth results, use an EXR or HDR heightmap instead, which store real height precision rather than quantizing to 8 bits."), pending_import_path.get_file(), height_max - height_min, step),
+				TTR("Low Heightmap Precision"));
+	}
+
 	// A brand-new terrain has nothing to sculpt into yet; create the resource
 	// it needs rather than making the user do that by hand first.
 	if (terrain->get_terrain_data().is_null()) {
@@ -167,7 +200,7 @@ void Terrain3DEditorPlugin::_do_import_heightmap() {
 		terrain->set_terrain_data(new_data);
 	}
 
-	terrain->get_terrain_data()->import_heightmap(image, import_height_min_spin->get_value(), import_height_max_spin->get_value());
+	terrain->get_terrain_data()->import_heightmap(image, height_min, height_max);
 }
 
 bool Terrain3DEditorPlugin::_is_control_mode() const {
@@ -602,7 +635,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 
 	import_heightmap_button = memnew(Button);
 	import_heightmap_button->set_text(TTR("Import Heightmap..."));
-	import_heightmap_button->set_tooltip_text(TTR("Import a grayscale image as this terrain's heightmap, replacing the current one and resizing the terrain to match the image."));
+	import_heightmap_button->set_tooltip_text(TTR("Import a grayscale image as this terrain's heightmap, replacing the current one and resizing the terrain to match the image. Prefer an EXR or HDR heightmap over PNG: Godot always decodes PNG to 8 bits per channel (256 possible heights), while EXR/HDR keep real height precision."));
 	toolbar->add_child(import_heightmap_button);
 	import_heightmap_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_import_heightmap_pressed));
 
@@ -612,7 +645,13 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	import_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
 	import_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
 	import_file_dialog->set_title(TTR("Import Heightmap"));
-	import_file_dialog->add_filter("*.png,*.exr,*.hdr,*.jpg,*.jpeg,*.bmp,*.tga,*.webp", TTR("Image Files"));
+	// Only formats that make sense for height data: EXR/HDR store real float
+	// precision (recommended), while PNG is at least lossless, if only 8-bit
+	// (256 discrete heights - see the format warning in _do_import_heightmap).
+	// Deliberately excludes lossy formats (JPEG, lossy WebP, ...): compression
+	// artifacts in a heightmap show up as actual bumps in the terrain surface.
+	import_file_dialog->add_filter("*.exr,*.hdr", TTR("High-Precision Heightmap (Recommended)"));
+	import_file_dialog->add_filter("*.png", TTR("8-Bit Heightmap"));
 	import_file_dialog->connect("file_selected", callable_mp(this, &Terrain3DEditorPlugin::_import_file_selected));
 	EditorInterface::get_singleton()->get_base_control()->add_child(import_file_dialog);
 
