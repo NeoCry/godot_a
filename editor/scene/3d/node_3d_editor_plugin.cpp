@@ -84,6 +84,7 @@
 #include "editor/scene/3d/gizmos/reflection_probe_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/spring_bone_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/sprite_base_3d_gizmo_plugin.h"
+#include "editor/scene/3d/gizmos/terrain_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/two_bone_ik_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/visible_on_screen_notifier_3d_gizmo_plugin.h"
 #include "editor/scene/3d/gizmos/voxel_gi_gizmo_plugin.h"
@@ -3026,6 +3027,7 @@ void Node3DEditor::_register_all_gizmos() {
 	add_gizmo_plugin(Ref<AmbientProbeVolume3DGizmoPlugin>(memnew(AmbientProbeVolume3DGizmoPlugin)));
 	add_gizmo_plugin(Ref<FogVolumeGizmoPlugin>(memnew(FogVolumeGizmoPlugin)));
 	add_gizmo_plugin(Ref<FoliageSpawner3DGizmoPlugin>(memnew(FoliageSpawner3DGizmoPlugin)));
+	add_gizmo_plugin(Ref<Terrain3DGizmoPlugin>(memnew(Terrain3DGizmoPlugin)));
 	add_gizmo_plugin(Ref<TwoBoneIK3DGizmoPlugin>(memnew(TwoBoneIK3DGizmoPlugin)));
 	add_gizmo_plugin(Ref<ChainIK3DGizmoPlugin>(memnew(ChainIK3DGizmoPlugin)));
 	// Physics gizmo plugins.

@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="TerrainData" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		The heightmap and texture control map for a [Terrain3D].
+	</brief_description>
+	<description>
+		[TerrainData] is the actual "world" a [Terrain3D] renders and collides with: a square grid of [member resolution] × [member resolution] height samples spaced [member vertex_spacing] meters apart, plus a control map that drives which [TerrainLayer]s are blended where (see [method get_control] and [Terrain3D]'s description for how the control map's channels are used).
+		This resource holds and serializes the data; it does not render anything or know about any particular [Terrain3D] node (several nodes could even share one [TerrainData], though editing it from one would then affect all of them). Assign it to a [Terrain3D]'s [member Terrain3D.terrain_data] to render and sculpt it.
+		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. Prefer going through [Terrain3D]'s own [method Terrain3D.sculpt], [method Terrain3D.set_height_region], and [method Terrain3D.paint_layer] instead of this resource's methods directly when a [Terrain3D] is already using it, since those also keep the rendered chunks, texture, and collision shape in sync; this resource's own setters do not.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="fill_height">
+			<return type="void" />
+			<param index="0" name="height" type="float" />
+			<description>
+				Sets every height sample to [param height], for example to reset the terrain to a flat plane.
+			</description>
+		</method>
+		<method name="get_control" qualifiers="const">
+			<return type="Color" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns the control value at height sample [param x], [param z] (out-of-range coordinates are clamped to the valid range) as a [Color]: red is the base [TerrainLayer] index (0-255) divided by 255, green is the overlay layer index divided by 255, blue is the blend factor between them (0 is pure base, 1 is pure overlay), and alpha is the hole flag (0 or 1; see [method is_hole]).
+			</description>
+		</method>
+		<method name="get_control_region" qualifiers="const">
+			<return type="PackedColorArray" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns the control values covering [param region] (in height sample coordinates), row-major with X varying fastest, the same layout [method set_control_region] expects back.
+			</description>
+		</method>
+		<method name="get_height" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns the height at sample [param x], [param z], in world units. Out-of-range coordinates are clamped to the valid range, which is a convenient way to sample one step past the edge (e.g. for computing normals) without special-casing the border.
+			</description>
+		</method>
+		<method name="get_height_at_position" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="local_xz" type="Vector2" />
+			<description>
+				Returns the terrain height at the arbitrary local-space position [param local_xz] (X and Z; local to whatever [Terrain3D] this data is assigned to), bilinearly interpolated between the surrounding height samples. Useful for gameplay queries like snapping an object to the ground.
+			</description>
+		</method>
+		<method name="get_height_region" qualifiers="const">
+			<return type="PackedFloat32Array" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns the heights covering [param region] (in height sample coordinates: [member Rect2i.position] is the starting [code](x, z)[/code] sample and [member Rect2i.size] is how many samples to read in each direction), row-major with X varying fastest, the same layout [method set_height_region] expects back. Useful for snapshotting a region before an edit (e.g. to implement undo).
+			</description>
+		</method>
+		<method name="get_normal" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns the surface normal at height sample [param x], [param z], estimated from the heights of its four neighboring samples.
+			</description>
+		</method>
+		<method name="get_normal_at_position" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="local_xz" type="Vector2" />
+			<description>
+				Returns the terrain surface normal at the arbitrary local-space position [param local_xz], bilinearly interpolated between the surrounding samples' normals. See [method get_height_at_position].
+			</description>
+		</method>
+		<method name="get_size" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the terrain's world-space size along one edge: [code](resolution - 1) * vertex_spacing[/code]. The terrain is always square.
+			</description>
+		</method>
+		<method name="import_heightmap">
+			<return type="void" />
+			<param index="0" name="image" type="Image" />
+			<param index="1" name="height_min" type="float" />
+			<param index="2" name="height_max" type="float" />
+			<description>
+				Replaces the heightmap by importing [param image], which must be square and uncompressed. [member resolution] is set to the image's size, and each pixel's red channel (expected to be in the [code]0.0[/code] to [code]1.0[/code] range, as with a normal grayscale heightmap image) is linearly mapped from [param height_min] to [param height_max] to produce that sample's height.
+			</description>
+		</method>
+		<method name="is_hole" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns [code]true[/code] if height sample [param x], [param z] is flagged as a hole (see [method Terrain3D.set_hole]). A [Terrain3D] omits the geometry around a hole entirely, rather than just hiding it, so holes can be used for cave entrances and similar openings that the camera and physics bodies can pass through.
+			</description>
+		</method>
+		<method name="set_control">
+			<return type="void" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="control" type="Color" />
+			<description>
+				Sets the control value at height sample [param x], [param z] (out-of-range coordinates are ignored) to [param control]; see [method get_control] for the channel layout. Does not emit [signal Resource.changed]; callers making many edits should call [method Resource.emit_changed] once afterwards, or use [method set_control_region] instead.
+			</description>
+		</method>
+		<method name="set_control_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="control" type="PackedColorArray" />
+			<description>
+				Writes [param control] (in the same row-major layout [method get_control_region] returns) into [param region] (in height sample coordinates) and emits [signal Resource.changed] once.
+			</description>
+		</method>
+		<method name="set_height">
+			<return type="void" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="height" type="float" />
+			<description>
+				Sets the height at sample [param x], [param z] (out-of-range coordinates are ignored) to [param height], in world units. Does not emit [signal Resource.changed]; callers making many edits (e.g. procedural generation) should call [method Resource.emit_changed] once afterwards, or use [method set_height_region] instead.
+			</description>
+		</method>
+		<method name="set_height_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="heights" type="PackedFloat32Array" />
+			<description>
+				Writes [param heights] (in the same row-major layout [method get_height_region] returns) into [param region] (in height sample coordinates) and emits [signal Resource.changed] once.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="resolution" type="int" setter="set_resolution" getter="get_resolution" default="513">
+			The number of height samples along each edge of the terrain (it is always square). Changing this resets both the heightmap and the control map to their default (flat, layer-less) state, so it should generally be set once before authoring a terrain rather than changed afterwards. See [method get_size] for the resulting world-space size.
+		</member>
+		<member name="vertex_spacing" type="float" setter="set_vertex_spacing" getter="get_vertex_spacing" default="1.0">
+			The distance, in meters, between two adjacent height samples. Lower values pack more geometric detail into the same world-space area at the cost of a much larger [member resolution] being needed to cover it.
+		</member>
+	</members>
+</class>

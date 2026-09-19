@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Terrain3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A large, sculptable, texture-splatted heightmap terrain, in the spirit of CryEngine's terrain system.
+	</brief_description>
+	<description>
+		[Terrain3D] renders a [TerrainData] heightmap ([member terrain_data]) as a grid of small chunks, each with its own automatic level of detail: nearby chunks render at full density while distant ones use a cheaper, decimated mesh with no extra scripting or per-frame cost, using the same mesh LOD mechanism as [method ArrayMesh.add_surface_from_arrays]'s [code]lods[/code] parameter. A thin "skirt" of hidden geometry around each chunk's edges hides the small seams that can appear where two neighboring chunks are rendered at different levels of detail.
+		Up to 32 [TerrainLayer]s ([member layers]) can be painted onto the terrain; every point on the terrain blends between at most two of them at once (see [TerrainData]'s control map), so any number of layers can be introduced over time by painting. A [member Terrain3D.collision_layer] configurable [HeightMapShape3D] is kept in sync automatically so physics bodies collide with the terrain; see [method update_collision].
+		While selected in the editor, a toolbar appears in the 3D viewport with a brush for sculpting (raising, lowering, smoothing, and flattening the heightmap), painting texture layers, and cutting or filling holes (openings in the terrain's geometry itself, e.g. for a cave entrance, that the camera and physics bodies can pass through — see [method TerrainData.is_hole]). The same operations are available from a script through [method sculpt], [method paint_layer], and [method set_hole], for example to carve a crater into the terrain at runtime.
+		[b]Note:[/b] [Terrain3D] is intended to be used unrotated (only its position and scale matter for mapping world space to the control map and to texture tiling); rotating it is not supported.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_aabb" qualifiers="const">
+			<return type="AABB" />
+			<description>
+				Returns a local-space bounding box covering the terrain's full footprint, padded generously above and below since sculpted height has no fixed range.
+			</description>
+		</method>
+		<method name="get_control_region" qualifiers="const">
+			<return type="PackedColorArray" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns [member terrain_data]'s control values covering [param region]; see [method TerrainData.get_control_region].
+			</description>
+		</method>
+		<method name="get_height_region" qualifiers="const">
+			<return type="PackedFloat32Array" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns [member terrain_data]'s heights covering [param region]; see [method TerrainData.get_height_region].
+			</description>
+		</method>
+		<method name="paint_layer">
+			<return type="void" />
+			<param index="0" name="local_position" type="Vector3" />
+			<param index="1" name="radius" type="float" />
+			<param index="2" name="strength" type="float" />
+			<param index="3" name="layer_index" type="int" />
+			<description>
+				Blends the [TerrainLayer] at [param layer_index] in [member layers] into the control map within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), falling off smoothly towards the edge of the brush. Re-uploads the control map texture, but does not need to rebuild any chunk mesh or collision shape, since painting never changes geometry.
+			</description>
+		</method>
+		<method name="sculpt">
+			<return type="void" />
+			<param index="0" name="local_position" type="Vector3" />
+			<param index="1" name="radius" type="float" />
+			<param index="2" name="strength" type="float" />
+			<param index="3" name="operation" type="int" enum="Terrain3D.SculptOperation" />
+			<param index="4" name="flatten_height" type="float" default="0.0" />
+			<param index="5" name="update_collision" type="bool" default="true" />
+			<description>
+				Sculpts [member terrain_data]'s heightmap within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), falling off smoothly towards the edge of the brush. [param strength] is the maximum height change, in meters, applied at the center of the brush per call, except for [constant SCULPT_FLATTEN] where it is instead how far each height moves towards [param flatten_height] (as a 0-1 fraction; values at or above 1 snap immediately). Rebuilds the chunks the brush touches and, unless [param update_collision] is [code]false[/code], also updates the collision shape immediately; pass [code]false[/code] while repeatedly sculpting in a tight loop (e.g. dragging a brush) and call [method update_collision] once afterwards instead, since rebuilding the collision shape from the whole heightmap on every call is comparatively expensive.
+			</description>
+		</method>
+		<method name="set_control_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="control" type="PackedColorArray" />
+			<description>
+				Writes [param control] into [member terrain_data] at [param region] (see [method TerrainData.set_control_region]), re-uploads the control map texture, and rebuilds the chunks [param region] overlaps (control values include the hole flag, which does affect chunk geometry; see [method TerrainData.is_hole]).
+			</description>
+		</method>
+		<method name="set_height_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="heights" type="PackedFloat32Array" />
+			<param index="2" name="update_collision" type="bool" default="true" />
+			<description>
+				Writes [param heights] into [member terrain_data] at [param region] (see [method TerrainData.set_height_region]) and rebuilds the chunks [param region] overlaps. See [method sculpt] for [param update_collision].
+			</description>
+		</method>
+		<method name="set_hole">
+			<return type="void" />
+			<param index="0" name="local_position" type="Vector3" />
+			<param index="1" name="radius" type="float" />
+			<param index="2" name="hole" type="bool" />
+			<param index="3" name="update_collision" type="bool" default="true" />
+			<description>
+				Sets or clears the hole flag within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter) and rebuilds the chunks the brush touches. [b]Note:[/b] holes only affect the rendered geometry, not the collision shape (see the class description and [method TerrainData.is_hole]); [param update_collision] is accepted for consistency with [method sculpt] and [method set_height_region] but has no effect here.
+			</description>
+		</method>
+		<method name="update_collision">
+			<return type="void" />
+			<description>
+				Rebuilds the terrain's [HeightMapShape3D] from the current [member terrain_data] heights. Called automatically when [member terrain_data] changes and after each editor brush stroke; call it manually after scripted edits made with [param update_collision] set to [code]false[/code].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="cast_shadow" type="int" setter="set_cast_shadow" getter="get_cast_shadow" enum="GeometryInstance3D.ShadowCastingSetting" default="1">
+			The shadow casting mode applied to every chunk, equivalent to [member GeometryInstance3D.cast_shadow].
+		</member>
+		<member name="collision_layer" type="int" setter="set_collision_layer" getter="get_collision_layer" default="1">
+			The terrain's physics collision layer, equivalent to [member CollisionObject3D.collision_layer].
+		</member>
+		<member name="collision_mask" type="int" setter="set_collision_mask" getter="get_collision_mask" default="1">
+			The terrain's physics collision mask, equivalent to [member CollisionObject3D.collision_mask].
+		</member>
+		<member name="debug_draw_chunks" type="bool" setter="set_debug_draw_chunks" getter="is_debug_draw_chunks_enabled" default="false">
+			If [code]true[/code], draws each chunk's bounds as a wireframe box in the editor while this node is selected, to help visualize the chunk grid described in the class description.
+		</member>
+		<member name="gi_mode" type="int" setter="set_gi_mode" getter="get_gi_mode" enum="GeometryInstance3D.GIMode" default="1">
+			The global illumination mode applied to every chunk, equivalent to [member GeometryInstance3D.gi_mode]. Defaults to [constant GeometryInstance3D.GI_MODE_STATIC], unlike most small scattered geometry, since a terrain is usually a good candidate for baked lighting.
+		</member>
+		<member name="layers" type="TerrainLayer[]" setter="set_layers" getter="get_layers" default="[]">
+			The ground materials this terrain can be painted with, in the order the Paint brush's layer picker lists them. See [TerrainLayer] and the class description; up to 32 entries are supported.
+		</member>
+		<member name="lod_bias" type="float" setter="set_lod_bias" getter="get_lod_bias" default="1.0">
+			Scales how aggressively chunks switch to a lower level of detail with distance. Values above [code]1.0[/code] switch to a lower level of detail sooner (closer to the camera); values below [code]1.0[/code] delay switching, keeping more chunks at full detail for longer at the cost of performance.
+		</member>
+		<member name="skirt_depth" type="float" setter="set_skirt_depth" getter="get_skirt_depth" default="2.0">
+			How far down, in meters, the hidden "skirt" geometry around each chunk's border extends (see the class description). It should be large enough to cover the biggest height difference likely to appear between two neighboring chunks at different levels of detail; the default is generous for most terrains.
+		</member>
+		<member name="terrain_data" type="TerrainData" setter="set_terrain_data" getter="get_terrain_data">
+			The [TerrainData] this node renders, sculpts, and collides with. A new, empty (flat) [TerrainData] is often the fastest way to start; assign one and use the editor brush to sculpt it, or [method TerrainData.import_heightmap] to start from an existing heightmap image.
+		</member>
+	</members>
+	<constants>
+		<constant name="SCULPT_RAISE" value="0" enum="SculptOperation">
+			Raises the height within the brush.
+		</constant>
+		<constant name="SCULPT_LOWER" value="1" enum="SculptOperation">
+			Lowers the height within the brush.
+		</constant>
+		<constant name="SCULPT_SMOOTH" value="2" enum="SculptOperation">
+			Averages the height within the brush with its immediate neighbors, smoothing out sharp detail.
+		</constant>
+		<constant name="SCULPT_FLATTEN" value="3" enum="SculptOperation">
+			Moves the height within the brush towards a fixed target height (see [method sculpt]'s [code]flatten_height[/code] parameter), flattening it.
+		</constant>
+	</constants>
+</class>

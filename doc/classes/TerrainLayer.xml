@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="TerrainLayer" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A single paintable ground material inside a [Terrain3D].
+	</brief_description>
+	<description>
+		[TerrainLayer] describes one ground material a [Terrain3D]'s Paint brush can blend in: an albedo texture, an optional normal map, an optional packed occlusion/roughness/metallic ([member orm_texture]) map, and how large one texture tile is in world space ([member uv_scale]).
+		This resource is pure configuration; it does not store where it is painted. [Terrain3D] combines every layer's textures into shared [Texture2DArray]s and blends between at most two layers at a time at each point of the terrain, recorded in [TerrainData]'s control map (see [method Terrain3D.paint_layer]). Layer textures are resampled to a common size when built into those arrays, so very high-resolution source textures do not need to match each other exactly.
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="albedo_texture" type="Texture2D" setter="set_albedo_texture" getter="get_albedo_texture">
+			The base color texture for this layer. Until this is set, the layer renders as flat gray.
+		</member>
+		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
+			A display name for this layer, shown in [Terrain3D]'s Paint brush layer list.
+		</member>
+		<member name="normal_texture" type="Texture2D" setter="set_normal_texture" getter="get_normal_texture">
+			An optional tangent-space normal map for this layer. If unset, the layer uses a flat normal (no extra surface detail beyond the terrain's own geometry).
+		</member>
+		<member name="orm_texture" type="Texture2D" setter="set_orm_texture" getter="get_orm_texture">
+			An optional packed occlusion (red channel), roughness (green channel), and metallic (blue channel) texture for this layer, matching the convention used elsewhere in Godot (see [member BaseMaterial3D.orm_texture]). If unset, the layer uses full occlusion, medium roughness, and no metallic.
+		</member>
+		<member name="uv_scale" type="float" setter="set_uv_scale" getter="get_uv_scale" default="4.0">
+			The size, in meters, that one tile of this layer's textures covers on the terrain. Smaller values tile the texture more densely (a smaller, more repeated pattern); larger values stretch it further.
+		</member>
+	</members>
+</class>
