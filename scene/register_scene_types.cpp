@@ -244,6 +244,7 @@
 #include "scene/3d/fabr_ik_3d.h"
 #include "scene/3d/fog_volume.h"
 #include "scene/3d/foliage_layer.h"
+#include "scene/3d/foliage_lod_level.h"
 #include "scene/3d/foliage_painter_3d.h"
 #include "scene/3d/foliage_spawner_3d.h"
 #include "scene/3d/gpu_particles_3d.h"
@@ -772,6 +773,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(ShapeCast3D);
 #endif // PHYSICS_3D_DISABLED
 	GDREGISTER_CLASS(MultiMeshInstance3D);
+	GDREGISTER_CLASS(FoliageLODLevel);
 	GDREGISTER_CLASS(FoliageSpawner3D);
 	GDREGISTER_CLASS(FoliageLayer);
 	GDREGISTER_CLASS(FoliagePainter3D);

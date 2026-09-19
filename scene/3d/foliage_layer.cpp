@@ -30,18 +30,17 @@
 
 #include "foliage_layer.h"
 
+#include "core/core_string_names.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
-#include "scene/resources/mesh.h"
 
 void FoliageLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_layer_name", "name"), &FoliageLayer::set_layer_name);
 	ClassDB::bind_method(D_METHOD("get_layer_name"), &FoliageLayer::get_layer_name);
 
-	ClassDB::bind_method(D_METHOD("set_mesh", "mesh"), &FoliageLayer::set_mesh);
-	ClassDB::bind_method(D_METHOD("get_mesh"), &FoliageLayer::get_mesh);
-
-	ClassDB::bind_method(D_METHOD("set_material_override", "material"), &FoliageLayer::set_material_override);
-	ClassDB::bind_method(D_METHOD("get_material_override"), &FoliageLayer::get_material_override);
+	ClassDB::bind_method(D_METHOD("set_lod_levels", "levels"), &FoliageLayer::set_lod_levels);
+	ClassDB::bind_method(D_METHOD("get_lod_levels"), &FoliageLayer::get_lod_levels);
+	ClassDB::bind_method(D_METHOD("has_any_mesh"), &FoliageLayer::has_any_mesh);
 
 	ClassDB::bind_method(D_METHOD("set_min_scale", "scale"), &FoliageLayer::set_min_scale);
 	ClassDB::bind_method(D_METHOD("get_min_scale"), &FoliageLayer::get_min_scale);
@@ -78,24 +77,8 @@ void FoliageLayer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_instance_count"), &FoliageLayer::get_instance_count);
 
-	ClassDB::bind_method(D_METHOD("set_visibility_range_begin", "distance"), &FoliageLayer::set_visibility_range_begin);
-	ClassDB::bind_method(D_METHOD("get_visibility_range_begin"), &FoliageLayer::get_visibility_range_begin);
-
-	ClassDB::bind_method(D_METHOD("set_visibility_range_begin_margin", "distance"), &FoliageLayer::set_visibility_range_begin_margin);
-	ClassDB::bind_method(D_METHOD("get_visibility_range_begin_margin"), &FoliageLayer::get_visibility_range_begin_margin);
-
-	ClassDB::bind_method(D_METHOD("set_visibility_range_end", "distance"), &FoliageLayer::set_visibility_range_end);
-	ClassDB::bind_method(D_METHOD("get_visibility_range_end"), &FoliageLayer::get_visibility_range_end);
-
-	ClassDB::bind_method(D_METHOD("set_visibility_range_end_margin", "distance"), &FoliageLayer::set_visibility_range_end_margin);
-	ClassDB::bind_method(D_METHOD("get_visibility_range_end_margin"), &FoliageLayer::get_visibility_range_end_margin);
-
-	ClassDB::bind_method(D_METHOD("set_visibility_range_fade_mode", "mode"), &FoliageLayer::set_visibility_range_fade_mode);
-	ClassDB::bind_method(D_METHOD("get_visibility_range_fade_mode"), &FoliageLayer::get_visibility_range_fade_mode);
-
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "layer_name"), "set_layer_name", "get_layer_name");
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"), "set_mesh", "get_mesh");
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_override", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_material_override", "get_material_override");
+	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "lod_levels", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("FoliageLODLevel")), "set_lod_levels", "get_lod_levels");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "instance_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_instance_count");
 
 	ADD_GROUP("Randomization", "");
@@ -114,13 +97,6 @@ void FoliageLayer::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ignore_screen_space_shadows"), "set_ignore_screen_space_shadows", "is_ignoring_screen_space_shadows");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_bias", PROPERTY_HINT_RANGE, "0.001,128,0.001"), "set_lod_bias", "get_lod_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
-
-	ADD_GROUP("Visibility Range", "visibility_range_");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_begin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_begin", "get_visibility_range_begin");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_begin_margin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_begin_margin", "get_visibility_range_begin_margin");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_end", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_end", "get_visibility_range_end");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_end_margin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_end_margin", "get_visibility_range_end_margin");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "visibility_range_fade_mode", PROPERTY_HINT_ENUM, "Disabled,Self,Dependencies"), "set_visibility_range_fade_mode", "get_visibility_range_fade_mode");
 }
 
 void FoliageLayer::set_layer_name(const String &p_name) {
@@ -132,22 +108,42 @@ String FoliageLayer::get_layer_name() const {
 	return layer_name;
 }
 
-void FoliageLayer::set_mesh(const Ref<Mesh> &p_mesh) {
-	mesh = p_mesh;
+void FoliageLayer::set_lod_levels(const TypedArray<FoliageLODLevel> &p_levels) {
+	for (int i = 0; i < lod_levels.size(); i++) {
+		Ref<FoliageLODLevel> old_level = lod_levels[i];
+		if (old_level.is_valid()) {
+			old_level->disconnect(CoreStringName(changed), callable_mp(this, &FoliageLayer::_on_lod_level_changed));
+		}
+	}
+
+	lod_levels = p_levels;
+
+	for (int i = 0; i < lod_levels.size(); i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		if (level.is_valid()) {
+			level->connect(CoreStringName(changed), callable_mp(this, &FoliageLayer::_on_lod_level_changed));
+		}
+	}
+
 	emit_changed();
 }
 
-Ref<Mesh> FoliageLayer::get_mesh() const {
-	return mesh;
+TypedArray<FoliageLODLevel> FoliageLayer::get_lod_levels() const {
+	return lod_levels;
 }
 
-void FoliageLayer::set_material_override(const Ref<Material> &p_material) {
-	material_override = p_material;
+void FoliageLayer::_on_lod_level_changed() {
 	emit_changed();
 }
 
-Ref<Material> FoliageLayer::get_material_override() const {
-	return material_override;
+bool FoliageLayer::has_any_mesh() const {
+	for (int i = 0; i < lod_levels.size(); i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		if (level.is_valid() && level->get_mesh().is_valid()) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void FoliageLayer::set_min_scale(float p_scale) {
@@ -242,51 +238,6 @@ GeometryInstance3D::GIMode FoliageLayer::get_gi_mode() const {
 	return gi_mode;
 }
 
-void FoliageLayer::set_visibility_range_begin(float p_dist) {
-	visibility_range_begin = MAX(p_dist, 0.0f);
-	emit_changed();
-}
-
-float FoliageLayer::get_visibility_range_begin() const {
-	return visibility_range_begin;
-}
-
-void FoliageLayer::set_visibility_range_begin_margin(float p_dist) {
-	visibility_range_begin_margin = MAX(p_dist, 0.0f);
-	emit_changed();
-}
-
-float FoliageLayer::get_visibility_range_begin_margin() const {
-	return visibility_range_begin_margin;
-}
-
-void FoliageLayer::set_visibility_range_end(float p_dist) {
-	visibility_range_end = MAX(p_dist, 0.0f);
-	emit_changed();
-}
-
-float FoliageLayer::get_visibility_range_end() const {
-	return visibility_range_end;
-}
-
-void FoliageLayer::set_visibility_range_end_margin(float p_dist) {
-	visibility_range_end_margin = MAX(p_dist, 0.0f);
-	emit_changed();
-}
-
-float FoliageLayer::get_visibility_range_end_margin() const {
-	return visibility_range_end_margin;
-}
-
-void FoliageLayer::set_visibility_range_fade_mode(GeometryInstance3D::VisibilityRangeFadeMode p_mode) {
-	visibility_range_fade_mode = p_mode;
-	emit_changed();
-}
-
-GeometryInstance3D::VisibilityRangeFadeMode FoliageLayer::get_visibility_range_fade_mode() const {
-	return visibility_range_fade_mode;
-}
-
 int FoliageLayer::get_instance_count() const {
 	return instance_count;
 }
@@ -302,4 +253,30 @@ void FoliageLayer::_set_display_instance_count(int p_count) {
 }
 
 FoliageLayer::FoliageLayer() {
+	TypedArray<FoliageLODLevel> defaults;
+
+	Ref<FoliageLODLevel> lod0;
+	lod0.instantiate();
+	lod0->set_visibility_range_end(30.0f);
+	lod0->set_visibility_range_end_margin(5.0f);
+	lod0->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+	defaults.push_back(lod0);
+
+	Ref<FoliageLODLevel> lod1;
+	lod1.instantiate();
+	lod1->set_visibility_range_begin(25.0f);
+	lod1->set_visibility_range_begin_margin(5.0f);
+	lod1->set_visibility_range_end(80.0f);
+	lod1->set_visibility_range_end_margin(10.0f);
+	lod1->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+	defaults.push_back(lod1);
+
+	Ref<FoliageLODLevel> lod2;
+	lod2.instantiate();
+	lod2->set_visibility_range_begin(70.0f);
+	lod2->set_visibility_range_begin_margin(10.0f);
+	lod2->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+	defaults.push_back(lod2);
+
+	set_lod_levels(defaults);
 }

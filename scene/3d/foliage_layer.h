@@ -30,21 +30,19 @@
 
 #pragma once
 
-#include "scene/3d/visual_instance_3d.h"
+#include "scene/3d/foliage_lod_level.h"
 
-class Mesh;
-class Material;
-
-// A single paintable vegetation type inside a FoliagePainter3D: the mesh to
-// scatter, its randomization rules, and the visibility range it should fade
-// out at. This is pure configuration; the painted instance transforms
-// themselves are stored (and spatially chunked into cells) by FoliagePainter3D.
+// A single paintable vegetation type inside a FoliagePainter3D: its
+// randomization rules, brush behavior, and a chain of FoliageLODLevels
+// (each with its own mesh, material, and visibility/fade distance) that
+// share the exact same painted instance transforms. This is pure
+// configuration; the painted instance transforms themselves are stored
+// (and spatially chunked into cells) by FoliagePainter3D.
 class FoliageLayer : public Resource {
 	GDCLASS(FoliageLayer, Resource);
 
 	String layer_name = "Layer";
-	Ref<Mesh> mesh;
-	Ref<Material> material_override;
+	TypedArray<FoliageLODLevel> lod_levels;
 
 	// Randomization.
 	float min_scale = 0.9;
@@ -57,23 +55,19 @@ class FoliageLayer : public Resource {
 	float density = 4.0;
 	float min_instance_spacing = 0.5;
 
+	// Shared across every LOD level of this layer.
 	bool cast_shadows = true;
 	bool ignore_screen_space_shadows = false;
 	float lod_bias = 1.0;
 	// See FoliageSpawner3D's cell_gi_mode field for why this defaults to disabled.
 	GeometryInstance3D::GIMode gi_mode = GeometryInstance3D::GI_MODE_DISABLED;
 
-	// Visibility range (per vegetation type), mirrors GeometryInstance3D.
-	float visibility_range_begin = 0.0;
-	float visibility_range_begin_margin = 0.0;
-	float visibility_range_end = 0.0;
-	float visibility_range_end_margin = 0.0;
-	GeometryInstance3D::VisibilityRangeFadeMode visibility_range_fade_mode = GeometryInstance3D::VISIBILITY_RANGE_FADE_DISABLED;
-
 	// Informational only: kept in sync by FoliagePainter3D (which owns the
 	// actual per-cell instance data) purely so the Inspector can show it.
 	// Not the source of truth, and not saved with the resource.
 	int instance_count = 0;
+
+	void _on_lod_level_changed();
 
 protected:
 	static void _bind_methods();
@@ -82,11 +76,12 @@ public:
 	void set_layer_name(const String &p_name);
 	String get_layer_name() const;
 
-	void set_mesh(const Ref<Mesh> &p_mesh);
-	Ref<Mesh> get_mesh() const;
+	void set_lod_levels(const TypedArray<FoliageLODLevel> &p_levels);
+	TypedArray<FoliageLODLevel> get_lod_levels() const;
 
-	void set_material_override(const Ref<Material> &p_material);
-	Ref<Material> get_material_override() const;
+	// True if at least one LOD level has a Mesh assigned (i.e. this layer
+	// actually renders something).
+	bool has_any_mesh() const;
 
 	void set_min_scale(float p_scale);
 	float get_min_scale() const;
@@ -120,21 +115,6 @@ public:
 
 	void set_gi_mode(GeometryInstance3D::GIMode p_mode);
 	GeometryInstance3D::GIMode get_gi_mode() const;
-
-	void set_visibility_range_begin(float p_dist);
-	float get_visibility_range_begin() const;
-
-	void set_visibility_range_begin_margin(float p_dist);
-	float get_visibility_range_begin_margin() const;
-
-	void set_visibility_range_end(float p_dist);
-	float get_visibility_range_end() const;
-
-	void set_visibility_range_end_margin(float p_dist);
-	float get_visibility_range_end_margin() const;
-
-	void set_visibility_range_fade_mode(GeometryInstance3D::VisibilityRangeFadeMode p_mode);
-	GeometryInstance3D::VisibilityRangeFadeMode get_visibility_range_fade_mode() const;
 
 	int get_instance_count() const;
 	// Called only by FoliagePainter3D to keep the display-only instance_count

@@ -40,33 +40,47 @@ class MultiMeshInstance3D;
 
 // Holds one or more FoliageLayers (vegetation types). Painted instances of
 // each layer are spatially chunked into a grid of cells on the XZ plane
-// (see cell_size); each non-empty (layer, cell) pair gets its own MultiMesh
-// and internal MultiMeshInstance3D, so the renderer's normal per-node AABB
-// frustum culling naturally skips whole cells that are off-screen, instead
-// of always submitting every instance of a layer in one giant draw call.
-// Instances are painted onto arbitrary MeshInstance3D surfaces in the editor
-// with FoliagePainter3DEditorPlugin.
+// (see cell_size); each non-empty (layer, cell) pair gets one MultiMesh and
+// internal MultiMeshInstance3D per FoliageLODLevel of that layer, all
+// sharing the same instance transforms (only the mesh/material/visibility
+// range differ between LOD levels). Each of those small, tightly-bounded
+// nodes is culled by the renderer's normal per-node AABB frustum culling,
+// instead of always submitting every instance of a layer in one giant draw
+// call. Instances are painted onto arbitrary MeshInstance3D surfaces in the
+// editor with FoliagePainter3DEditorPlugin.
 class FoliagePainter3D : public Node3D {
 	GDCLASS(FoliagePainter3D, Node3D);
 
+	// One MultiMesh + MultiMeshInstance3D per FoliageLODLevel of the cell's
+	// layer, index-for-index; every multimesh in lod_multimeshes always has
+	// the exact same instance transforms as the others (see _sync_cell_lods).
 	struct FoliageCell {
-		Ref<MultiMesh> multimesh;
-		MultiMeshInstance3D *node = nullptr;
+		LocalVector<Ref<MultiMesh>> lod_multimeshes;
+		LocalVector<MultiMeshInstance3D *> lod_nodes;
 	};
 
 	TypedArray<FoliageLayer> layers;
 	float cell_size = 16.0f;
+	bool debug_show_cells = false;
 
 	// One cell map per layer (indexed the same as `layers`).
 	LocalVector<HashMap<Vector2i, FoliageCell>> layer_cells;
 
 	void _ensure_layer_cells_size();
 	FoliageCell &_get_or_create_cell(int p_layer, const Vector2i &p_cell);
-	void _sync_cell_node(int p_layer, FoliageCell &p_cell);
+	// Reconciles a cell's lod_multimeshes/lod_nodes count and configuration
+	// (mesh, material, visibility range, shared shadow/LOD settings) to
+	// match its layer's *current* lod_levels. Safe to call at any time:
+	// creates/frees MultiMeshInstance3D children and copies existing
+	// transforms into any newly added LOD level as needed.
+	void _sync_cell_lods(int p_layer, FoliageCell &p_cell);
 	void _sync_layer_cells(int p_layer);
 	void _prune_layers_to_size();
 	void _on_layer_changed(int p_index);
 	void _refresh_layer_instance_count(int p_layer);
+
+	static LocalVector<Transform3D> _read_transforms(const Ref<MultiMesh> &p_multimesh);
+	static void _write_transforms(const Ref<MultiMesh> &p_multimesh, const LocalVector<Transform3D> &p_transforms);
 
 	// Internal, storage-only representation of layer_cells' MultiMesh
 	// resources, so painted instances are actually saved with the scene
@@ -86,6 +100,12 @@ public:
 	void set_cell_size(float p_size);
 	float get_cell_size() const;
 
+	// Off by default: draws every non-empty cell's bounding box via
+	// FoliagePainter3DGizmoPlugin, which can otherwise clutter the viewport
+	// once many cells are painted.
+	void set_debug_show_cells(bool p_enabled);
+	bool is_debug_show_cells_enabled() const;
+
 	int get_layer_count() const;
 	Ref<FoliageLayer> get_layer(int p_index) const;
 
@@ -102,6 +122,9 @@ public:
 	Vector<Vector2i> get_layer_cell_coords(int p_layer) const;
 	int get_cell_instance_count(int p_layer, const Vector2i &p_cell) const;
 	Transform3D get_cell_instance_transform(int p_layer, const Vector2i &p_cell, int p_index) const;
+	// Local-space AABB actually used by the renderer to cull that cell's
+	// MultiMeshInstance3D (used by FoliagePainter3DGizmoPlugin's debug view).
+	AABB get_cell_aabb(int p_layer, const Vector2i &p_cell) const;
 
 	PackedStringArray get_configuration_warnings() const override;
 
