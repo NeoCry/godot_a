@@ -731,6 +731,7 @@ uint32_t Terrain3D::get_collision_mask() const {
 
 void Terrain3D::set_debug_draw_chunks(bool p_enable) {
 	debug_draw_chunks = p_enable;
+	update_gizmos();
 }
 
 bool Terrain3D::is_debug_draw_chunks_enabled() const {

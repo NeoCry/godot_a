@@ -36,6 +36,8 @@
 
 class Button;
 class ButtonGroup;
+class ConfirmationDialog;
+class EditorFileDialog;
 class HBoxContainer;
 class MenuButton;
 class SpinBox;
@@ -81,6 +83,14 @@ class Terrain3DEditorPlugin : public EditorPlugin {
 	SpinBox *brush_radius_spin = nullptr;
 	SpinBox *brush_strength_spin = nullptr;
 	MenuButton *paint_layer_menu = nullptr;
+	Button *import_heightmap_button = nullptr;
+
+	// Heightmap import dialogs.
+	EditorFileDialog *import_file_dialog = nullptr;
+	ConfirmationDialog *import_height_range_dialog = nullptr;
+	SpinBox *import_height_min_spin = nullptr;
+	SpinBox *import_height_max_spin = nullptr;
+	String pending_import_path;
 
 	Mode mode = MODE_RAISE;
 	float brush_radius = 10.0;
@@ -107,6 +117,10 @@ class Terrain3DEditorPlugin : public EditorPlugin {
 
 	void _rebuild_paint_layer_menu();
 	void _paint_layer_menu_id_pressed(int p_id);
+
+	void _import_heightmap_pressed();
+	void _import_file_selected(const String &p_path);
+	void _do_import_heightmap();
 
 	bool _is_control_mode() const;
 	String _get_mode_action_name() const;

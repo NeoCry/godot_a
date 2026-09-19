@@ -37,6 +37,8 @@
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/physics/static_body_3d.h"
+#include "scene/3d/terrain_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -46,6 +48,7 @@
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/scene_string_names.h"
+#include "servers/physics_3d/physics_server_3d.h"
 #include "servers/rendering/rendering_server.h"
 
 void FoliagePainter3DEditorPlugin::_bind_methods() {
@@ -192,13 +195,32 @@ void FoliagePainter3DEditorPlugin::_collect_mesh_instances(Node *p_node, Vector<
 	}
 }
 
+void FoliagePainter3DEditorPlugin::_collect_terrains(Node *p_node, Vector<Terrain3D *> &r_out) const {
+	if (p_node == nullptr) {
+		return;
+	}
+
+	if (p_node->get_internal_mode() == Node::INTERNAL_MODE_DISABLED) {
+		Terrain3D *terrain = Object::cast_to<Terrain3D>(p_node);
+		if (terrain != nullptr && terrain->is_visible_in_tree() && terrain->get_terrain_data().is_valid()) {
+			r_out.push_back(terrain);
+		}
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_collect_terrains(p_node->get_child(i), r_out);
+	}
+}
+
 void FoliagePainter3DEditorPlugin::_refresh_paint_targets() {
 	paint_targets.clear();
+	paint_target_terrains.clear();
 	if (painter == nullptr || !painter->is_inside_tree()) {
 		return;
 	}
 	Node *root = EditorNode::get_singleton()->get_edited_scene();
 	_collect_mesh_instances(root, paint_targets);
+	_collect_terrains(root, paint_target_terrains);
 }
 
 bool FoliagePainter3DEditorPlugin::_raycast(const Vector3 &p_from, const Vector3 &p_dir, float p_max_dist, Vector3 &r_position, Vector3 &r_normal) {
@@ -242,6 +264,46 @@ bool FoliagePainter3DEditorPlugin::_raycast(const Vector3 &p_from, const Vector3
 				}
 				r_normal = n;
 			}
+		}
+	}
+
+	// Terrain3D has no single Mesh to raycast against (see paint_target_terrains'
+	// comment); use its own physics collision body instead, which it already
+	// keeps in sync with its heightmap.
+	for (Terrain3D *terrain : paint_target_terrains) {
+		if (!terrain->is_inside_tree() || terrain->get_collision_body() == nullptr) {
+			continue;
+		}
+		Ref<World3D> w3d = terrain->get_world_3d();
+		if (w3d.is_null()) {
+			continue;
+		}
+		PhysicsDirectSpaceState3D *dss = PhysicsServer3D::get_singleton()->space_get_direct_state(w3d->get_space());
+		if (dss == nullptr) {
+			continue;
+		}
+
+		PS3DT::RayParameters params;
+		params.from = p_from;
+		params.to = p_from + p_dir * best_dist;
+		params.collide_with_bodies = true;
+		params.collide_with_areas = false;
+
+		PS3DT::RayResult result;
+		if (!dss->intersect_ray(params, result) || result.rid != terrain->get_collision_body()->get_rid()) {
+			continue;
+		}
+
+		const float dist = p_from.distance_to(result.position);
+		if (dist < best_dist) {
+			best_dist = dist;
+			found = true;
+			r_position = result.position;
+			Vector3 n = result.normal;
+			if (n.dot(p_dir) > 0.0f) {
+				n = -n;
+			}
+			r_normal = n;
 		}
 	}
 

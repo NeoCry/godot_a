@@ -30,14 +30,19 @@
 
 #include "terrain_3d_editor_plugin.h"
 
+#include "core/io/image.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
+#include "editor/editor_interface.h"
+#include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/gui/editor_file_dialog.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/dialogs.h"
 #include "scene/gui/label.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/separator.h"
@@ -125,6 +130,44 @@ void Terrain3DEditorPlugin::_rebuild_paint_layer_menu() {
 void Terrain3DEditorPlugin::_paint_layer_menu_id_pressed(int p_id) {
 	paint_layer_index = p_id;
 	_rebuild_paint_layer_menu();
+}
+
+void Terrain3DEditorPlugin::_import_heightmap_pressed() {
+	if (terrain == nullptr) {
+		return;
+	}
+	import_file_dialog->popup_file_dialog();
+}
+
+void Terrain3DEditorPlugin::_import_file_selected(const String &p_path) {
+	pending_import_path = p_path;
+	import_height_range_dialog->popup_centered();
+}
+
+void Terrain3DEditorPlugin::_do_import_heightmap() {
+	if (terrain == nullptr || pending_import_path.is_empty()) {
+		return;
+	}
+
+	Ref<Image> image = Image::load_from_file(pending_import_path);
+	if (image.is_null()) {
+		EditorNode::get_singleton()->show_warning(vformat(TTR("Could not load \"%s\" as an image."), pending_import_path));
+		return;
+	}
+	if (image->get_width() != image->get_height()) {
+		EditorNode::get_singleton()->show_warning(TTR("The heightmap image must be square (its width must equal its height)."));
+		return;
+	}
+
+	// A brand-new terrain has nothing to sculpt into yet; create the resource
+	// it needs rather than making the user do that by hand first.
+	if (terrain->get_terrain_data().is_null()) {
+		Ref<TerrainData> new_data;
+		new_data.instantiate();
+		terrain->set_terrain_data(new_data);
+	}
+
+	terrain->get_terrain_data()->import_heightmap(image, import_height_min_spin->get_value(), import_height_max_spin->get_value());
 }
 
 bool Terrain3DEditorPlugin::_is_control_mode() const {
@@ -555,7 +598,46 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	paint_layer_menu->connect("about_to_popup", callable_mp(this, &Terrain3DEditorPlugin::_rebuild_paint_layer_menu));
 	toolbar->add_child(paint_layer_menu);
 
+	toolbar->add_child(memnew(VSeparator));
+
+	import_heightmap_button = memnew(Button);
+	import_heightmap_button->set_text(TTR("Import Heightmap..."));
+	import_heightmap_button->set_tooltip_text(TTR("Import a grayscale image as this terrain's heightmap, replacing the current one and resizing the terrain to match the image."));
+	toolbar->add_child(import_heightmap_button);
+	import_heightmap_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_import_heightmap_pressed));
+
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
+
+	import_file_dialog = memnew(EditorFileDialog);
+	import_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+	import_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+	import_file_dialog->set_title(TTR("Import Heightmap"));
+	import_file_dialog->add_filter("*.png,*.exr,*.hdr,*.jpg,*.jpeg,*.bmp,*.tga,*.webp", TTR("Image Files"));
+	import_file_dialog->connect("file_selected", callable_mp(this, &Terrain3DEditorPlugin::_import_file_selected));
+	EditorInterface::get_singleton()->get_base_control()->add_child(import_file_dialog);
+
+	import_height_range_dialog = memnew(ConfirmationDialog);
+	import_height_range_dialog->set_title(TTR("Heightmap Height Range"));
+	import_height_range_dialog->set_ok_button_text(TTR("Import"));
+	import_height_range_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Terrain3DEditorPlugin::_do_import_heightmap));
+	EditorInterface::get_singleton()->get_base_control()->add_child(import_height_range_dialog);
+
+	VBoxContainer *import_vbc = memnew(VBoxContainer);
+	import_height_range_dialog->add_child(import_vbc);
+
+	import_height_min_spin = memnew(SpinBox);
+	import_height_min_spin->set_min(-10000.0);
+	import_height_min_spin->set_max(10000.0);
+	import_height_min_spin->set_step(0.01);
+	import_height_min_spin->set_value(0.0);
+	import_vbc->add_margin_child(TTR("Height Min (meters):"), import_height_min_spin);
+
+	import_height_max_spin = memnew(SpinBox);
+	import_height_max_spin->set_min(-10000.0);
+	import_height_max_spin->set_max(10000.0);
+	import_height_max_spin->set_step(0.01);
+	import_height_max_spin->set_value(100.0);
+	import_vbc->add_margin_child(TTR("Height Max (meters):"), import_height_max_spin);
 }
 
 Terrain3DEditorPlugin::~Terrain3DEditorPlugin() {
