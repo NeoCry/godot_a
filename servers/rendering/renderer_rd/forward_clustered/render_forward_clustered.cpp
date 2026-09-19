@@ -90,6 +90,26 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_voxelgi() 
 	}
 }
 
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_sscs_exclusion_depth_texture() {
+	ERR_FAIL_NULL(render_buffers);
+
+	if (!render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSCS_EXCLUSION_DEPTH)) {
+		// Always non-MSAA: screen_space_contact_shadows() only ever samples the resolved (non-MSAA)
+		// main depth buffer, and this texture is rendered directly (no resolve step needed).
+		bool can_be_storage = render_buffers->get_can_be_storage();
+		render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSCS_EXCLUSION_DEPTH, RenderSceneBuffersRD::get_depth_format(false, false, can_be_storage), RenderSceneBuffersRD::get_depth_usage_bits(false, false, can_be_storage));
+	}
+}
+
+RID RenderForwardClustered::RenderBufferDataForwardClustered::get_sscs_exclusion_depth_fb() {
+	ERR_FAIL_NULL_V(render_buffers, RID());
+
+	ensure_sscs_exclusion_depth_texture();
+
+	RID depth = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSCS_EXCLUSION_DEPTH);
+	return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth);
+}
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(RendererRD::FSR2Effect *p_effect) {
 	if (fsr2_context == nullptr) {
 		fsr2_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
@@ -1536,7 +1556,7 @@ void RenderForwardClustered::_process_ssr(Ref<RenderSceneBuffersRD> p_render_buf
 	ss_effects->screen_space_reflection(p_render_buffers, rb_data->ss_effects_data.ssr, p_normal_slices, environment_get_ssr_max_steps(p_environment), environment_get_ssr_fade_in(p_environment), environment_get_ssr_fade_out(p_environment), environment_get_ssr_depth_tolerance(p_environment), p_projections, reprojections, p_eye_offsets, *copy_effects);
 }
 
-void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const LocalVector<Vector4> &p_exclusion_rects, RID p_environment, const float p_taa_frame_count) {
+void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const RID *p_exclusion_depth_textures, RID p_environment, const float p_taa_frame_count) {
 	ERR_FAIL_NULL(ss_effects);
 	ERR_FAIL_COND(p_render_buffers.is_null());
 
@@ -1558,10 +1578,10 @@ void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_bu
 		settings.quality = RSE::ScreenSpaceContactShadowsLength(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/contact_shadow/shadow_length"));
 		settings.surface_thickness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/contact_shadow/surface_thickness");
 	}
+	settings.debug_wave_index = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SSCS_WAVE_INDEX;
 
 	Transform3D inverse_transform = p_transform.affine_inverse();
 
-	ss_effects->sscs_set_exclusion_rects(p_exclusion_rects.ptr(), p_exclusion_rects.size());
 	ss_effects->sscs_allocate_buffers(p_render_buffers, rb_data->ss_effects_data.sscs, p_contact_shadow_lights.size());
 
 	for (uint32_t i = 0; i < p_contact_shadow_lights.size(); i++) {
@@ -1574,7 +1594,7 @@ void RenderForwardClustered::_process_sscs(Ref<RenderSceneBuffersRD> p_render_bu
 		float opacity = light_storage->light_get_param(base, RSE::LIGHT_PARAM_CONTACT_SHADOW_OPACITY);
 		float blur = light_storage->light_get_param(base, RSE::LIGHT_PARAM_CONTACT_SHADOW_BLUR);
 
-		ss_effects->screen_space_contact_shadows(p_render_buffers, rb_data->ss_effects_data.sscs, settings, p_projections, light_direction, i, opacity, blur, p_taa_frame_count);
+		ss_effects->screen_space_contact_shadows(p_render_buffers, rb_data->ss_effects_data.sscs, settings, p_projections, p_exclusion_depth_textures, light_direction, i, opacity, blur, p_taa_frame_count);
 	}
 }
 
@@ -1644,65 +1664,28 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		}
 	}
 
-	p_render_data->sscs_exclusion_rects.clear();
-
-	if (rb_data.is_valid() && ss_effects && p_render_data->instances) {
-		// Approximate per-object exclusion from casting screen space shadows: project the
-		// world-space AABB of each opted-out instance (GeometryInstance3D.ignore_screen_space_shadows)
-		// to a screen-space UV rect. The SSCS ray march (screen_space_contact_shadows.glsl) skips
-		// samples that fall within these rects, so the instance no longer occludes screen space
-		// shadows for other surfaces. This is an approximation of the instance's silhouette (a
-		// screen-space bounding rect), not a pixel-perfect exclusion.
-		Transform3D inverse_cam_transform = p_render_data->scene_data->cam_transform.affine_inverse();
-		const Projection &cam_projection = p_render_data->scene_data->cam_projection;
-
-		for (int i = 0; i < (int)p_render_data->instances->size() && p_render_data->sscs_exclusion_rects.size() < RendererRD::SSEffects::SSCS_MAX_EXCLUSION_RECTS; i++) {
-			GeometryInstanceForwardClustered *gi = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
-			if (!gi->data->ignore_screen_space_shadows) {
-				continue;
-			}
-
-			Vector2 uv_min(1.0, 1.0);
-			Vector2 uv_max(0.0, 0.0);
-			bool any_in_front = false;
-			bool any_behind = false;
-
-			for (int c = 0; c < 8; c++) {
-				Vector3 world_corner = gi->transformed_aabb.get_endpoint(c);
-				Vector3 view_pos = inverse_cam_transform.xform(world_corner);
-				Vector4 clip = cam_projection.xform(Vector4(view_pos.x, view_pos.y, view_pos.z, 1.0));
-
-				if (clip.w <= 0.00001) {
-					any_behind = true;
-					continue;
+	if (rb_data.is_valid() && ss_effects && p_use_sscs) {
+		// Per-pixel exclusion from casting screen space shadows (GeometryInstance3D.
+		// ignore_screen_space_shadows): render just the opted-out instances, depth-only, from the
+		// main camera's own point of view, into their own depth buffer (see
+		// _render_sscs_exclusion_depth()). The SSCS ray march (screen_space_contact_shadows.glsl)
+		// then treats a sample as non-occluding when this buffer's depth matches the main scene
+		// depth there, i.e. the visible surface at that pixel actually is an excluded instance -
+		// exact, not an on-screen-rect approximation, so it doesn't affect unrelated instances
+		// that merely happen to be nearby or at a similar depth on screen.
+		// Always run this (even with an empty/no-instances list), since screen_space_contact_shadows()
+		// unconditionally samples the resulting texture below and it must exist and be up to date.
+		sscs_exclusion_instances.clear();
+		if (p_render_data->instances) {
+			for (int i = 0; i < (int)p_render_data->instances->size(); i++) {
+				GeometryInstanceForwardClustered *gi = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
+				if (gi->data->ignore_screen_space_shadows) {
+					sscs_exclusion_instances.push_back(gi);
 				}
-				any_in_front = true;
-
-				Vector2 uv = (Vector2(clip.x, clip.y) / clip.w) * 0.5 + Vector2(0.5, 0.5);
-				uv_min = uv_min.min(uv);
-				uv_max = uv_max.max(uv);
 			}
-
-			if (any_behind) {
-				if (!any_in_front) {
-					// Entirely behind the camera; nothing on screen to exclude.
-					continue;
-				}
-				// The AABB straddles the camera's near plane: conservatively exclude the whole
-				// screen for this instance rather than risk an incorrect (or inverted) rect.
-				uv_min = Vector2(0.0, 0.0);
-				uv_max = Vector2(1.0, 1.0);
-			}
-
-			uv_min = uv_min.clamp(Vector2(0.0, 0.0), Vector2(1.0, 1.0));
-			uv_max = uv_max.clamp(Vector2(0.0, 0.0), Vector2(1.0, 1.0));
-			if (uv_min.x >= uv_max.x || uv_min.y >= uv_max.y) {
-				// Fully off-screen.
-				continue;
-			}
-
-			p_render_data->sscs_exclusion_rects.push_back(Vector4(uv_min.x, uv_min.y, uv_max.x, uv_max.y));
 		}
+
+		_render_sscs_exclusion_depth(p_render_data, sscs_exclusion_instances, rb_data->get_sscs_exclusion_depth_fb());
 	}
 
 	{
@@ -1813,7 +1796,11 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		}
 
 		if (p_use_sscs) {
-			_process_sscs(rb, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, p_render_data->contact_shadow_lights, p_render_data->sscs_exclusion_rects, p_render_data->environment, p_render_data->scene_data->taa_frame_count);
+			RID exclusion_depth_textures[RendererSceneRender::MAX_RENDER_VIEWS];
+			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+				exclusion_depth_textures[v] = rb_data->get_sscs_exclusion_depth(v);
+			}
+			_process_sscs(rb, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform, p_render_data->contact_shadow_lights, exclusion_depth_textures, p_render_data->environment, p_render_data->scene_data->taa_frame_count);
 		}
 
 		if (p_use_ssr) {
@@ -3118,6 +3105,76 @@ void RenderForwardClustered::_render_shadow_end() {
 		RenderListParameters render_list_parameters(render_list[RENDER_LIST_SECONDARY].elements.ptr() + shadow_pass.element_from, render_list[RENDER_LIST_SECONDARY].element_info.ptr() + shadow_pass.element_from, shadow_pass.element_count, shadow_pass.flip_cull, shadow_pass.pass_mode, 0, true, false, shadow_pass.rp_uniform_set, false, Vector2(), shadow_pass.lod_distance_multiplier, shadow_pass.screen_mesh_lod_threshold, 1, shadow_pass.element_from);
 		_render_list_with_draw_list(&render_list_parameters, shadow_pass.framebuffer, shadow_pass.clear_depth ? RD::DRAW_CLEAR_DEPTH : RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0, shadow_pass.rect);
 	}
+
+	RD::get_singleton()->draw_command_end_label();
+}
+
+void RenderForwardClustered::_render_sscs_exclusion_depth(RenderDataRD *p_render_data, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer) {
+	RENDER_TIMESTAMP("Render Screen Space Shadow Exclusion Mask");
+	RD::get_singleton()->draw_command_begin_label("Render Screen Space Shadow Exclusion Mask");
+
+	// Not a shadow pass, but rendered the same way _render_particle_collider_heightfield() is:
+	// depth-only, from an arbitrary (here, the main camera's) point of view, reusing the
+	// already-compiled MODE_RENDER_DEPTH pipeline. See RENDER_LIST_SECONDARY below: this doesn't
+	// go through _render_shadow_begin/_render_shadow_end, so the list is cleared here directly.
+	RenderSceneDataRD scene_data;
+	scene_data.flip_y = true;
+	scene_data.cam_projection = p_render_data->scene_data->cam_projection;
+	scene_data.cam_transform = p_render_data->scene_data->cam_transform;
+	scene_data.view_projection[0] = p_render_data->scene_data->cam_projection;
+	scene_data.camera_visible_layers = p_render_data->scene_data->camera_visible_layers;
+	// Must match the main pass's sub-pixel jitter (TAA/upscaling): it's baked directly into the
+	// projection matrix the vertex shader receives (see RenderSceneDataRD::get_cam_projection()),
+	// so leaving this at its zero default would rasterize excluded instances at a different
+	// sub-pixel offset than the main depth pre-pass every frame, breaking the exact depth match
+	// screen_space_contact_shadows.glsl relies on right at silhouette edges - most visible on
+	// thin, detailed geometry like foliage, especially once it's also animated.
+	scene_data.taa_jitter = p_render_data->scene_data->taa_jitter;
+	scene_data.z_near = 0.0;
+	scene_data.z_far = p_render_data->scene_data->cam_projection.get_z_far();
+	scene_data.dual_paraboloid_side = 0;
+	// Match the main pass's LOD selection too (see _render_shadow_append()'s identical handling),
+	// so a mesh's LOD level - which can change its geometry/vertex count - doesn't differ between
+	// the two passes.
+	scene_data.lod_distance_multiplier = p_render_data->scene_data->lod_distance_multiplier;
+	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_DISABLE_LOD) {
+		scene_data.screen_mesh_lod_threshold = 0.0;
+	} else {
+		scene_data.screen_mesh_lod_threshold = p_render_data->scene_data->screen_mesh_lod_threshold;
+	}
+	// Match the alpha-scissor threshold the real opaque depth pre-pass is using this frame (see
+	// _render_scene()), so alpha-cutout materials (e.g. foliage) are masked the same way there.
+	scene_data.opaque_prepass_threshold = p_render_data->scene_data->opaque_prepass_threshold;
+	scene_data.time = time;
+	scene_data.time_step = time_step;
+	scene_data.main_cam_transform = p_render_data->scene_data->cam_transform;
+	scene_data.shadow_pass = true; // Not a shadow pass, but should be treated like one (depth-only, no color).
+
+	RenderDataRD render_data;
+	render_data.scene_data = &scene_data;
+	render_data.cluster_size = 1;
+	render_data.cluster_max_elements = 32;
+	render_data.instances = &p_instances;
+
+	_update_render_base_uniform_set();
+
+	Size2i screen_size = RD::get_singleton()->framebuffer_get_size(p_framebuffer);
+	uint32_t uniform_buffer_index = _setup_environment(&render_data, true, screen_size, screen_size, Color(), false, false, false);
+
+	PassMode pass_mode = PASS_MODE_SHADOW;
+
+	render_list[RENDER_LIST_SECONDARY].clear();
+	_fill_render_list(RENDER_LIST_SECONDARY, &render_data, pass_mode);
+	render_list[RENDER_LIST_SECONDARY].sort_by_key();
+	_fill_instance_data(RENDER_LIST_SECONDARY);
+
+	RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_SECONDARY, nullptr, false, RID(), RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default(), uniform_buffer_index);
+
+	// Always clears (even with zero instances, e.g. no excluded instances this frame): the
+	// resulting depth of 0.0 (far, see DEPTH_FAR in screen_space_contact_shadows.glsl) never
+	// matches a real surface's depth, so nothing is treated as excluded.
+	RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), false, pass_mode, 0, true, false, rp_uniform_set, false, Vector2(), scene_data.lod_distance_multiplier, scene_data.screen_mesh_lod_threshold);
+	_render_list_with_draw_list(&render_list_params, p_framebuffer, RD::DRAW_CLEAR_ALL);
 
 	RD::get_singleton()->draw_command_end_label();
 }
@@ -5515,6 +5572,8 @@ RenderForwardClustered::RenderForwardClustered() {
 	_update_shader_quality_settings();
 	_update_global_pipeline_data_requirements_from_project();
 
+	sscs_exclusion_instances.set_page_pool(&sscs_exclusion_instance_pool);
+
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
@@ -5525,6 +5584,8 @@ RenderForwardClustered::RenderForwardClustered() {
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
+	sscs_exclusion_instances.reset(); //avoid exit error
+
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);
 		ss_effects = nullptr;

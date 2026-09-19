@@ -54,6 +54,7 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
+#define RB_TEX_SSCS_EXCLUSION_DEPTH SNAME("sscs_exclusion_depth")
 
 namespace RendererSceneRenderImplementation {
 
@@ -142,6 +143,16 @@ public:
 		RID get_voxelgi() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI); }
 		RID get_voxelgi(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI, p_layer, 0); }
 		RID get_voxelgi_msaa(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_VOXEL_GI_MSAA, p_layer, 0); }
+
+		// Depth-only buffer used to mask GeometryInstance3D.ignore_screen_space_shadows instances
+		// out of screen space contact shadows on a per-pixel basis: only those instances are
+		// rendered into it (main camera projection/transform, same MODE_RENDER_DEPTH pipeline as
+		// the regular depth pre-pass), and the SSCS compute shader treats a ray-march sample as
+		// non-occluding when this buffer's depth at that pixel matches the main scene depth there
+		// (i.e. the visible surface at that pixel actually belongs to an excluded instance).
+		void ensure_sscs_exclusion_depth_texture();
+		RID get_sscs_exclusion_depth(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSCS_EXCLUSION_DEPTH, p_layer, 0); }
+		RID get_sscs_exclusion_depth_fb();
 
 		void ensure_fsr2(RendererRD::FSR2Effect *p_effect);
 		RendererRD::FSR2Context *get_fsr2_context() const { return fsr2_context; }
@@ -757,6 +768,12 @@ private:
 
 	RenderList render_list[RENDER_LIST_MAX];
 
+	// Scratch instance list for _render_sscs_exclusion_depth(), rebuilt each frame in
+	// _pre_opaque_render(). Own pool (rather than reusing RendererSceneRenderRD::cull_argument)
+	// so it can't collide with unrelated single-instance uses of that list (e.g. lightmap UV2 baking).
+	PagedArrayPool<RenderGeometryInstance *> sscs_exclusion_instance_pool;
+	PagedArray<RenderGeometryInstance *> sscs_exclusion_instances;
+
 	virtual void _update_shader_quality_settings() override;
 
 	/* Effects */
@@ -791,11 +808,18 @@ private:
 	void _render_shadow_process();
 	void _render_shadow_end();
 
+	// Renders just the GeometryInstance3D.ignore_screen_space_shadows instances, depth-only,
+	// from the main camera's own point of view, into p_framebuffer (see
+	// RenderBufferDataForwardClustered::get_sscs_exclusion_depth_fb()). Modeled on
+	// _render_particle_collider_heightfield(): not a shadow pass, but reuses the same depth-only
+	// pipeline and RENDER_LIST_SECONDARY infrastructure shadow passes use.
+	void _render_sscs_exclusion_depth(RenderDataRD *p_render_data, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer);
+
 	/* Render Scene */
 	void _process_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
 	void _process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
 	void _process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform);
-	void _process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const LocalVector<Vector4> &p_exclusion_rects, RID p_environment, float p_taa_frame_count);
+	void _process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const RID *p_exclusion_depth_textures, RID p_environment, float p_taa_frame_count);
 	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssil, bool p_use_ssr);
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
