@@ -449,17 +449,34 @@ void Terrain3D::_rebuild_chunk(const Vector2i &p_coord) {
 	tangents.resize(total_verts * 4);
 	uvs.resize(total_verts);
 
+	// Fetch this chunk's heights in one bulk call (padded by a 1-sample halo
+	// for the central-difference normals/tangents below), instead of the
+	// O(chunk_quads^2) individual TerrainData::get_height/get_normal calls
+	// this used to make: a single chunk touches on the order of 10k samples,
+	// and per-call Image access dominates at that volume (see TerrainData).
+	const Rect2i height_fetch_region(base_ix - 1, base_iz - 1, CHUNK_QUADS + 3, CHUNK_QUADS + 3);
+	const PackedFloat32Array height_data = terrain_data->get_height_region(height_fetch_region);
+	const int height_w = height_fetch_region.size.x;
+	auto sample_height = [&](int ix, int iz) {
+		return height_data[(iz - height_fetch_region.position.y) * height_w + (ix - height_fetch_region.position.x)];
+	};
+
 	for (int jz = 0; jz <= CHUNK_QUADS; jz++) {
 		for (int jx = 0; jx <= CHUNK_QUADS; jx++) {
 			const int ix = base_ix + jx;
 			const int iz = base_iz + jz;
 			const int vi = main_index(jx, jz);
 
-			const float h = terrain_data->get_height(ix, iz);
-			positions.set(vi, Vector3(jx * spacing, h, jz * spacing));
-			normals.set(vi, terrain_data->get_normal(ix, iz));
+			const float h = sample_height(ix, iz);
+			const float h_l = sample_height(ix - 1, iz);
+			const float h_r = sample_height(ix + 1, iz);
+			const float h_d = sample_height(ix, iz - 1);
+			const float h_u = sample_height(ix, iz + 1);
 
-			const float dh_dx = (terrain_data->get_height(ix + 1, iz) - terrain_data->get_height(ix - 1, iz)) / (2.0f * spacing);
+			positions.set(vi, Vector3(jx * spacing, h, jz * spacing));
+			normals.set(vi, Vector3(h_l - h_r, 2.0f * spacing, h_d - h_u).normalized());
+
+			const float dh_dx = (h_r - h_l) / (2.0f * spacing);
 			const Vector3 tangent = Vector3(1.0f, dh_dx, 0.0f).normalized();
 			tangents.set(vi * 4 + 0, tangent.x);
 			tangents.set(vi * 4 + 1, tangent.y);
@@ -485,8 +502,15 @@ void Terrain3D::_rebuild_chunk(const Vector2i &p_coord) {
 		uvs.set(vi, uvs[top_vi]);
 	}
 
+	// Same reasoning as the height fetch above: one bulk read of this chunk's
+	// control data (alpha channel only matters here) instead of one
+	// TerrainData::is_hole call - and its own Image access - per quad corner,
+	// re-checked again for every coarser LOD level below.
+	const Rect2i control_fetch_region(base_ix, base_iz, CHUNK_QUADS + 1, CHUNK_QUADS + 1);
+	const PackedColorArray control_data = terrain_data->get_control_region(control_fetch_region);
+	const int control_w = control_fetch_region.size.x;
 	auto is_hole_at = [&](int jx, int jz) {
-		return terrain_data->is_hole(base_ix + jx, base_iz + jz);
+		return control_data[jz * control_w + jx].a > 0.5f;
 	};
 
 	auto build_indices_for_stride = [&](int stride) -> PackedInt32Array {
@@ -755,18 +779,27 @@ void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_
 		return;
 	}
 
+	const Rect2i region(x0, z0, x1 - x0 + 1, z1 - z0 + 1);
+	// Bulk fetch-modify-commit instead of one TerrainData::get_height/
+	// set_height call per touched sample: a single stamp can touch
+	// thousands of samples at a large brush radius, and each of those calls
+	// used to mean its own Image access (see TerrainData for why that matters).
+	PackedFloat32Array heights = terrain_data->get_height_region(region);
+	const int region_w = region.size.x;
+
 	// SMOOTH averages each vertex with its neighbors; it needs to read from an
 	// unmodified snapshot of the touched (padded by one ring) region rather
-	// than sampling terrain_data while this same stamp is writing into it.
+	// than sampling this same stamp's own in-progress writes.
 	const Rect2i snapshot_region(x0 - 1, z0 - 1, x1 - x0 + 3, z1 - z0 + 3);
 	PackedFloat32Array before;
 	if (p_operation == SCULPT_SMOOTH) {
 		before = terrain_data->get_height_region(snapshot_region);
 	}
+	const int snapshot_w = snapshot_region.size.x;
 	auto sample_before = [&](int x, int z) -> float {
 		x = CLAMP(x, snapshot_region.position.x, snapshot_region.position.x + snapshot_region.size.x - 1);
 		z = CLAMP(z, snapshot_region.position.y, snapshot_region.position.y + snapshot_region.size.y - 1);
-		return before[(z - snapshot_region.position.y) * snapshot_region.size.x + (x - snapshot_region.position.x)];
+		return before[(z - snapshot_region.position.y) * snapshot_w + (x - snapshot_region.position.x)];
 	};
 
 	for (int z = z0; z <= z1; z++) {
@@ -781,7 +814,8 @@ void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_
 			const float falloff = t * t * (3.0f - 2.0f * t);
 			const float amount = p_strength * falloff;
 
-			float h = terrain_data->get_height(x, z);
+			const int local_idx = (z - z0) * region_w + (x - x0);
+			float h = heights[local_idx];
 			switch (p_operation) {
 				case SCULPT_RAISE: {
 					h += amount;
@@ -802,12 +836,12 @@ void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_
 					h = Math::lerp(h, sum / 9.0f, CLAMP(amount, 0.0f, 1.0f));
 				} break;
 			}
-			terrain_data->set_height(x, z, h);
+			heights.set(local_idx, h);
 		}
 	}
 
-	terrain_data->emit_changed();
-	_rebuild_chunks_in_region(Rect2i(x0, z0, x1 - x0 + 1, z1 - z0 + 1));
+	terrain_data->set_height_region(region, heights);
+	_rebuild_chunks_in_region(region);
 	if (p_update_collision) {
 		update_collision();
 	}
@@ -828,6 +862,14 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 	const int x1 = CLAMP(cx + rad_idx, 0, resolution - 1);
 	const int z0 = CLAMP(cz - rad_idx, 0, resolution - 1);
 	const int z1 = CLAMP(cz + rad_idx, 0, resolution - 1);
+	if (x1 < x0 || z1 < z0) {
+		return;
+	}
+
+	const Rect2i region(x0, z0, x1 - x0 + 1, z1 - z0 + 1);
+	// Bulk fetch-modify-commit, same reasoning as sculpt() above.
+	PackedColorArray control = terrain_data->get_control_region(region);
+	const int region_w = region.size.x;
 
 	for (int z = z0; z <= z1; z++) {
 		for (int x = x0; x <= x1; x++) {
@@ -840,7 +882,8 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 			const float t = 1.0f - dist / radius;
 			const float amount = p_strength * t * t * (3.0f - 2.0f * t);
 
-			Color c = terrain_data->get_control(x, z);
+			const int local_idx = (z - z0) * region_w + (x - x0);
+			Color c = control[local_idx];
 			int base = (int)Math::round(c.r * 255.0f);
 			int overlay = (int)Math::round(c.g * 255.0f);
 			float blend = c.b;
@@ -857,11 +900,11 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 				base = overlay;
 				blend = 0.0f;
 			}
-			terrain_data->set_control(x, z, Color(base / 255.0f, overlay / 255.0f, blend, c.a));
+			control.set(local_idx, Color(base / 255.0f, overlay / 255.0f, blend, c.a));
 		}
 	}
 
-	terrain_data->emit_changed();
+	terrain_data->set_control_region(region, control);
 	if (control_texture.is_valid()) {
 		control_texture->update(terrain_data->get_control_map_image());
 	}
@@ -880,6 +923,14 @@ void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p
 	const int x1 = CLAMP(cx + rad_idx, 0, resolution - 1);
 	const int z0 = CLAMP(cz - rad_idx, 0, resolution - 1);
 	const int z1 = CLAMP(cz + rad_idx, 0, resolution - 1);
+	if (x1 < x0 || z1 < z0) {
+		return;
+	}
+
+	const Rect2i region(x0, z0, x1 - x0 + 1, z1 - z0 + 1);
+	// Bulk fetch-modify-commit, same reasoning as sculpt() above.
+	PackedColorArray control = terrain_data->get_control_region(region);
+	const int region_w = region.size.x;
 
 	for (int z = z0; z <= z1; z++) {
 		for (int x = x0; x <= x1; x++) {
@@ -888,17 +939,18 @@ void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p
 			if (Math::sqrt(dx * dx + dz * dz) > radius) {
 				continue;
 			}
-			Color c = terrain_data->get_control(x, z);
+			const int local_idx = (z - z0) * region_w + (x - x0);
+			Color c = control[local_idx];
 			c.a = p_hole ? 1.0f : 0.0f;
-			terrain_data->set_control(x, z, c);
+			control.set(local_idx, c);
 		}
 	}
 
-	terrain_data->emit_changed();
+	terrain_data->set_control_region(region, control);
 	if (control_texture.is_valid()) {
 		control_texture->update(terrain_data->get_control_map_image());
 	}
-	_rebuild_chunks_in_region(Rect2i(x0, z0, x1 - x0 + 1, z1 - z0 + 1));
+	_rebuild_chunks_in_region(region);
 	if (p_update_collision) {
 		update_collision();
 	}

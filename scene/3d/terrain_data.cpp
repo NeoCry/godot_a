@@ -139,29 +139,54 @@ float TerrainData::get_size() const {
 	return (float)(resolution - 1) * vertex_spacing;
 }
 
+// TerrainData deliberately never calls Image::get_pixel()/set_pixel() (used
+// by the very first version of this file): a single brush stamp or chunk
+// rebuild touches thousands of samples, and get_pixel/set_pixel's per-call
+// dispatch on the image's format is what made sculpting/painting/smoothing
+// visibly slow. Every accessor below instead reads/writes the image's raw
+// byte buffer directly (heightmap is always FORMAT_RF, one float per pixel;
+// control_map is always FORMAT_RGBA8, one byte per channel), which is a
+// simple array index. Image::get_data() returns that buffer by reference
+// (free), while a write needs one get_data()+set_data() round trip to commit
+// (one copy-on-write of the whole image) - cheap by itself, but still worth
+// batching: callers doing many edits (TerrainData's own *_region methods,
+// and Terrain3D's sculpt/paint_layer/set_hole) do exactly one such round
+// trip per call, not one per sample.
 float TerrainData::get_height(int p_x, int p_z) const {
 	p_x = CLAMP(p_x, 0, resolution - 1);
 	p_z = CLAMP(p_z, 0, resolution - 1);
-	return heightmap->get_pixel(p_x, p_z).r;
+	const Vector<uint8_t> &raw = heightmap->get_data();
+	return reinterpret_cast<const float *>(raw.ptr())[p_z * resolution + p_x];
 }
 
 void TerrainData::set_height(int p_x, int p_z, float p_height) {
 	if (p_x < 0 || p_x >= resolution || p_z < 0 || p_z >= resolution) {
 		return;
 	}
-	heightmap->set_pixel(p_x, p_z, Color(p_height, 0, 0));
+	Vector<uint8_t> raw = heightmap->get_data();
+	reinterpret_cast<float *>(raw.ptrw())[p_z * resolution + p_x] = p_height;
+	heightmap->set_data(resolution, resolution, false, Image::FORMAT_RF, raw);
 }
 
 PackedFloat32Array TerrainData::get_height_region(const Rect2i &p_region) const {
-	PackedFloat32Array result;
 	const int w = MAX(p_region.size.x, 0);
 	const int h = MAX(p_region.size.y, 0);
+	PackedFloat32Array result;
 	result.resize(w * h);
-	float *w_ptr = result.ptrw();
+	if (w == 0 || h == 0) {
+		return result;
+	}
+
+	const Vector<uint8_t> &raw = heightmap->get_data();
+	const float *src = reinterpret_cast<const float *>(raw.ptr());
+	float *dst = result.ptrw();
+
 	int i = 0;
 	for (int z = 0; z < h; z++) {
+		const int sz = CLAMP(p_region.position.y + z, 0, resolution - 1);
 		for (int x = 0; x < w; x++) {
-			w_ptr[i++] = get_height(p_region.position.x + x, p_region.position.y + z);
+			const int sx = CLAMP(p_region.position.x + x, 0, resolution - 1);
+			dst[i++] = src[sz * resolution + sx];
 		}
 	}
 	return result;
@@ -171,39 +196,74 @@ void TerrainData::set_height_region(const Rect2i &p_region, const PackedFloat32A
 	const int w = MAX(p_region.size.x, 0);
 	const int h = MAX(p_region.size.y, 0);
 	ERR_FAIL_COND(p_heights.size() < w * h);
-	const float *r_ptr = p_heights.ptr();
+	if (w == 0 || h == 0) {
+		return;
+	}
+
+	Vector<uint8_t> raw = heightmap->get_data();
+	float *dst = reinterpret_cast<float *>(raw.ptrw());
+	const float *src = p_heights.ptr();
+
 	int i = 0;
 	for (int z = 0; z < h; z++) {
+		const int dz = p_region.position.y + z;
+		if (dz < 0 || dz >= resolution) {
+			i += w;
+			continue;
+		}
 		for (int x = 0; x < w; x++) {
-			set_height(p_region.position.x + x, p_region.position.y + z, r_ptr[i++]);
+			const int dx = p_region.position.x + x;
+			if (dx >= 0 && dx < resolution) {
+				dst[dz * resolution + dx] = src[i];
+			}
+			i++;
 		}
 	}
+	heightmap->set_data(resolution, resolution, false, Image::FORMAT_RF, raw);
 	emit_changed();
 }
 
 Color TerrainData::get_control(int p_x, int p_z) const {
 	p_x = CLAMP(p_x, 0, resolution - 1);
 	p_z = CLAMP(p_z, 0, resolution - 1);
-	return control_map->get_pixel(p_x, p_z);
+	const Vector<uint8_t> &raw = control_map->get_data();
+	const uint8_t *p = raw.ptr() + (p_z * resolution + p_x) * 4;
+	return Color(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, p[3] / 255.0f);
 }
 
 void TerrainData::set_control(int p_x, int p_z, const Color &p_control) {
 	if (p_x < 0 || p_x >= resolution || p_z < 0 || p_z >= resolution) {
 		return;
 	}
-	control_map->set_pixel(p_x, p_z, p_control);
+	Vector<uint8_t> raw = control_map->get_data();
+	uint8_t *p = raw.ptrw() + (p_z * resolution + p_x) * 4;
+	p[0] = (uint8_t)CLAMP(Math::round(p_control.r * 255.0f), 0.0f, 255.0f);
+	p[1] = (uint8_t)CLAMP(Math::round(p_control.g * 255.0f), 0.0f, 255.0f);
+	p[2] = (uint8_t)CLAMP(Math::round(p_control.b * 255.0f), 0.0f, 255.0f);
+	p[3] = (uint8_t)CLAMP(Math::round(p_control.a * 255.0f), 0.0f, 255.0f);
+	control_map->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
 }
 
 PackedColorArray TerrainData::get_control_region(const Rect2i &p_region) const {
-	PackedColorArray result;
 	const int w = MAX(p_region.size.x, 0);
 	const int h = MAX(p_region.size.y, 0);
+	PackedColorArray result;
 	result.resize(w * h);
-	Color *w_ptr = result.ptrw();
+	if (w == 0 || h == 0) {
+		return result;
+	}
+
+	const Vector<uint8_t> &raw = control_map->get_data();
+	const uint8_t *src = raw.ptr();
+	Color *dst = result.ptrw();
+
 	int i = 0;
 	for (int z = 0; z < h; z++) {
+		const int sz = CLAMP(p_region.position.y + z, 0, resolution - 1);
 		for (int x = 0; x < w; x++) {
-			w_ptr[i++] = get_control(p_region.position.x + x, p_region.position.y + z);
+			const int sx = CLAMP(p_region.position.x + x, 0, resolution - 1);
+			const uint8_t *p = src + (sz * resolution + sx) * 4;
+			dst[i++] = Color(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, p[3] / 255.0f);
 		}
 	}
 	return result;
@@ -213,13 +273,35 @@ void TerrainData::set_control_region(const Rect2i &p_region, const PackedColorAr
 	const int w = MAX(p_region.size.x, 0);
 	const int h = MAX(p_region.size.y, 0);
 	ERR_FAIL_COND(p_control.size() < w * h);
-	const Color *r_ptr = p_control.ptr();
+	if (w == 0 || h == 0) {
+		return;
+	}
+
+	Vector<uint8_t> raw = control_map->get_data();
+	uint8_t *dst = raw.ptrw();
+	const Color *src = p_control.ptr();
+
 	int i = 0;
 	for (int z = 0; z < h; z++) {
+		const int dz = p_region.position.y + z;
+		if (dz < 0 || dz >= resolution) {
+			i += w;
+			continue;
+		}
 		for (int x = 0; x < w; x++) {
-			set_control(p_region.position.x + x, p_region.position.y + z, r_ptr[i++]);
+			const int dx = p_region.position.x + x;
+			if (dx >= 0 && dx < resolution) {
+				uint8_t *p = dst + (dz * resolution + dx) * 4;
+				const Color &c = src[i];
+				p[0] = (uint8_t)CLAMP(Math::round(c.r * 255.0f), 0.0f, 255.0f);
+				p[1] = (uint8_t)CLAMP(Math::round(c.g * 255.0f), 0.0f, 255.0f);
+				p[2] = (uint8_t)CLAMP(Math::round(c.b * 255.0f), 0.0f, 255.0f);
+				p[3] = (uint8_t)CLAMP(Math::round(c.a * 255.0f), 0.0f, 255.0f);
+			}
+			i++;
 		}
 	}
+	control_map->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
 	emit_changed();
 }
 
