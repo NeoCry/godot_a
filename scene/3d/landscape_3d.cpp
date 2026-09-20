@@ -73,6 +73,15 @@ uniform sampler2DArray albedo_array : source_color, filter_linear_mipmap_anisotr
 uniform sampler2DArray normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray orm_array : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float layer_uv_scales[32];
+// Per-layer scalar tweaks (see TerrainLayer): albedo_color multiplies the
+// albedo texture, roughness/ao_strength multiply the ORM texture's
+// respective channels, and specular is unrelated to any texture (there is
+// no dedicated specular channel to sample - it matches
+// BaseMaterial3D.metallic_specular).
+uniform vec4 layer_albedo_colors[32];
+uniform float layer_roughness[32];
+uniform float layer_specular[32];
+uniform float layer_ao_strength[32];
 uniform int layer_count = 0;
 uniform vec3 terrain_origin = vec3(0.0);
 uniform vec2 terrain_size = vec2(1.0, 1.0);
@@ -86,14 +95,19 @@ void vertex() {
 // Accumulates one layer's contribution, weighted, into the running sums -
 // skipped entirely for a layer with (near-)zero weight here, so a terrain
 // only pays for the layers actually present at a given point.
-void accumulate_layer(int layer_idx, float w, vec2 world_xz, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float weight_sum) {
+void accumulate_layer(int layer_idx, float w, vec2 world_xz, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float weight_sum) {
 	if (w <= 0.001) {
 		return;
 	}
 	vec2 uv = world_xz / layer_uv_scales[layer_idx];
-	albedo_sum += texture(albedo_array, vec3(uv, float(layer_idx))).rgb * w;
+	vec3 albedo = texture(albedo_array, vec3(uv, float(layer_idx))).rgb * layer_albedo_colors[layer_idx].rgb;
+	vec3 orm = texture(orm_array, vec3(uv, float(layer_idx))).rgb;
+	orm.r = clamp(orm.r * layer_ao_strength[layer_idx], 0.0, 1.0);
+	orm.g = clamp(orm.g * layer_roughness[layer_idx], 0.0, 1.0);
+	albedo_sum += albedo * w;
 	normal_sum += texture(normal_array, vec3(uv, float(layer_idx))).rgb * w;
-	orm_sum += texture(orm_array, vec3(uv, float(layer_idx))).rgb * w;
+	orm_sum += orm * w;
+	specular_sum += layer_specular[layer_idx] * w;
 	weight_sum += w;
 }
 
@@ -103,6 +117,7 @@ void fragment() {
 	vec3 albedo_sum = vec3(0.0);
 	vec3 normal_sum = vec3(0.0);
 	vec3 orm_sum = vec3(0.0);
+	float specular_sum = 0.0;
 	float weight_sum = 0.0;
 
 	// Every layer's weight lives in one of ceil(layer_count / 4) array
@@ -112,16 +127,16 @@ void fragment() {
 		vec4 w = texture(weight_array, vec3(cm_uv, float(g)));
 		int base_layer = g * 4;
 		if (base_layer < layer_count) {
-			accumulate_layer(base_layer, w.r, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+			accumulate_layer(base_layer, w.r, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 		if (base_layer + 1 < layer_count) {
-			accumulate_layer(base_layer + 1, w.g, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+			accumulate_layer(base_layer + 1, w.g, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 		if (base_layer + 2 < layer_count) {
-			accumulate_layer(base_layer + 2, w.b, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+			accumulate_layer(base_layer + 2, w.b, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 		if (base_layer + 3 < layer_count) {
-			accumulate_layer(base_layer + 3, w.a, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+			accumulate_layer(base_layer + 3, w.a, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 	}
 
@@ -137,6 +152,7 @@ void fragment() {
 	AO = orm.r;
 	ROUGHNESS = orm.g;
 	METALLIC = orm.b;
+	SPECULAR = specular_sum * inv_weight;
 }
 )");
 }
@@ -296,8 +312,20 @@ void Landscape3D::_rebuild_textures() {
 
 	PackedFloat32Array uv_scales;
 	uv_scales.resize(TerrainData::MAX_LAYERS);
+	PackedColorArray albedo_colors;
+	albedo_colors.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array roughness_values;
+	roughness_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array specular_values;
+	specular_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array ao_strength_values;
+	ao_strength_values.resize(TerrainData::MAX_LAYERS);
 	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		uv_scales.write[i] = 1.0f;
+		albedo_colors.write[i] = Color(1, 1, 1);
+		roughness_values.write[i] = 1.0f;
+		specular_values.write[i] = 0.5f;
+		ao_strength_values.write[i] = 1.0f;
 	}
 
 	auto normalize_image = [](const Ref<Image> &p_src) -> Ref<Image> {
@@ -342,6 +370,10 @@ void Landscape3D::_rebuild_textures() {
 
 		if (i < TerrainData::MAX_LAYERS) {
 			uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
+			albedo_colors.write[i] = layer.is_valid() ? layer->get_albedo_color() : Color(1, 1, 1);
+			roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
+			specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
+			ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
 		}
 	}
 
@@ -357,6 +389,10 @@ void Landscape3D::_rebuild_textures() {
 	material->set_shader_parameter("normal_array", normal_array);
 	material->set_shader_parameter("orm_array", orm_array);
 	material->set_shader_parameter("layer_uv_scales", uv_scales);
+	material->set_shader_parameter("layer_albedo_colors", albedo_colors);
+	material->set_shader_parameter("layer_roughness", roughness_values);
+	material->set_shader_parameter("layer_specular", specular_values);
+	material->set_shader_parameter("layer_ao_strength", ao_strength_values);
 	material->set_shader_parameter("layer_count", layer_count);
 	material->set_shader_parameter("terrain_size", Vector2(terrain_data->get_size(), terrain_data->get_size()));
 	material->set_shader_parameter("terrain_origin", _get_safe_global_transform().origin);

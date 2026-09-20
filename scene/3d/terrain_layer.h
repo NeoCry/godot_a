@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/io/resource.h"
+#include "core/math/color.h"
 
 class Texture2D;
 
@@ -48,6 +49,18 @@ class TerrainLayer : public Resource {
 	Ref<Texture2D> normal_texture;
 	Ref<Texture2D> orm_texture;
 	float uv_scale = 4.0;
+
+	// Scalar tweaks on top of the ORM texture's occlusion/roughness channels
+	// (or, with no texture assigned, on top of its flat default), the same
+	// "value multiplies the texture, or stands alone with none assigned"
+	// convention as BaseMaterial3D's own albedo_color/roughness/metallic.
+	Color albedo_color = Color(1, 1, 1);
+	float roughness = 1.0;
+	// Matches BaseMaterial3D.metallic_specular: specular reflectance for a
+	// dielectric surface at normal incidence, unrelated to the ORM texture's
+	// metallic channel.
+	float specular = 0.5;
+	float ao_strength = 1.0;
 
 protected:
 	static void _bind_methods();
@@ -67,6 +80,18 @@ public:
 
 	void set_uv_scale(float p_scale);
 	float get_uv_scale() const;
+
+	void set_albedo_color(const Color &p_color);
+	Color get_albedo_color() const;
+
+	void set_roughness(float p_roughness);
+	float get_roughness() const;
+
+	void set_specular(float p_specular);
+	float get_specular() const;
+
+	void set_ao_strength(float p_strength);
+	float get_ao_strength() const;
 
 	TerrainLayer();
 };

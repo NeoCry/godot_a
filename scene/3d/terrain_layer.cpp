@@ -49,10 +49,26 @@ void TerrainLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_uv_scale", "scale"), &TerrainLayer::set_uv_scale);
 	ClassDB::bind_method(D_METHOD("get_uv_scale"), &TerrainLayer::get_uv_scale);
 
+	ClassDB::bind_method(D_METHOD("set_albedo_color", "color"), &TerrainLayer::set_albedo_color);
+	ClassDB::bind_method(D_METHOD("get_albedo_color"), &TerrainLayer::get_albedo_color);
+
+	ClassDB::bind_method(D_METHOD("set_roughness", "roughness"), &TerrainLayer::set_roughness);
+	ClassDB::bind_method(D_METHOD("get_roughness"), &TerrainLayer::get_roughness);
+
+	ClassDB::bind_method(D_METHOD("set_specular", "specular"), &TerrainLayer::set_specular);
+	ClassDB::bind_method(D_METHOD("get_specular"), &TerrainLayer::get_specular);
+
+	ClassDB::bind_method(D_METHOD("set_ao_strength", "strength"), &TerrainLayer::set_ao_strength);
+	ClassDB::bind_method(D_METHOD("get_ao_strength"), &TerrainLayer::get_ao_strength);
+
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "layer_name"), "set_layer_name", "get_layer_name");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "albedo_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_albedo_texture", "get_albedo_texture");
+	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "albedo_color"), "set_albedo_color", "get_albedo_color");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "normal_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_normal_texture", "get_normal_texture");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "orm_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_orm_texture", "get_orm_texture");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "roughness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_roughness", "get_roughness");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "specular", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_specular", "get_specular");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ao_strength", "get_ao_strength");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "uv_scale", PROPERTY_HINT_RANGE, "0.01,256.0,0.01,or_greater,suffix:m"), "set_uv_scale", "get_uv_scale");
 }
 
@@ -99,6 +115,42 @@ void TerrainLayer::set_uv_scale(float p_scale) {
 
 float TerrainLayer::get_uv_scale() const {
 	return uv_scale;
+}
+
+void TerrainLayer::set_albedo_color(const Color &p_color) {
+	albedo_color = p_color;
+	emit_changed();
+}
+
+Color TerrainLayer::get_albedo_color() const {
+	return albedo_color;
+}
+
+void TerrainLayer::set_roughness(float p_roughness) {
+	roughness = CLAMP(p_roughness, 0.0f, 1.0f);
+	emit_changed();
+}
+
+float TerrainLayer::get_roughness() const {
+	return roughness;
+}
+
+void TerrainLayer::set_specular(float p_specular) {
+	specular = CLAMP(p_specular, 0.0f, 1.0f);
+	emit_changed();
+}
+
+float TerrainLayer::get_specular() const {
+	return specular;
+}
+
+void TerrainLayer::set_ao_strength(float p_strength) {
+	ao_strength = CLAMP(p_strength, 0.0f, 1.0f);
+	emit_changed();
+}
+
+float TerrainLayer::get_ao_strength() const {
+	return ao_strength;
 }
 
 TerrainLayer::TerrainLayer() {
