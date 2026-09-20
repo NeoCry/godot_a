@@ -50,11 +50,12 @@ namespace {
 // up to (layer count) * LAYER_TEXTURE_SIZE^2 * 4 channels, times 3 arrays
 // (albedo/normal/orm).
 constexpr int LAYER_TEXTURE_SIZE = 512;
-// Must match the `layer_uv_scales` uniform array size in the shader source
-// below: shader uniform arrays are fixed-size, so this is the hard cap on
-// how many distinct TerrainLayers a single Terrain3D can blend between.
-constexpr int MAX_SHADER_LAYERS = 32;
 } // namespace
+
+// TerrainData::MAX_LAYERS (see its declaration) must match the shader
+// source's `layer_uv_scales` uniform array size: shader uniform arrays are
+// fixed-size, and TerrainData packs the same number of layers' weights into
+// its weight maps, so the two hard caps have to agree.
 
 void Terrain3D::init_shaders() {
 	shader.instantiate();
@@ -62,11 +63,17 @@ void Terrain3D::init_shaders() {
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
-uniform sampler2D control_map : filter_nearest;
+// One weight per layer, four layers packed per RGBA8 array layer (see
+// TerrainData). Sampled with normal bilinear filtering - unlike an
+// index-based control map, a weight is a continuous quantity, so
+// interpolating it between samples is meaningful - which is what makes
+// blending follow the brush/terrain smoothly instead of the vertex grid.
+uniform sampler2DArray weight_array : filter_linear;
 uniform sampler2DArray albedo_array : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray orm_array : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float layer_uv_scales[32];
+uniform int layer_count = 0;
 uniform vec3 terrain_origin = vec3(0.0);
 uniform vec2 terrain_size = vec2(1.0, 1.0);
 
@@ -76,28 +83,57 @@ void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
+// Accumulates one layer's contribution, weighted, into the running sums -
+// skipped entirely for a layer with (near-)zero weight here, so a terrain
+// only pays for the layers actually present at a given point.
+void accumulate_layer(int layer_idx, float w, vec2 world_xz, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float weight_sum) {
+	if (w <= 0.001) {
+		return;
+	}
+	vec2 uv = world_xz / layer_uv_scales[layer_idx];
+	albedo_sum += texture(albedo_array, vec3(uv, float(layer_idx))).rgb * w;
+	normal_sum += texture(normal_array, vec3(uv, float(layer_idx))).rgb * w;
+	orm_sum += texture(orm_array, vec3(uv, float(layer_idx))).rgb * w;
+	weight_sum += w;
+}
+
 void fragment() {
 	vec2 cm_uv = (world_pos.xz - terrain_origin.xz) / terrain_size;
-	vec4 control = texture(control_map, cm_uv);
-	int base_idx = int(round(control.r * 255.0));
-	int overlay_idx = int(round(control.g * 255.0));
-	float blend = control.b;
 
-	vec2 base_uv = world_pos.xz / layer_uv_scales[base_idx];
-	vec2 overlay_uv = world_pos.xz / layer_uv_scales[overlay_idx];
+	vec3 albedo_sum = vec3(0.0);
+	vec3 normal_sum = vec3(0.0);
+	vec3 orm_sum = vec3(0.0);
+	float weight_sum = 0.0;
 
-	vec4 albedo_base = texture(albedo_array, vec3(base_uv, float(base_idx)));
-	vec4 albedo_overlay = texture(albedo_array, vec3(overlay_uv, float(overlay_idx)));
-	ALBEDO = mix(albedo_base.rgb, albedo_overlay.rgb, blend);
+	// Every layer's weight lives in one of ceil(layer_count / 4) array
+	// layers, 4 layers (R/G/B/A) per texture fetch.
+	int group_count = (layer_count + 3) / 4;
+	for (int g = 0; g < group_count; g++) {
+		vec4 w = texture(weight_array, vec3(cm_uv, float(g)));
+		int base_layer = g * 4;
+		if (base_layer < layer_count) {
+			accumulate_layer(base_layer, w.r, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+		}
+		if (base_layer + 1 < layer_count) {
+			accumulate_layer(base_layer + 1, w.g, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+		}
+		if (base_layer + 2 < layer_count) {
+			accumulate_layer(base_layer + 2, w.b, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+		}
+		if (base_layer + 3 < layer_count) {
+			accumulate_layer(base_layer + 3, w.a, world_pos.xz, albedo_sum, normal_sum, orm_sum, weight_sum);
+		}
+	}
 
-	vec3 normal_base = texture(normal_array, vec3(base_uv, float(base_idx))).rgb;
-	vec3 normal_overlay = texture(normal_array, vec3(overlay_uv, float(overlay_idx))).rgb;
-	NORMAL_MAP = mix(normal_base, normal_overlay, blend);
+	// Normalize so the total always adds up to 1: a terrain with any weight
+	// painted anywhere (even a single unpainted layer defaulting to full
+	// weight - see TerrainData) always renders as *something* rather than
+	// dimming towards black wherever weights don't happen to sum to 1.
+	float inv_weight = weight_sum > 0.001 ? 1.0 / weight_sum : 0.0;
+	ALBEDO = albedo_sum * inv_weight;
+	NORMAL_MAP = normal_sum * inv_weight;
 	NORMAL_MAP_DEPTH = 1.0;
-
-	vec4 orm_base = texture(orm_array, vec3(base_uv, float(base_idx)));
-	vec4 orm_overlay = texture(orm_array, vec3(overlay_uv, float(overlay_idx)));
-	vec4 orm = mix(orm_base, orm_overlay, blend);
+	vec3 orm = orm_sum * inv_weight;
 	AO = orm.r;
 	ROUGHNESS = orm.g;
 	METALLIC = orm.b;
@@ -144,8 +180,11 @@ void Terrain3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &Terrain3D::get_height_region);
 	ClassDB::bind_method(D_METHOD("set_height_region", "region", "heights", "update_collision"), &Terrain3D::set_height_region, DEFVAL(true));
 
-	ClassDB::bind_method(D_METHOD("get_control_region", "region"), &Terrain3D::get_control_region);
-	ClassDB::bind_method(D_METHOD("set_control_region", "region", "control"), &Terrain3D::set_control_region);
+	ClassDB::bind_method(D_METHOD("get_layer_weight_region", "region", "layer_index"), &Terrain3D::get_layer_weight_region);
+	ClassDB::bind_method(D_METHOD("set_layer_weight_region", "region", "layer_index", "weights"), &Terrain3D::set_layer_weight_region);
+
+	ClassDB::bind_method(D_METHOD("get_hole_region", "region"), &Terrain3D::get_hole_region);
+	ClassDB::bind_method(D_METHOD("set_hole_region", "region", "holes"), &Terrain3D::set_hole_region);
 
 	ClassDB::bind_method(D_METHOD("update_collision"), &Terrain3D::update_collision);
 
@@ -237,9 +276,15 @@ void Terrain3D::_rebuild_textures() {
 		return;
 	}
 
-	control_texture = ImageTexture::create_from_image(terrain_data->get_control_map_image());
+	Vector<Ref<Image>> weight_images;
+	weight_images.resize(TerrainData::WEIGHT_MAP_COUNT);
+	for (int g = 0; g < TerrainData::WEIGHT_MAP_COUNT; g++) {
+		weight_images.write[g] = terrain_data->get_weight_map_image(g);
+	}
+	weight_array.instantiate();
+	weight_array->create_from_images(weight_images);
 
-	const int layer_count = CLAMP(layers.size(), 0, MAX_SHADER_LAYERS);
+	const int layer_count = CLAMP(layers.size(), 0, TerrainData::MAX_LAYERS);
 	const int array_layers = MAX(layer_count, 1);
 
 	Vector<Ref<Image>> albedo_images;
@@ -250,8 +295,8 @@ void Terrain3D::_rebuild_textures() {
 	orm_images.resize(array_layers);
 
 	PackedFloat32Array uv_scales;
-	uv_scales.resize(MAX_SHADER_LAYERS);
-	for (int i = 0; i < MAX_SHADER_LAYERS; i++) {
+	uv_scales.resize(TerrainData::MAX_LAYERS);
+	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		uv_scales.write[i] = 1.0f;
 	}
 
@@ -295,7 +340,7 @@ void Terrain3D::_rebuild_textures() {
 		normal_images.write[i] = (normal_tex.is_valid() && normal_tex->get_image().is_valid()) ? normalize_image(normal_tex->get_image()) : default_image(Color(0.5, 0.5, 1.0, 1.0));
 		orm_images.write[i] = (orm_tex.is_valid() && orm_tex->get_image().is_valid()) ? normalize_image(orm_tex->get_image()) : default_image(Color(1.0, 0.5, 0.0, 1.0));
 
-		if (i < MAX_SHADER_LAYERS) {
+		if (i < TerrainData::MAX_LAYERS) {
 			uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
 		}
 	}
@@ -307,11 +352,12 @@ void Terrain3D::_rebuild_textures() {
 	orm_array.instantiate();
 	orm_array->create_from_images(orm_images);
 
-	material->set_shader_parameter("control_map", control_texture);
+	material->set_shader_parameter("weight_array", weight_array);
 	material->set_shader_parameter("albedo_array", albedo_array);
 	material->set_shader_parameter("normal_array", normal_array);
 	material->set_shader_parameter("orm_array", orm_array);
 	material->set_shader_parameter("layer_uv_scales", uv_scales);
+	material->set_shader_parameter("layer_count", layer_count);
 	material->set_shader_parameter("terrain_size", Vector2(terrain_data->get_size(), terrain_data->get_size()));
 	material->set_shader_parameter("terrain_origin", _get_safe_global_transform().origin);
 
@@ -503,14 +549,14 @@ void Terrain3D::_rebuild_chunk(const Vector2i &p_coord) {
 	}
 
 	// Same reasoning as the height fetch above: one bulk read of this chunk's
-	// control data (alpha channel only matters here) instead of one
-	// TerrainData::is_hole call - and its own Image access - per quad corner,
-	// re-checked again for every coarser LOD level below.
-	const Rect2i control_fetch_region(base_ix, base_iz, CHUNK_QUADS + 1, CHUNK_QUADS + 1);
-	const PackedColorArray control_data = terrain_data->get_control_region(control_fetch_region);
-	const int control_w = control_fetch_region.size.x;
+	// hole flags instead of one TerrainData::is_hole call - and its own Image
+	// access - per quad corner, re-checked again for every coarser LOD level
+	// below.
+	const Rect2i hole_fetch_region(base_ix, base_iz, CHUNK_QUADS + 1, CHUNK_QUADS + 1);
+	const PackedByteArray hole_data = terrain_data->get_hole_region(hole_fetch_region);
+	const int hole_w = hole_fetch_region.size.x;
 	auto is_hole_at = [&](int jx, int jz) {
-		return control_data[jz * control_w + jx].a > 0.5f;
+		return hole_data[jz * hole_w + jx] != 0;
 	};
 
 	auto build_indices_for_stride = [&](int stride) -> PackedInt32Array {
@@ -860,7 +906,7 @@ void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_
 void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	ERR_FAIL_INDEX(p_layer_index, layers.size());
-	ERR_FAIL_INDEX(p_layer_index, MAX_SHADER_LAYERS);
+	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
 
 	const float spacing = terrain_data->get_vertex_spacing();
 	const int resolution = terrain_data->get_resolution();
@@ -877,9 +923,18 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 	}
 
 	const Rect2i region(x0, z0, x1 - x0 + 1, z1 - z0 + 1);
-	// Bulk fetch-modify-commit, same reasoning as sculpt() above.
-	PackedColorArray control = terrain_data->get_control_region(region);
 	const int region_w = region.size.x;
+
+	// Every layer's weight lives at this same point (see TerrainData and the
+	// class description), so painting one has to read - and, below, write
+	// back - all of them: raising the target layer's weight only means
+	// anything relative to how much weight the others hold at that point.
+	const int layer_count = layers.size();
+	Vector<PackedFloat32Array> layer_weights;
+	layer_weights.resize(layer_count);
+	for (int i = 0; i < layer_count; i++) {
+		layer_weights.write[i] = terrain_data->get_layer_weight_region(region, i);
+	}
 
 	for (int z = z0; z <= z1; z++) {
 		for (int x = x0; x <= x1; x++) {
@@ -893,32 +948,51 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 			const float amount = p_strength * t * t * (3.0f - 2.0f * t);
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
-			Color c = control[local_idx];
-			int base = (int)Math::round(c.r * 255.0f);
-			int overlay = (int)Math::round(c.g * 255.0f);
-			float blend = c.b;
+			PackedFloat32Array &target = layer_weights.write[p_layer_index];
+			const float old_target = target[local_idx];
+			const float new_target = CLAMP(old_target + amount, 0.0f, 1.0f);
+			const float delta = new_target - old_target;
 
-			if (base == p_layer_index) {
-				blend = MAX(blend - amount, 0.0f);
-			} else if (overlay == p_layer_index) {
-				blend = MIN(blend + amount, 1.0f);
-			} else {
-				overlay = p_layer_index;
-				blend = MIN(blend + amount, 1.0f);
+			// Take the raised amount out of the other layers, proportionally
+			// to their current share of "the rest", so the total weight
+			// stays roughly constant instead of every layer just growing
+			// without bound - the same weight-blended-layer behavior
+			// CryEngine/UE4/5 terrain painting uses. Without this, painting
+			// a second layer over a first one already at full weight could
+			// only ever reach an even split between them, never fully
+			// replace it.
+			if (delta > 0.00001f) {
+				float others_sum = 0.0f;
+				for (int i = 0; i < layer_count; i++) {
+					if (i != p_layer_index) {
+						others_sum += layer_weights[i][local_idx];
+					}
+				}
+				if (others_sum > 0.00001f) {
+					const float scale = MAX(0.0f, (others_sum - delta) / others_sum);
+					for (int i = 0; i < layer_count; i++) {
+						if (i != p_layer_index) {
+							PackedFloat32Array &other = layer_weights.write[i];
+							other.set(local_idx, other[local_idx] * scale);
+						}
+					}
+				}
 			}
-			if (blend >= 1.0f) {
-				base = overlay;
-				blend = 0.0f;
-			}
-			control.set(local_idx, Color(base / 255.0f, overlay / 255.0f, blend, c.a));
+			target.set(local_idx, new_target);
 		}
 	}
 
 	_disconnect_terrain_data_changed();
-	terrain_data->set_control_region(region, control);
+	for (int i = 0; i < layer_count; i++) {
+		terrain_data->set_layer_weight_region(region, i, layer_weights[i]);
+	}
 	_connect_terrain_data_changed();
-	if (control_texture.is_valid()) {
-		control_texture->update(terrain_data->get_control_map_image());
+
+	if (weight_array.is_valid()) {
+		const int group_count = (layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP;
+		for (int g = 0; g < group_count; g++) {
+			weight_array->update_layer(terrain_data->get_weight_map_image(g), g);
+		}
 	}
 }
 
@@ -941,7 +1015,7 @@ void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p
 
 	const Rect2i region(x0, z0, x1 - x0 + 1, z1 - z0 + 1);
 	// Bulk fetch-modify-commit, same reasoning as sculpt() above.
-	PackedColorArray control = terrain_data->get_control_region(region);
+	PackedByteArray holes = terrain_data->get_hole_region(region);
 	const int region_w = region.size.x;
 
 	for (int z = z0; z <= z1; z++) {
@@ -952,22 +1026,18 @@ void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p
 				continue;
 			}
 			const int local_idx = (z - z0) * region_w + (x - x0);
-			Color c = control[local_idx];
-			c.a = p_hole ? 1.0f : 0.0f;
-			control.set(local_idx, c);
+			holes.set(local_idx, p_hole ? 1 : 0);
 		}
 	}
 
 	_disconnect_terrain_data_changed();
-	terrain_data->set_control_region(region, control);
+	terrain_data->set_hole_region(region, holes);
 	_connect_terrain_data_changed();
-	if (control_texture.is_valid()) {
-		control_texture->update(terrain_data->get_control_map_image());
-	}
 	_rebuild_chunks_in_region(region);
-	if (p_update_collision) {
-		update_collision();
-	}
+	// p_update_collision is deliberately ignored: holes never affect the
+	// collision shape (see the class description), so rebuilding it here
+	// would only pay the cost of a full HeightMapShape3D rebuild for no
+	// visible effect.
 }
 
 PackedFloat32Array Terrain3D::get_height_region(const Rect2i &p_region) const {
@@ -986,19 +1056,32 @@ void Terrain3D::set_height_region(const Rect2i &p_region, const PackedFloat32Arr
 	}
 }
 
-PackedColorArray Terrain3D::get_control_region(const Rect2i &p_region) const {
-	ERR_FAIL_COND_V(terrain_data.is_null(), PackedColorArray());
-	return terrain_data->get_control_region(p_region);
+PackedFloat32Array Terrain3D::get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const {
+	ERR_FAIL_COND_V(terrain_data.is_null(), PackedFloat32Array());
+	return terrain_data->get_layer_weight_region(p_region, p_layer_index);
 }
 
-void Terrain3D::set_control_region(const Rect2i &p_region, const PackedColorArray &p_control) {
+void Terrain3D::set_layer_weight_region(const Rect2i &p_region, int p_layer_index, const PackedFloat32Array &p_weights) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	_disconnect_terrain_data_changed();
-	terrain_data->set_control_region(p_region, p_control);
+	terrain_data->set_layer_weight_region(p_region, p_layer_index, p_weights);
 	_connect_terrain_data_changed();
-	if (control_texture.is_valid()) {
-		control_texture->update(terrain_data->get_control_map_image());
+	if (weight_array.is_valid() && p_layer_index >= 0 && p_layer_index < TerrainData::MAX_LAYERS) {
+		const int group = p_layer_index / TerrainData::LAYERS_PER_WEIGHT_MAP;
+		weight_array->update_layer(terrain_data->get_weight_map_image(group), group);
 	}
+}
+
+PackedByteArray Terrain3D::get_hole_region(const Rect2i &p_region) const {
+	ERR_FAIL_COND_V(terrain_data.is_null(), PackedByteArray());
+	return terrain_data->get_hole_region(p_region);
+}
+
+void Terrain3D::set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes) {
+	ERR_FAIL_COND(terrain_data.is_null());
+	_disconnect_terrain_data_changed();
+	terrain_data->set_hole_region(p_region, p_holes);
+	_connect_terrain_data_changed();
 	_rebuild_chunks_in_region(p_region);
 }
 

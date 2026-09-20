@@ -61,10 +61,23 @@ class Terrain3DEditorPlugin : public EditorPlugin {
 		MODE_UNHOLE,
 	};
 
+	// Which of TerrainData's independent pieces of per-sample data a mode's
+	// brush strokes touch, and so which one needs snapshotting for undo/redo.
+	enum class DataKind {
+		HEIGHT,
+		WEIGHTS,
+		HOLE,
+	};
+
 	struct TouchedChunkRegion {
 		Rect2i region;
 		PackedFloat32Array before_heights;
-		PackedColorArray before_control;
+		// One entry per layer that existed when the stroke started (PAINT
+		// mode only): painting one layer renormalizes every other layer's
+		// weight too (see Terrain3D::paint_layer), so undoing a stroke has
+		// to restore all of them, not just the one the user picked.
+		Vector<PackedFloat32Array> before_weights;
+		PackedByteArray before_holes;
 	};
 
 	Terrain3D *terrain = nullptr;
@@ -122,7 +135,7 @@ class Terrain3DEditorPlugin : public EditorPlugin {
 	void _import_file_selected(const String &p_path);
 	void _do_import_heightmap();
 
-	bool _is_control_mode() const;
+	DataKind _get_mode_data_kind() const;
 	String _get_mode_action_name() const;
 	Rect2i _get_brush_vertex_region(const Vector3 &p_local_position, float p_radius) const;
 	void _snapshot_chunk_if_needed(const Vector2i &p_chunk);

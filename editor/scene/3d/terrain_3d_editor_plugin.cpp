@@ -203,8 +203,16 @@ void Terrain3DEditorPlugin::_do_import_heightmap() {
 	terrain->get_terrain_data()->import_heightmap(image, height_min, height_max);
 }
 
-bool Terrain3DEditorPlugin::_is_control_mode() const {
-	return mode == MODE_PAINT || mode == MODE_HOLE || mode == MODE_UNHOLE;
+Terrain3DEditorPlugin::DataKind Terrain3DEditorPlugin::_get_mode_data_kind() const {
+	switch (mode) {
+		case MODE_PAINT:
+			return DataKind::WEIGHTS;
+		case MODE_HOLE:
+		case MODE_UNHOLE:
+			return DataKind::HOLE;
+		default:
+			return DataKind::HEIGHT;
+	}
 }
 
 String Terrain3DEditorPlugin::_get_mode_action_name() const {
@@ -246,10 +254,20 @@ void Terrain3DEditorPlugin::_snapshot_chunk_if_needed(const Vector2i &p_chunk) {
 	}
 	TouchedChunkRegion snap;
 	snap.region = Rect2i(p_chunk.x * Terrain3D::CHUNK_QUADS, p_chunk.y * Terrain3D::CHUNK_QUADS, Terrain3D::CHUNK_QUADS + 1, Terrain3D::CHUNK_QUADS + 1);
-	if (_is_control_mode()) {
-		snap.before_control = terrain->get_control_region(snap.region);
-	} else {
-		snap.before_heights = terrain->get_height_region(snap.region);
+	switch (_get_mode_data_kind()) {
+		case DataKind::WEIGHTS: {
+			const int layer_count = terrain->get_layers().size();
+			snap.before_weights.resize(layer_count);
+			for (int i = 0; i < layer_count; i++) {
+				snap.before_weights.write[i] = terrain->get_layer_weight_region(snap.region, i);
+			}
+		} break;
+		case DataKind::HOLE: {
+			snap.before_holes = terrain->get_hole_region(snap.region);
+		} break;
+		case DataKind::HEIGHT: {
+			snap.before_heights = terrain->get_height_region(snap.region);
+		} break;
 	}
 	touched_regions[p_chunk] = snap;
 }
@@ -420,24 +438,35 @@ void Terrain3DEditorPlugin::_end_stroke() {
 	}
 
 	if (terrain != nullptr && !touched_regions.is_empty()) {
-		const bool control_mode = _is_control_mode();
+		const DataKind kind = _get_mode_data_kind();
 		EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 		ur->create_action(_get_mode_action_name());
 		for (KeyValue<Vector2i, TouchedChunkRegion> &kv : touched_regions) {
 			const TouchedChunkRegion &snap = kv.value;
-			if (control_mode) {
-				const PackedColorArray after = terrain->get_control_region(snap.region);
-				ur->add_do_method(terrain, "set_control_region", snap.region, after);
-				ur->add_undo_method(terrain, "set_control_region", snap.region, snap.before_control);
-			} else {
-				const PackedFloat32Array after = terrain->get_height_region(snap.region);
-				ur->add_do_method(terrain, "set_height_region", snap.region, after, true);
-				ur->add_undo_method(terrain, "set_height_region", snap.region, snap.before_heights, true);
+			switch (kind) {
+				case DataKind::WEIGHTS: {
+					const int layer_count = snap.before_weights.size();
+					for (int i = 0; i < layer_count; i++) {
+						const PackedFloat32Array after = terrain->get_layer_weight_region(snap.region, i);
+						ur->add_do_method(terrain, "set_layer_weight_region", snap.region, i, after);
+						ur->add_undo_method(terrain, "set_layer_weight_region", snap.region, i, snap.before_weights[i]);
+					}
+				} break;
+				case DataKind::HOLE: {
+					const PackedByteArray after = terrain->get_hole_region(snap.region);
+					ur->add_do_method(terrain, "set_hole_region", snap.region, after);
+					ur->add_undo_method(terrain, "set_hole_region", snap.region, snap.before_holes);
+				} break;
+				case DataKind::HEIGHT: {
+					const PackedFloat32Array after = terrain->get_height_region(snap.region);
+					ur->add_do_method(terrain, "set_height_region", snap.region, after, true);
+					ur->add_undo_method(terrain, "set_height_region", snap.region, snap.before_heights, true);
+				} break;
 			}
 		}
 		ur->commit_action(false);
 
-		if (!control_mode) {
+		if (kind == DataKind::HEIGHT) {
 			terrain->update_collision();
 		}
 	}
@@ -448,12 +477,20 @@ void Terrain3DEditorPlugin::_end_stroke() {
 
 void Terrain3DEditorPlugin::_cancel_stroke() {
 	if (stroke_active && terrain != nullptr) {
-		const bool control_mode = _is_control_mode();
+		const DataKind kind = _get_mode_data_kind();
 		for (KeyValue<Vector2i, TouchedChunkRegion> &kv : touched_regions) {
-			if (control_mode) {
-				terrain->set_control_region(kv.value.region, kv.value.before_control);
-			} else {
-				terrain->set_height_region(kv.value.region, kv.value.before_heights, true);
+			switch (kind) {
+				case DataKind::WEIGHTS: {
+					for (int i = 0; i < kv.value.before_weights.size(); i++) {
+						terrain->set_layer_weight_region(kv.value.region, i, kv.value.before_weights[i]);
+					}
+				} break;
+				case DataKind::HOLE: {
+					terrain->set_hole_region(kv.value.region, kv.value.before_holes);
+				} break;
+				case DataKind::HEIGHT: {
+					terrain->set_height_region(kv.value.region, kv.value.before_heights, true);
+				} break;
 			}
 		}
 	}

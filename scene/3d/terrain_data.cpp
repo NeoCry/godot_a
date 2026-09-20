@@ -33,28 +33,52 @@
 #include "core/io/image.h"
 #include "core/object/class_db.h"
 
+namespace {
+// Layer 0's weight starts at 1 everywhere (weight map group 0's red channel)
+// so a freshly created/resized terrain renders as one solid, paintable
+// layer instead of nothing; every other layer starts unpainted.
+Ref<Image> _make_weight_map(int p_group, int p_resolution) {
+	Ref<Image> img;
+	img.instantiate();
+	img->initialize_data(p_resolution, p_resolution, false, Image::FORMAT_RGBA8);
+	img->fill(p_group == 0 ? Color(1, 0, 0, 0) : Color(0, 0, 0, 0));
+	return img;
+}
+} // namespace
+
 void TerrainData::_init_images() {
 	heightmap.instantiate();
 	heightmap->initialize_data(resolution, resolution, false, Image::FORMAT_RF);
 	heightmap->fill(Color(0, 0, 0));
 
-	control_map.instantiate();
-	control_map->initialize_data(resolution, resolution, false, Image::FORMAT_RGBA8);
-	control_map->fill(Color(0, 0, 0, 0));
+	weight_maps.resize(WEIGHT_MAP_COUNT);
+	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+		weight_maps.write[g] = _make_weight_map(g, resolution);
+	}
+
+	hole_map.instantiate();
+	hole_map->initialize_data(resolution, resolution, false, Image::FORMAT_R8);
+	hole_map->fill(Color(0, 0, 0));
 }
 
 Dictionary TerrainData::_get_storage_data() const {
 	Dictionary d;
 	d["resolution"] = resolution;
 	d["heightmap"] = heightmap;
-	d["control_map"] = control_map;
+	Array weight_maps_arr;
+	for (int g = 0; g < weight_maps.size(); g++) {
+		weight_maps_arr.push_back(weight_maps[g]);
+	}
+	d["weight_maps"] = weight_maps_arr;
+	d["hole_map"] = hole_map;
 	return d;
 }
 
 void TerrainData::_set_storage_data(const Dictionary &p_data) {
 	resolution = CLAMP((int)p_data.get("resolution", resolution), MIN_RESOLUTION, MAX_RESOLUTION);
 	Ref<Image> stored_heightmap = p_data.get("heightmap", Ref<Image>());
-	Ref<Image> stored_control_map = p_data.get("control_map", Ref<Image>());
+	Array stored_weight_maps = p_data.get("weight_maps", Array());
+	Ref<Image> stored_hole_map = p_data.get("hole_map", Ref<Image>());
 
 	if (stored_heightmap.is_valid() && stored_heightmap->get_width() == resolution && stored_heightmap->get_height() == resolution) {
 		heightmap = stored_heightmap;
@@ -64,12 +88,25 @@ void TerrainData::_set_storage_data(const Dictionary &p_data) {
 		heightmap->fill(Color(0, 0, 0));
 	}
 
-	if (stored_control_map.is_valid() && stored_control_map->get_width() == resolution && stored_control_map->get_height() == resolution) {
-		control_map = stored_control_map;
+	weight_maps.resize(WEIGHT_MAP_COUNT);
+	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+		Ref<Image> stored_img;
+		if (g < stored_weight_maps.size()) {
+			stored_img = stored_weight_maps[g];
+		}
+		if (stored_img.is_valid() && stored_img->get_width() == resolution && stored_img->get_height() == resolution) {
+			weight_maps.write[g] = stored_img;
+		} else {
+			weight_maps.write[g] = _make_weight_map(g, resolution);
+		}
+	}
+
+	if (stored_hole_map.is_valid() && stored_hole_map->get_width() == resolution && stored_hole_map->get_height() == resolution) {
+		hole_map = stored_hole_map;
 	} else {
-		control_map.instantiate();
-		control_map->initialize_data(resolution, resolution, false, Image::FORMAT_RGBA8);
-		control_map->fill(Color(0, 0, 0, 0));
+		hole_map.instantiate();
+		hole_map->initialize_data(resolution, resolution, false, Image::FORMAT_R8);
+		hole_map->fill(Color(0, 0, 0));
 	}
 }
 
@@ -88,13 +125,17 @@ void TerrainData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &TerrainData::get_height_region);
 	ClassDB::bind_method(D_METHOD("set_height_region", "region", "heights"), &TerrainData::set_height_region);
 
-	ClassDB::bind_method(D_METHOD("get_control", "x", "z"), &TerrainData::get_control);
-	ClassDB::bind_method(D_METHOD("set_control", "x", "z", "control"), &TerrainData::set_control);
+	ClassDB::bind_method(D_METHOD("get_layer_weight", "x", "z", "layer_index"), &TerrainData::get_layer_weight);
+	ClassDB::bind_method(D_METHOD("set_layer_weight", "x", "z", "layer_index", "weight"), &TerrainData::set_layer_weight);
 
-	ClassDB::bind_method(D_METHOD("get_control_region", "region"), &TerrainData::get_control_region);
-	ClassDB::bind_method(D_METHOD("set_control_region", "region", "control"), &TerrainData::set_control_region);
+	ClassDB::bind_method(D_METHOD("get_layer_weight_region", "region", "layer_index"), &TerrainData::get_layer_weight_region);
+	ClassDB::bind_method(D_METHOD("set_layer_weight_region", "region", "layer_index", "weights"), &TerrainData::set_layer_weight_region);
 
 	ClassDB::bind_method(D_METHOD("is_hole", "x", "z"), &TerrainData::is_hole);
+	ClassDB::bind_method(D_METHOD("set_hole", "x", "z", "hole"), &TerrainData::set_hole);
+
+	ClassDB::bind_method(D_METHOD("get_hole_region", "region"), &TerrainData::get_hole_region);
+	ClassDB::bind_method(D_METHOD("set_hole_region", "region", "holes"), &TerrainData::set_hole_region);
 
 	ClassDB::bind_method(D_METHOD("get_normal", "x", "z"), &TerrainData::get_normal);
 
@@ -110,6 +151,8 @@ void TerrainData::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "resolution", PROPERTY_HINT_RANGE, vformat("%d,%d,1", MIN_RESOLUTION, MAX_RESOLUTION)), "set_resolution", "get_resolution");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "vertex_spacing", PROPERTY_HINT_RANGE, "0.01,100.0,0.01,or_greater,suffix:m"), "set_vertex_spacing", "get_vertex_spacing");
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "_storage_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_storage_data", "_get_storage_data");
+
+	BIND_CONSTANT(MAX_LAYERS);
 }
 
 void TerrainData::set_resolution(int p_resolution) {
@@ -145,13 +188,14 @@ float TerrainData::get_size() const {
 // dispatch on the image's format is what made sculpting/painting/smoothing
 // visibly slow. Every accessor below instead reads/writes the image's raw
 // byte buffer directly (heightmap is always FORMAT_RF, one float per pixel;
-// control_map is always FORMAT_RGBA8, one byte per channel), which is a
-// simple array index. Image::get_data() returns that buffer by reference
-// (free), while a write needs one get_data()+set_data() round trip to commit
-// (one copy-on-write of the whole image) - cheap by itself, but still worth
-// batching: callers doing many edits (TerrainData's own *_region methods,
-// and Terrain3D's sculpt/paint_layer/set_hole) do exactly one such round
-// trip per call, not one per sample.
+// each weight map is always FORMAT_RGBA8, one byte per channel/layer; the
+// hole map is always FORMAT_R8), which is a simple array index.
+// Image::get_data() returns that buffer by reference (free), while a write
+// needs one get_data()+set_data() round trip to commit (one copy-on-write of
+// the whole image) - cheap by itself, but still worth batching: callers
+// doing many edits (TerrainData's own *_region methods, and Terrain3D's
+// sculpt/paint_layer/set_hole) do exactly one such round trip per call, not
+// one per sample.
 float TerrainData::get_height(int p_x, int p_z) const {
 	p_x = CLAMP(p_x, 0, resolution - 1);
 	p_z = CLAMP(p_z, 0, resolution - 1);
@@ -223,63 +267,69 @@ void TerrainData::set_height_region(const Rect2i &p_region, const PackedFloat32A
 	emit_changed();
 }
 
-Color TerrainData::get_control(int p_x, int p_z) const {
+float TerrainData::get_layer_weight(int p_x, int p_z, int p_layer_index) const {
+	ERR_FAIL_INDEX_V(p_layer_index, MAX_LAYERS, 0.0f);
 	p_x = CLAMP(p_x, 0, resolution - 1);
 	p_z = CLAMP(p_z, 0, resolution - 1);
-	const Vector<uint8_t> &raw = control_map->get_data();
-	const uint8_t *p = raw.ptr() + (p_z * resolution + p_x) * 4;
-	return Color(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, p[3] / 255.0f);
+	const int group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
+	const int channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
+	const Vector<uint8_t> &raw = weight_maps[group]->get_data();
+	return raw.ptr()[(p_z * resolution + p_x) * 4 + channel] / 255.0f;
 }
 
-void TerrainData::set_control(int p_x, int p_z, const Color &p_control) {
+void TerrainData::set_layer_weight(int p_x, int p_z, int p_layer_index, float p_weight) {
+	ERR_FAIL_INDEX(p_layer_index, MAX_LAYERS);
 	if (p_x < 0 || p_x >= resolution || p_z < 0 || p_z >= resolution) {
 		return;
 	}
-	Vector<uint8_t> raw = control_map->get_data();
-	uint8_t *p = raw.ptrw() + (p_z * resolution + p_x) * 4;
-	p[0] = (uint8_t)CLAMP(Math::round(p_control.r * 255.0f), 0.0f, 255.0f);
-	p[1] = (uint8_t)CLAMP(Math::round(p_control.g * 255.0f), 0.0f, 255.0f);
-	p[2] = (uint8_t)CLAMP(Math::round(p_control.b * 255.0f), 0.0f, 255.0f);
-	p[3] = (uint8_t)CLAMP(Math::round(p_control.a * 255.0f), 0.0f, 255.0f);
-	control_map->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
+	const int group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
+	const int channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
+	Vector<uint8_t> raw = weight_maps[group]->get_data();
+	raw.ptrw()[(p_z * resolution + p_x) * 4 + channel] = (uint8_t)CLAMP(Math::round(p_weight * 255.0f), 0.0f, 255.0f);
+	weight_maps.write[group]->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
 }
 
-PackedColorArray TerrainData::get_control_region(const Rect2i &p_region) const {
+PackedFloat32Array TerrainData::get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const {
 	const int w = MAX(p_region.size.x, 0);
 	const int h = MAX(p_region.size.y, 0);
-	PackedColorArray result;
+	PackedFloat32Array result;
 	result.resize(w * h);
 	if (w == 0 || h == 0) {
 		return result;
 	}
+	ERR_FAIL_INDEX_V(p_layer_index, MAX_LAYERS, result);
 
-	const Vector<uint8_t> &raw = control_map->get_data();
+	const int group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
+	const int channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
+	const Vector<uint8_t> &raw = weight_maps[group]->get_data();
 	const uint8_t *src = raw.ptr();
-	Color *dst = result.ptrw();
+	float *dst = result.ptrw();
 
 	int i = 0;
 	for (int z = 0; z < h; z++) {
 		const int sz = CLAMP(p_region.position.y + z, 0, resolution - 1);
 		for (int x = 0; x < w; x++) {
 			const int sx = CLAMP(p_region.position.x + x, 0, resolution - 1);
-			const uint8_t *p = src + (sz * resolution + sx) * 4;
-			dst[i++] = Color(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, p[3] / 255.0f);
+			dst[i++] = src[(sz * resolution + sx) * 4 + channel] / 255.0f;
 		}
 	}
 	return result;
 }
 
-void TerrainData::set_control_region(const Rect2i &p_region, const PackedColorArray &p_control) {
+void TerrainData::set_layer_weight_region(const Rect2i &p_region, int p_layer_index, const PackedFloat32Array &p_weights) {
 	const int w = MAX(p_region.size.x, 0);
 	const int h = MAX(p_region.size.y, 0);
-	ERR_FAIL_COND(p_control.size() < w * h);
+	ERR_FAIL_COND(p_weights.size() < w * h);
 	if (w == 0 || h == 0) {
 		return;
 	}
+	ERR_FAIL_INDEX(p_layer_index, MAX_LAYERS);
 
-	Vector<uint8_t> raw = control_map->get_data();
+	const int group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
+	const int channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
+	Vector<uint8_t> raw = weight_maps[group]->get_data();
 	uint8_t *dst = raw.ptrw();
-	const Color *src = p_control.ptr();
+	const float *src = p_weights.ptr();
 
 	int i = 0;
 	for (int z = 0; z < h; z++) {
@@ -291,22 +341,84 @@ void TerrainData::set_control_region(const Rect2i &p_region, const PackedColorAr
 		for (int x = 0; x < w; x++) {
 			const int dx = p_region.position.x + x;
 			if (dx >= 0 && dx < resolution) {
-				uint8_t *p = dst + (dz * resolution + dx) * 4;
-				const Color &c = src[i];
-				p[0] = (uint8_t)CLAMP(Math::round(c.r * 255.0f), 0.0f, 255.0f);
-				p[1] = (uint8_t)CLAMP(Math::round(c.g * 255.0f), 0.0f, 255.0f);
-				p[2] = (uint8_t)CLAMP(Math::round(c.b * 255.0f), 0.0f, 255.0f);
-				p[3] = (uint8_t)CLAMP(Math::round(c.a * 255.0f), 0.0f, 255.0f);
+				dst[(dz * resolution + dx) * 4 + channel] = (uint8_t)CLAMP(Math::round(src[i] * 255.0f), 0.0f, 255.0f);
 			}
 			i++;
 		}
 	}
-	control_map->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
+	weight_maps.write[group]->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
 	emit_changed();
 }
 
 bool TerrainData::is_hole(int p_x, int p_z) const {
-	return get_control(p_x, p_z).a > 0.5f;
+	p_x = CLAMP(p_x, 0, resolution - 1);
+	p_z = CLAMP(p_z, 0, resolution - 1);
+	const Vector<uint8_t> &raw = hole_map->get_data();
+	return raw.ptr()[p_z * resolution + p_x] > 0;
+}
+
+void TerrainData::set_hole(int p_x, int p_z, bool p_hole) {
+	if (p_x < 0 || p_x >= resolution || p_z < 0 || p_z >= resolution) {
+		return;
+	}
+	Vector<uint8_t> raw = hole_map->get_data();
+	raw.ptrw()[p_z * resolution + p_x] = p_hole ? 255 : 0;
+	hole_map->set_data(resolution, resolution, false, Image::FORMAT_R8, raw);
+}
+
+PackedByteArray TerrainData::get_hole_region(const Rect2i &p_region) const {
+	const int w = MAX(p_region.size.x, 0);
+	const int h = MAX(p_region.size.y, 0);
+	PackedByteArray result;
+	result.resize(w * h);
+	if (w == 0 || h == 0) {
+		return result;
+	}
+
+	const Vector<uint8_t> &raw = hole_map->get_data();
+	const uint8_t *src = raw.ptr();
+	uint8_t *dst = result.ptrw();
+
+	int i = 0;
+	for (int z = 0; z < h; z++) {
+		const int sz = CLAMP(p_region.position.y + z, 0, resolution - 1);
+		for (int x = 0; x < w; x++) {
+			const int sx = CLAMP(p_region.position.x + x, 0, resolution - 1);
+			dst[i++] = src[sz * resolution + sx] > 0 ? 1 : 0;
+		}
+	}
+	return result;
+}
+
+void TerrainData::set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes) {
+	const int w = MAX(p_region.size.x, 0);
+	const int h = MAX(p_region.size.y, 0);
+	ERR_FAIL_COND(p_holes.size() < w * h);
+	if (w == 0 || h == 0) {
+		return;
+	}
+
+	Vector<uint8_t> raw = hole_map->get_data();
+	uint8_t *dst = raw.ptrw();
+	const uint8_t *src = p_holes.ptr();
+
+	int i = 0;
+	for (int z = 0; z < h; z++) {
+		const int dz = p_region.position.y + z;
+		if (dz < 0 || dz >= resolution) {
+			i += w;
+			continue;
+		}
+		for (int x = 0; x < w; x++) {
+			const int dx = p_region.position.x + x;
+			if (dx >= 0 && dx < resolution) {
+				dst[dz * resolution + dx] = src[i] != 0 ? 255 : 0;
+			}
+			i++;
+		}
+	}
+	hole_map->set_data(resolution, resolution, false, Image::FORMAT_R8, raw);
+	emit_changed();
 }
 
 Vector3 TerrainData::get_normal(int p_x, int p_z) const {
@@ -374,8 +486,13 @@ Ref<Image> TerrainData::get_heightmap_image() const {
 	return heightmap;
 }
 
-Ref<Image> TerrainData::get_control_map_image() const {
-	return control_map;
+Ref<Image> TerrainData::get_weight_map_image(int p_group) const {
+	ERR_FAIL_INDEX_V(p_group, WEIGHT_MAP_COUNT, Ref<Image>());
+	return weight_maps[p_group];
+}
+
+Ref<Image> TerrainData::get_hole_map_image() const {
+	return hole_map;
 }
 
 Vector<real_t> TerrainData::get_collision_heights() const {

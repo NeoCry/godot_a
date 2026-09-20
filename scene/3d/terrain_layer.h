@@ -38,8 +38,8 @@ class Texture2D;
 // render it (albedo, normal map, and a packed occlusion/roughness/metallic
 // map) plus how large one texture tile is in world space. This is pure
 // configuration; Terrain3D bakes every layer's textures into shared
-// Texture2DArrays and paints per-vertex layer weights into TerrainData's
-// control map (see TerrainData::set_control).
+// Texture2DArrays and paints this layer's weight into TerrainData's weight
+// maps (see TerrainData::set_layer_weight).
 class TerrainLayer : public Resource {
 	GDCLASS(TerrainLayer, Resource);
 

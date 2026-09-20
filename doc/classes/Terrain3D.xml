@@ -5,10 +5,10 @@
 	</brief_description>
 	<description>
 		[Terrain3D] renders a [TerrainData] heightmap ([member terrain_data]) as a grid of small chunks, each with its own automatic level of detail: nearby chunks render at full density while distant ones use a cheaper, decimated mesh with no extra scripting or per-frame cost, using the same mesh LOD mechanism as [method ArrayMesh.add_surface_from_arrays]'s [code]lods[/code] parameter. A thin "skirt" of hidden geometry around each chunk's edges hides the small seams that can appear where two neighboring chunks are rendered at different levels of detail.
-		Up to 32 [TerrainLayer]s ([member layers]) can be painted onto the terrain; every point on the terrain blends between at most two of them at once (see [TerrainData]'s control map), so any number of layers can be introduced over time by painting. A [member Terrain3D.collision_layer] configurable [HeightMapShape3D] is kept in sync automatically so physics bodies collide with the terrain; see [method update_collision].
-		While selected in the editor, a toolbar appears in the 3D viewport with a brush for sculpting (raising, lowering, smoothing, and flattening the heightmap), painting texture layers, and cutting or filling holes (openings in the terrain's geometry itself, e.g. for a cave entrance, that the camera and physics bodies can pass through — see [method TerrainData.is_hole]). The same operations are available from a script through [method sculpt], [method paint_layer], and [method set_hole], for example to carve a crater into the terrain at runtime. The toolbar's [b]Import Heightmap...[/b] button imports a square grayscale image as the whole heightmap (see [method TerrainData.import_heightmap] for format/precision recommendations — EXR or HDR, not PNG or a lossy format), creating a [TerrainData] automatically if [member terrain_data] isn't set yet; this replaces the current heightmap and is not undoable.
+		Up to 32 [TerrainLayer]s ([member layers]) can be painted onto the terrain. Every point on the terrain has its own independent weight for every layer (see [TerrainData]'s description); what's actually rendered there is every layer's material mixed in proportion to its share of the total weight, the same "weight-blended" model CryEngine and UE4/5's Landscape layers use, so any number of layers can overlap smoothly at once (not just two at a time) and painting one layer smoothly displaces the others rather than producing hard edges at the vertex grid. A [member Terrain3D.collision_layer] configurable [HeightMapShape3D] is kept in sync automatically so physics bodies collide with the terrain; see [method update_collision].
+		While selected in the editor, a toolbar appears in the 3D viewport with a brush for sculpting (raising, lowering, smoothing, and flattening the heightmap), painting texture layers, and cutting or filling holes (openings in the terrain's geometry itself, e.g. for a cave entrance, that the camera and physics bodies can pass through - see [method TerrainData.is_hole]). The same operations are available from a script through [method sculpt], [method paint_layer], and [method set_hole], for example to carve a crater into the terrain at runtime. The toolbar's [b]Import Heightmap...[/b] button imports a square grayscale image as the whole heightmap (see [method TerrainData.import_heightmap] for format/precision recommendations - EXR or HDR, not PNG or a lossy format), creating a [TerrainData] automatically if [member terrain_data] isn't set yet; this replaces the current heightmap and is not undoable.
 		[FoliagePainter3D] and [FoliageSpawner3D] both recognize a [Terrain3D] as a paintable/projectable ground surface alongside [MeshInstance3D], so vegetation can be scattered directly onto it.
-		[b]Note:[/b] [Terrain3D] is intended to be used unrotated (only its position and scale matter for mapping world space to the control map and to texture tiling); rotating it is not supported.
+		[b]Note:[/b] [Terrain3D] is intended to be used unrotated (only its position and scale matter for mapping world space to the weight maps and to texture tiling); rotating it is not supported.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -19,18 +19,26 @@
 				Returns a local-space bounding box covering the terrain's full footprint, padded generously above and below since sculpted height has no fixed range.
 			</description>
 		</method>
-		<method name="get_control_region" qualifiers="const">
-			<return type="PackedColorArray" />
-			<param index="0" name="region" type="Rect2i" />
-			<description>
-				Returns [member terrain_data]'s control values covering [param region]; see [method TerrainData.get_control_region].
-			</description>
-		</method>
 		<method name="get_height_region" qualifiers="const">
 			<return type="PackedFloat32Array" />
 			<param index="0" name="region" type="Rect2i" />
 			<description>
 				Returns [member terrain_data]'s heights covering [param region]; see [method TerrainData.get_height_region].
+			</description>
+		</method>
+		<method name="get_hole_region" qualifiers="const">
+			<return type="PackedByteArray" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns [member terrain_data]'s hole flags covering [param region]; see [method TerrainData.get_hole_region].
+			</description>
+		</method>
+		<method name="get_layer_weight_region" qualifiers="const">
+			<return type="PackedFloat32Array" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="layer_index" type="int" />
+			<description>
+				Returns [member terrain_data]'s weights for the [TerrainLayer] at [param layer_index] covering [param region]; see [method TerrainData.get_layer_weight_region].
 			</description>
 		</method>
 		<method name="paint_layer">
@@ -40,7 +48,7 @@
 			<param index="2" name="strength" type="float" />
 			<param index="3" name="layer_index" type="int" />
 			<description>
-				Blends the [TerrainLayer] at [param layer_index] in [member layers] into the control map within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), falling off smoothly towards the edge of the brush. Re-uploads the control map texture, but does not need to rebuild any chunk mesh or collision shape, since painting never changes geometry.
+				Raises the weight of the [TerrainLayer] at [param layer_index] in [member layers] within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), falling off smoothly towards the edge of the brush. Every other layer's weight at each affected point is lowered proportionally so the total stays roughly constant (see [TerrainData]'s description), so repeatedly painting one layer converges on it fully replacing whatever was there rather than just capping out at an even split with it. Re-uploads the affected layer weight textures, but does not need to rebuild any chunk mesh or collision shape, since painting never changes geometry.
 			</description>
 		</method>
 		<method name="sculpt">
@@ -53,14 +61,6 @@
 			<param index="5" name="update_collision" type="bool" default="true" />
 			<description>
 				Sculpts [member terrain_data]'s heightmap within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), falling off smoothly towards the edge of the brush. [param strength] is the maximum height change, in meters, applied at the center of the brush per call, except for [constant SCULPT_FLATTEN] where it is instead how far each height moves towards [param flatten_height] (as a 0-1 fraction; values at or above 1 snap immediately). Rebuilds the chunks the brush touches and, unless [param update_collision] is [code]false[/code], also updates the collision shape immediately; pass [code]false[/code] while repeatedly sculpting in a tight loop (e.g. dragging a brush) and call [method update_collision] once afterwards instead, since rebuilding the collision shape from the whole heightmap on every call is comparatively expensive.
-			</description>
-		</method>
-		<method name="set_control_region">
-			<return type="void" />
-			<param index="0" name="region" type="Rect2i" />
-			<param index="1" name="control" type="PackedColorArray" />
-			<description>
-				Writes [param control] into [member terrain_data] at [param region] (see [method TerrainData.set_control_region]), re-uploads the control map texture, and rebuilds the chunks [param region] overlaps (control values include the hole flag, which does affect chunk geometry; see [method TerrainData.is_hole]).
 			</description>
 		</method>
 		<method name="set_height_region">
@@ -80,6 +80,23 @@
 			<param index="3" name="update_collision" type="bool" default="true" />
 			<description>
 				Sets or clears the hole flag within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter) and rebuilds the chunks the brush touches. [b]Note:[/b] holes only affect the rendered geometry, not the collision shape (see the class description and [method TerrainData.is_hole]); [param update_collision] is accepted for consistency with [method sculpt] and [method set_height_region] but has no effect here.
+			</description>
+		</method>
+		<method name="set_hole_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="holes" type="PackedByteArray" />
+			<description>
+				Writes [param holes] into [member terrain_data] at [param region] (see [method TerrainData.set_hole_region]) and rebuilds the chunks [param region] overlaps (holes affect chunk geometry; see [method TerrainData.is_hole]).
+			</description>
+		</method>
+		<method name="set_layer_weight_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="layer_index" type="int" />
+			<param index="2" name="weights" type="PackedFloat32Array" />
+			<description>
+				Writes [param weights] for the [TerrainLayer] at [param layer_index] into [member terrain_data] at [param region] (see [method TerrainData.set_layer_weight_region]) and re-uploads that layer's weight texture. Unlike [method paint_layer], this does not touch any other layer's weight, so it won't by itself keep the total weight at each point normalized (see [TerrainData]'s description) - prefer [method paint_layer] for brush-style painting.
 			</description>
 		</method>
 		<method name="update_collision">

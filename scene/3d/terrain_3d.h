@@ -38,7 +38,6 @@
 class ArrayMesh;
 class CollisionShape3D;
 class HeightMapShape3D;
-class ImageTexture;
 class Shader;
 class ShaderMaterial;
 class StaticBody3D;
@@ -93,7 +92,7 @@ private:
 
 	static inline Ref<Shader> shader;
 	Ref<ShaderMaterial> material;
-	Ref<ImageTexture> control_texture;
+	Ref<Texture2DArray> weight_array;
 	Ref<Texture2DArray> albedo_array;
 	Ref<Texture2DArray> normal_array;
 	Ref<Texture2DArray> orm_array;
@@ -136,8 +135,8 @@ private:
 	void _on_layers_changed();
 	void _on_terrain_data_changed();
 
-	// sculpt()/paint_layer()/set_hole()/set_height_region()/set_control_region()
-	// already know exactly which region they touched and refresh precisely
+	// sculpt()/paint_layer()/set_hole()/set_height_region()/set_layer_weight_region()/
+	// set_hole_region() already know exactly which region they touched and refresh precisely
 	// that; _on_terrain_data_changed() is a coarse full-terrain rebuild meant
 	// only for edits made directly to a TerrainData resource (bypassing this
 	// node's own methods, e.g. from a script, or another Terrain3D sharing the
@@ -195,8 +194,11 @@ public:
 	PackedFloat32Array get_height_region(const Rect2i &p_region) const;
 	void set_height_region(const Rect2i &p_region, const PackedFloat32Array &p_heights, bool p_update_collision = true);
 
-	PackedColorArray get_control_region(const Rect2i &p_region) const;
-	void set_control_region(const Rect2i &p_region, const PackedColorArray &p_control);
+	PackedFloat32Array get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const;
+	void set_layer_weight_region(const Rect2i &p_region, int p_layer_index, const PackedFloat32Array &p_weights);
+
+	PackedByteArray get_hole_region(const Rect2i &p_region) const;
+	void set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes);
 
 	void update_collision();
 

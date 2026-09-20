@@ -38,18 +38,26 @@
 class Image;
 
 // The actual terrain "world" data for a Terrain3D: a square grid of height
-// samples (a heightmap) plus a per-vertex control map that drives texture
-// splatting. Both are stored as Images (a single-channel float heightmap and
-// an RGBA8 control map) so they can be resized, imported from/exported to
-// disk, and turned into GPU textures with the normal Image/Texture machinery.
+// samples (a heightmap) plus, for texture splatting, one continuous 0-1
+// "how much of this TerrainLayer shows here" weight per layer, plus a hole
+// flag. All are stored as Images (a single-channel float heightmap, one
+// RGBA8 image per 4 layers' weights, and a single-channel hole map) so they
+// can be resized, imported from/exported to disk, and turned into GPU
+// textures with the normal Image/Texture machinery.
 //
-// The control map's channels are: R = base TerrainLayer index, G = overlay
-// TerrainLayer index, B = blend factor between them (0 = pure base, 1 = pure
-// overlay), A = hole flag. A brush paints a new layer in by setting it as the
-// overlay and raising blend towards 1; once blend reaches 1 the overlay
-// becomes the new base (see Terrain3D::paint_layer), so any number of layers
-// can be painted over time while every vertex only ever blends between two of
-// them at once.
+// Every layer's weight is independent (not just a blend between two "slots"
+// like a typical 2-layer control map): Terrain3D's shader samples all of
+// them and mixes each layer's material in proportion to its share of the
+// total weight at that point, the same "weight-blended" model CryEngine and
+// UE4/5's Landscape layers use. This is what lets weights be sampled with
+// normal bilinear filtering (unlike an index-based control map, where
+// filtering would average together unrelated layer indices) for smooth
+// blending at any brush or geometry density, and lets any number of layers
+// overlap smoothly at a single point instead of only ever blending pairwise.
+// Painting a layer (see Terrain3D::paint_layer) raises its weight and
+// proportionally lowers every other layer's, keeping the total roughly
+// constant, so repeatedly painting one layer converges on it fully replacing
+// the others rather than capping out at an even split.
 class TerrainData : public Resource {
 	GDCLASS(TerrainData, Resource);
 
@@ -57,7 +65,8 @@ class TerrainData : public Resource {
 	float vertex_spacing = 1.0;
 
 	Ref<Image> heightmap; // FORMAT_RF, resolution x resolution, height in world units (Y).
-	Ref<Image> control_map; // FORMAT_RGBA8, resolution x resolution.
+	Vector<Ref<Image>> weight_maps; // WEIGHT_MAP_COUNT x (FORMAT_RGBA8, resolution x resolution).
+	Ref<Image> hole_map; // FORMAT_R8, resolution x resolution.
 
 	void _init_images();
 
@@ -73,6 +82,13 @@ protected:
 public:
 	static constexpr int MIN_RESOLUTION = 2;
 	static constexpr int MAX_RESOLUTION = 4097;
+
+	// Hard cap on distinct TerrainLayers (must match Terrain3D's shader:
+	// layer_uv_scales' fixed uniform array size). Weights for every layer up
+	// to this count are always allocated, packed 4 per RGBA8 weight map.
+	static constexpr int MAX_LAYERS = 32;
+	static constexpr int LAYERS_PER_WEIGHT_MAP = 4;
+	static constexpr int WEIGHT_MAP_COUNT = MAX_LAYERS / LAYERS_PER_WEIGHT_MAP;
 
 	void set_resolution(int p_resolution);
 	int get_resolution() const;
@@ -90,15 +106,20 @@ public:
 	PackedFloat32Array get_height_region(const Rect2i &p_region) const;
 	void set_height_region(const Rect2i &p_region, const PackedFloat32Array &p_heights);
 
-	// Control map accessor as a Color for convenience: r = base layer index /
-	// 255, g = overlay layer index / 255, b = blend, a = hole flag (0 or 1).
-	Color get_control(int p_x, int p_z) const;
-	void set_control(int p_x, int p_z, const Color &p_control);
+	// How much of TerrainLayer p_layer_index shows at this sample, from 0 to
+	// 1 (see the class description for how this combines with every other
+	// layer's weight at the same point).
+	float get_layer_weight(int p_x, int p_z, int p_layer_index) const;
+	void set_layer_weight(int p_x, int p_z, int p_layer_index, float p_weight);
 
-	PackedColorArray get_control_region(const Rect2i &p_region) const;
-	void set_control_region(const Rect2i &p_region, const PackedColorArray &p_control);
+	PackedFloat32Array get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const;
+	void set_layer_weight_region(const Rect2i &p_region, int p_layer_index, const PackedFloat32Array &p_weights);
 
 	bool is_hole(int p_x, int p_z) const;
+	void set_hole(int p_x, int p_z, bool p_hole);
+
+	PackedByteArray get_hole_region(const Rect2i &p_region) const;
+	void set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes);
 
 	Vector3 get_normal(int p_x, int p_z) const;
 
@@ -113,7 +134,8 @@ public:
 	// Plain C++ helpers for Terrain3D's mesh building and texture upload; not
 	// bound to ClassDB, like FoliagePainter3D's own editor-only helpers.
 	Ref<Image> get_heightmap_image() const;
-	Ref<Image> get_control_map_image() const;
+	Ref<Image> get_weight_map_image(int p_group) const;
+	Ref<Image> get_hole_map_image() const;
 
 	// A HeightMapShape3D-compatible column-major sample array (see
 	// HeightMapShape3D::set_map_data): same coordinate order, one real_t per
