@@ -136,6 +136,20 @@ private:
 	void _on_layers_changed();
 	void _on_terrain_data_changed();
 
+	// sculpt()/paint_layer()/set_hole()/set_height_region()/set_control_region()
+	// already know exactly which region they touched and refresh precisely
+	// that; _on_terrain_data_changed() is a coarse full-terrain rebuild meant
+	// only for edits made directly to a TerrainData resource (bypassing this
+	// node's own methods, e.g. from a script, or another Terrain3D sharing the
+	// same resource). Without suppressing it here, every self-driven edit
+	// would trigger both the precise update AND a full rebuild of every
+	// chunk/texture/collision sample, which is what made brush strokes slow.
+	// Disconnecting (rather than Object::set_block_signals(), which would
+	// silence the signal for every listener) leaves other nodes sharing this
+	// TerrainData properly notified.
+	void _disconnect_terrain_data_changed();
+	void _connect_terrain_data_changed();
+
 protected:
 	static void _bind_methods();
 	void _notification(int p_what);

@@ -645,14 +645,22 @@ void Terrain3D::_on_terrain_data_changed() {
 	update_collision();
 }
 
-void Terrain3D::set_terrain_data(const Ref<TerrainData> &p_data) {
+void Terrain3D::_disconnect_terrain_data_changed() {
 	if (terrain_data.is_valid()) {
 		terrain_data->disconnect_changed(callable_mp(this, &Terrain3D::_on_terrain_data_changed));
 	}
-	terrain_data = p_data;
+}
+
+void Terrain3D::_connect_terrain_data_changed() {
 	if (terrain_data.is_valid()) {
 		terrain_data->connect_changed(callable_mp(this, &Terrain3D::_on_terrain_data_changed));
 	}
+}
+
+void Terrain3D::set_terrain_data(const Ref<TerrainData> &p_data) {
+	_disconnect_terrain_data_changed();
+	terrain_data = p_data;
+	_connect_terrain_data_changed();
 
 	_rebuild_textures();
 	_rebuild_all_chunks();
@@ -840,7 +848,9 @@ void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_
 		}
 	}
 
+	_disconnect_terrain_data_changed();
 	terrain_data->set_height_region(region, heights);
+	_connect_terrain_data_changed();
 	_rebuild_chunks_in_region(region);
 	if (p_update_collision) {
 		update_collision();
@@ -904,7 +914,9 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 		}
 	}
 
+	_disconnect_terrain_data_changed();
 	terrain_data->set_control_region(region, control);
+	_connect_terrain_data_changed();
 	if (control_texture.is_valid()) {
 		control_texture->update(terrain_data->get_control_map_image());
 	}
@@ -946,7 +958,9 @@ void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p
 		}
 	}
 
+	_disconnect_terrain_data_changed();
 	terrain_data->set_control_region(region, control);
+	_connect_terrain_data_changed();
 	if (control_texture.is_valid()) {
 		control_texture->update(terrain_data->get_control_map_image());
 	}
@@ -963,7 +977,9 @@ PackedFloat32Array Terrain3D::get_height_region(const Rect2i &p_region) const {
 
 void Terrain3D::set_height_region(const Rect2i &p_region, const PackedFloat32Array &p_heights, bool p_update_collision) {
 	ERR_FAIL_COND(terrain_data.is_null());
+	_disconnect_terrain_data_changed();
 	terrain_data->set_height_region(p_region, p_heights);
+	_connect_terrain_data_changed();
 	_rebuild_chunks_in_region(p_region);
 	if (p_update_collision) {
 		update_collision();
@@ -977,7 +993,9 @@ PackedColorArray Terrain3D::get_control_region(const Rect2i &p_region) const {
 
 void Terrain3D::set_control_region(const Rect2i &p_region, const PackedColorArray &p_control) {
 	ERR_FAIL_COND(terrain_data.is_null());
+	_disconnect_terrain_data_changed();
 	terrain_data->set_control_region(p_region, p_control);
+	_connect_terrain_data_changed();
 	if (control_texture.is_valid()) {
 		control_texture->update(terrain_data->get_control_map_image());
 	}
