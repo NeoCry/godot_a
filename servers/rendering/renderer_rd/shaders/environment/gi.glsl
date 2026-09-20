@@ -494,6 +494,54 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 	}
 }
 
+// Short-range occlusion obtained by sphere-tracing a few steps through the SDFGI signed
+// distance field along the surface normal, as a cheap stand-in for contact shadows/AO.
+// Reuses the SDF cascades already resident for GI (no extra bindings), so it only darkens
+// contact areas within the SDFGI cascade covering the fragment; it does not affect direct
+// light or the shadow atlas.
+float sdfgi_trace_ao(vec3 world_pos, vec3 normal) {
+	uint cascade = 0xFFFFFFFF;
+	vec3 cell_pos;
+
+	for (uint i = 0; i < sdfgi.max_cascades; i++) {
+		cell_pos = (world_pos - sdfgi.cascades[i].position) * sdfgi.cascades[i].to_cell;
+		if (any(lessThan(cell_pos, vec3(0.0))) || any(greaterThanEqual(cell_pos, sdfgi.grid_size))) {
+			continue; //outside this cascade, try the next (coarser) one
+		}
+		cascade = i;
+		break;
+	}
+
+	if (cascade == 0xFFFFFFFF) {
+		return 1.0; //outside all SDFGI cascades, nothing to occlude against
+	}
+
+	const float AO_MAX_CELLS = 6.0; //keep the trace short (a handful of voxels) to stay cheap
+	const int AO_MAX_STEPS = 6;
+
+	vec3 pos_to_uvw = 1.0 / sdfgi.grid_size;
+	cell_pos += normal * 1.5; //bias off the surface voxel before marching
+
+	float occlusion = 1.0;
+	float advance = 0.0;
+
+	for (int i = 0; i < AO_MAX_STEPS && advance < AO_MAX_CELLS; i++) {
+		vec3 uvw = (cell_pos + normal * advance) * pos_to_uvw;
+		if (any(lessThan(uvw, vec3(0.0))) || any(greaterThanEqual(uvw, vec3(1.0)))) {
+			break; //left the cascade; not worth crossing over for such a short trace
+		}
+
+		float distance = textureLod(sampler3D(sdf_cascades[cascade], linear_sampler), uvw, 0.0).r * 255.0 - 1.1;
+		occlusion = min(occlusion, distance / AO_MAX_CELLS);
+		if (distance < 0.001) {
+			break;
+		}
+		advance += max(distance, 0.5);
+	}
+
+	return clamp(occlusion, 0.0, 1.0);
+}
+
 // Combines the 6 anisotropic mip chains of a probe, weighting each axis by how much the
 // cone direction points along it (dir*dir sums to 1 for a unit vector), and picking
 // whichever of the +/- textures matches the direction's sign on that axis.
@@ -686,6 +734,7 @@ void process_gi(ivec2 pos, vec3 vertex, inout vec4 ambient_light, inout vec4 ref
 
 #ifdef USE_SDFGI
 		sdfgi_process(vertex, normal, reflection, roughness, ambient_light, reflection_light);
+		ambient_light.rgb *= sdfgi_trace_ao(vertex, normal);
 #endif
 
 #ifdef USE_VOXEL_GI_INSTANCES
