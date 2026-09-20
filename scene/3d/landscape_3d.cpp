@@ -75,23 +75,38 @@ uniform sampler2DArray orm_array : filter_linear_mipmap_anisotropic, repeat_enab
 uniform sampler2DArray height_array : hint_default_white, filter_linear, repeat_enable;
 uniform float layer_uv_scales[32];
 // Per-layer scalar tweaks (see TerrainLayer): albedo_color multiplies the
-// albedo texture, roughness/ao_strength multiply the ORM texture's
-// respective channels, and specular is unrelated to any texture (there is
-// no dedicated specular channel to sample - it matches
+// albedo texture, roughness multiplies the ORM texture's roughness channel,
+// ao_strength fades the ORM texture's occlusion channel towards "no
+// occlusion" (not towards black - see accumulate_layer()), normal_strength
+// feeds Godot's own NORMAL_MAP_DEPTH, and specular is unrelated to any
+// texture (there is no dedicated specular channel to sample - it matches
 // BaseMaterial3D.metallic_specular).
 uniform vec4 layer_albedo_colors[32];
 uniform float layer_roughness[32];
 uniform float layer_specular[32];
 uniform float layer_ao_strength[32];
+uniform float layer_normal_strength[32];
 uniform float layer_heightmap_scale[32];
+uniform float layer_height_min[32];
+uniform float layer_height_max[32];
+// Whether each layer uses Parallax Occlusion Mapping / Triplanar Mapping
+// (see TerrainLayer.pom_enabled/triplanar_enabled) - both are per-layer,
+// not terrain-wide, since a texture that doesn't need either shouldn't pay
+// their cost, and applying POM uniformly regardless of the layer painted
+// at a given point makes no sense for layers with no real height data.
+// pom_enabled below is a cheap master switch on top of layer_pom_enabled:
+// both must be true. Mutually exclusive per layer with triplanar (see
+// accumulate_layer()), matching BaseMaterial3D's own heightmapping/
+// triplanar exclusivity.
+// 0.0/1.0, not bool: Godot's Variant system has no packed bool array type
+// to upload these as, so they're checked as > 0.5 instead.
+uniform float layer_pom_enabled[32];
+uniform float layer_triplanar[32];
+uniform float layer_triplanar_sharpness[32];
 uniform int layer_count = 0;
 uniform vec3 terrain_origin = vec3(0.0);
 uniform vec2 terrain_size = vec2(1.0, 1.0);
 
-// Parallax Occlusion Mapping (see Landscape3D.pom_enabled). Off by default;
-// a layer with no height_texture assigned reads a flat white height_array
-// entry (hint_default_white), which makes pom_offset() below a no-op for it
-// even while POM is on.
 uniform bool pom_enabled = false;
 uniform int pom_min_layers = 8;
 uniform int pom_max_layers = 32;
@@ -105,12 +120,17 @@ uniform int pom_max_layers = 32;
 uniform vec2 pom_flip = vec2(1.0, 1.0);
 uniform bool pom_self_shadow_enabled = true;
 uniform int pom_shadow_steps = 8;
+uniform float pom_shadow_strength = 1.0;
 // A fragment shader has no access to the scene's actual lights (only a
 // custom light() processor does, and writing one means reimplementing
 // Godot's whole PBR lighting response by hand) - this is a fixed direction
 // the self-shadow ray marches towards, meant to be pointed at whatever the
 // main light is, not something that tracks a moving light automatically.
 uniform vec3 pom_shadow_light_direction = vec3(0.5, 0.75, 0.3);
+// Fades pom depth towards flat past pom_fade_start, reaching fully flat at
+// pom_fade_end, to keep distant chunks from shimmering as they minify.
+uniform float pom_fade_start = 20.0;
+uniform float pom_fade_end = 60.0;
 
 varying vec3 world_pos;
 
@@ -118,106 +138,212 @@ void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
-// Steep parallax mapping with a linear-interpolation refinement step - the
-// same technique (and largely the same derivation) as Godot's own
-// BaseMaterial3D "Deep Parallax" heightmap feature. Returns the displaced
-// UV and writes the ray's depth there to r_depth (self-shadowing needs it
-// as its starting depth).
-vec2 pom_offset(int layer_idx, vec2 base_uv, vec3 view_dir_tangent, out float r_depth) {
-	float num_layers = mix(float(pom_max_layers), float(pom_min_layers), abs(view_dir_tangent.z));
-	float layer_depth = 1.0 / num_layers;
-	vec2 p = view_dir_tangent.xy * layer_heightmap_scale[layer_idx] * 0.01;
-	vec2 delta = p / num_layers;
-	vec2 ofs = base_uv;
-	float depth = 1.0 - texture(height_array, vec3(ofs, float(layer_idx))).r;
-	float current_depth = 0.0;
-	while (current_depth < depth) {
-		ofs -= delta;
-		depth = 1.0 - texture(height_array, vec3(ofs, float(layer_idx))).r;
-		current_depth += layer_depth;
-	}
-
-	vec2 prev_ofs = ofs + delta;
-	float after_depth = depth - current_depth;
-	float before_depth = (1.0 - texture(height_array, vec3(prev_ofs, float(layer_idx))).r) - current_depth + layer_depth;
-	float weight = after_depth / (after_depth - before_depth);
-	r_depth = current_depth;
-	return mix(ofs, prev_ofs, weight);
+// Remaps a layer's raw height sample from [layer_height_min, ...max] to
+// [0, 1] (for a height texture that doesn't already use its full range).
+// textureLod(..., 0.0) rather than texture(): pom_offset()/pom_self_shadow()
+// call this from inside a data-dependent loop, where automatic mip/LOD
+// selection (which relies on screen-space derivatives computed in *uniform*
+// control flow) is undefined - an explicit LOD sidesteps that entirely.
+// Godot's own BaseMaterial3D heightmap code has this same gap; this shader
+// closes it since a terrain's height field is sampled at a much higher rate.
+float get_layer_height(int layer_idx, vec2 uv) {
+	float h = textureLod(height_array, vec3(uv, float(layer_idx)), 0.0).r;
+	float lo = layer_height_min[layer_idx];
+	float hi = layer_height_max[layer_idx];
+	return clamp((h - lo) / max(hi - lo, 0.0001), 0.0, 1.0);
 }
 
-// Soft self-shadowing: marches from the parallaxed point towards the light
-// through the same height field, and darkens the result wherever a nearby
-// point along that path sits above the unoccluded ray - i.e. would block
-// the light. See Landscape3D.pom_shadow_light_direction for why the light
+// Steep parallax mapping with a linear-interpolation refinement between the
+// two straddling samples - what makes this Parallax *Occlusion* Mapping
+// rather than plain steep parallax. Returns the visible point's height
+// (self-shadowing needs it as its starting depth) and writes the displaced
+// UV to r_uv. h_scale is layer_heightmap_scale[layer_idx] already adjusted
+// for distance fade (see accumulate_layer()).
+float pom_offset(int layer_idx, vec2 uv, vec3 view_dir_tangent, float h_scale, out vec2 r_uv) {
+	if (h_scale <= 0.0) {
+		r_uv = uv;
+		return get_layer_height(layer_idx, uv);
+	}
+
+	// Fewer steps needed at a glancing angle without a visible quality
+	// loss (there's less parallax to resolve), which is where most of a
+	// terrain's surface faces at typical camera angles.
+	float layer_count_f = mix(float(pom_max_layers), float(pom_min_layers), clamp(view_dir_tangent.z, 0.0, 1.0));
+	float layer_h = 1.0 / layer_count_f;
+
+	// max() avoids dividing by ~0 at a near-grazing angle and doubles as
+	// offset limiting there (a full 1/z ray length would otherwise sweep
+	// across an unreasonable amount of UV space in one step).
+	vec2 ray_uv = view_dir_tangent.xy / max(view_dir_tangent.z, 0.02);
+
+	// The ray starts at the top of the height volume (height = 1, i.e. the
+	// highest point layer_heightmap_scale allows) and steps down/backward
+	// until it crosses the actual height field.
+	vec2 uv_cur = uv + ray_uv * h_scale;
+	vec2 delta_uv = ray_uv * (h_scale * layer_h);
+	vec2 uv_prev = uv_cur;
+	float h_ray = 1.0;
+	float h_map = get_layer_height(layer_idx, uv_cur);
+	float h_map_prev = h_map;
+
+	int guard = 0;
+	while (h_map < h_ray && guard < 256) {
+		uv_prev = uv_cur;
+		h_map_prev = h_map;
+		uv_cur -= delta_uv;
+		h_ray -= layer_h;
+		h_map = get_layer_height(layer_idx, uv_cur);
+		guard += 1;
+	}
+
+	// The ray crossed the height field somewhere between the previous and
+	// current samples; f_prev/f_cur are the ray's signed height above the
+	// surface at each (positive before crossing, negative/zero after), so
+	// their zero-crossing pinpoints where the two actually meet.
+	float h_ray_prev = h_ray + layer_h;
+	float f_prev = h_ray_prev - h_map_prev;
+	float f_cur = h_ray - h_map;
+	float t = clamp(f_prev / max(f_prev - f_cur, 0.000001), 0.0, 1.0);
+
+	r_uv = mix(uv_prev, uv_cur, t);
+	return mix(h_map_prev, h_map, t);
+}
+
+// Soft self-shadowing with penumbra: marches from the visible point towards
+// the light through the same height field, darkening the result wherever
+// nearby height detail pokes up above the unoccluded ray - i.e. would
+// block the light - weighted so a thicker/closer occluder casts a harder
+// shadow. See Landscape3D.pom_shadow_light_direction for why the light
 // direction is a fixed uniform rather than an actual scene light.
-float pom_self_shadow(int layer_idx, vec2 uv, float initial_depth, vec3 light_dir_tangent) {
-	if (light_dir_tangent.z <= 0.05) {
-		// The light is nearly edge-on (or below) the local tangent plane: a
-		// per-texel march can't say anything useful this close to grazing
-		// incidence, so leave shading to the normal map's own slope instead
-		// of guessing.
+float pom_self_shadow(int layer_idx, vec2 uv, float h_start, vec3 light_dir_tangent, float h_scale) {
+	if (light_dir_tangent.z <= 0.0) {
+		// The light is at or below the local tangent plane: ordinary
+		// diffuse shading (from the slope itself) will already darken this
+		// about as much as it should be, so there's nothing for a per-texel
+		// march to usefully add here.
 		return 1.0;
 	}
 
-	float num_steps = float(pom_shadow_steps);
-	float layer_depth = initial_depth / num_steps;
-	// Same UV-per-depth scale as pom_offset()'s main ray (using the light
-	// direction in place of the view direction), so a step here covers the
-	// same ground a step of the main ray would.
-	vec2 delta = light_dir_tangent.xy * layer_heightmap_scale[layer_idx] * 0.01 / num_steps;
-	float current_depth = initial_depth - layer_depth;
-	vec2 sample_uv = uv + delta;
-	float shadow = 0.0;
-
-	for (int i = 0; i < pom_shadow_steps; i++) {
-		if (current_depth < 0.0) {
-			break;
-		}
-		float sampled_depth = 1.0 - texture(height_array, vec3(sample_uv, float(layer_idx))).r;
-		if (sampled_depth < current_depth) {
-			float blocked = (current_depth - sampled_depth) * (1.0 - float(i) / num_steps);
-			shadow = max(shadow, blocked);
-		}
-		sample_uv += delta;
-		current_depth -= layer_depth;
+	float layer_h = (1.0 - h_start) / float(pom_shadow_steps);
+	if (layer_h <= 0.0) {
+		return 1.0;
 	}
 
-	return clamp(1.0 - shadow, 0.0, 1.0);
+	vec2 ray_uv = light_dir_tangent.xy / max(light_dir_tangent.z, 0.1);
+	vec2 delta_uv = ray_uv * (h_scale * layer_h);
+
+	vec2 uv_l = uv;
+	float h_ray = h_start;
+	float shadow_factor = 1.0;
+
+	for (int i = 0; i < pom_shadow_steps; i++) {
+		uv_l += delta_uv;
+		h_ray += layer_h;
+		float h_map = get_layer_height(layer_idx, uv_l);
+		if (h_map > h_ray) {
+			// A blocker roughly 2 steps thick (in height) reads as a full
+			// shadow; thinner detail gives a softer penumbra.
+			float occ = clamp((h_map - h_ray) / (layer_h * 2.0), 0.0, 1.0) * pom_shadow_strength;
+			shadow_factor = min(shadow_factor, 1.0 - occ);
+			if (shadow_factor < 0.001) {
+				break;
+			}
+		}
+	}
+	return shadow_factor;
+}
+
+// Triplanar blend weights from a world-space normal: sharpened, normalized
+// absolute components, the same formula as BaseMaterial3D's own triplanar
+// mapping (see uv1_power_normal in scene/resources/material.cpp). Deliberately
+// using the *world*-space normal rather than the view-space NORMAL
+// BaseMaterial3D's default (non-"world triplanar") mode uses - that variant's
+// blend visibly shifts as the camera orbits a static object, which would be
+// constantly obvious on a terrain the camera moves around continuously.
+vec3 triplanar_weights(vec3 world_normal, float sharpness) {
+	vec3 w = pow(abs(world_normal), vec3(sharpness));
+	return w / max(dot(w, vec3(1.0)), 0.00001);
+}
+
+// Same axis convention (and Y-flip) as BaseMaterial3D's triplanar_texture().
+vec4 sample_triplanar(sampler2DArray tex_array, int layer_idx, vec3 tp_pos, vec3 weights) {
+	vec4 samp = vec4(0.0);
+	samp += texture(tex_array, vec3(tp_pos.xy, float(layer_idx))) * weights.z;
+	samp += texture(tex_array, vec3(tp_pos.xz, float(layer_idx))) * weights.y;
+	samp += texture(tex_array, vec3(tp_pos.zy * vec2(-1.0, 1.0), float(layer_idx))) * weights.x;
+	return samp;
 }
 
 // Accumulates one layer's contribution, weighted, into the running sums -
 // skipped entirely for a layer with (near-)zero weight here, so a terrain
-// only pays for the layers actually present at a given point.
-void accumulate_layer(int layer_idx, float w, vec2 world_xz, vec3 view_dir_tangent, vec3 light_dir_tangent, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float weight_sum) {
+// only pays for the layers actually present at a given point (and, within
+// that, only for whichever of triplanar/POM/self-shadow that layer itself
+// has turned on).
+//
+// view_dir_tangent/light_dir_tangent/world_normal/pom_fade are computed once
+// in fragment() and passed in rather than derived here from VERTEX/NORMAL/
+// INV_VIEW_MATRIX directly: Godot's shading language only exposes those
+// built-ins inside the literal body of vertex()/fragment()/light() itself,
+// not inside a shader's own helper functions (only uniforms and varyings -
+// like world_pos below - are visible everywhere).
+void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_dir_tangent, vec3 world_normal, float pom_fade, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float normal_strength_sum, inout float weight_sum) {
 	if (w <= 0.001) {
 		return;
 	}
-	vec2 uv = world_xz / layer_uv_scales[layer_idx];
-	float shadow = 1.0;
-	if (pom_enabled) {
-		float depth = 0.0;
-		uv = pom_offset(layer_idx, uv, view_dir_tangent, depth);
-		if (pom_self_shadow_enabled) {
-			shadow = pom_self_shadow(layer_idx, uv, depth, light_dir_tangent);
+
+	vec3 albedo;
+	vec3 normal_tex;
+	vec3 orm;
+
+	if (layer_triplanar[layer_idx] > 0.5) {
+		vec3 tp_pos = (world_pos * vec3(1.0, -1.0, 1.0)) / layer_uv_scales[layer_idx];
+		vec3 tp_weights = triplanar_weights(world_normal, layer_triplanar_sharpness[layer_idx]);
+		albedo = sample_triplanar(albedo_array, layer_idx, tp_pos, tp_weights).rgb;
+		normal_tex = sample_triplanar(normal_array, layer_idx, tp_pos, tp_weights).rgb;
+		orm = sample_triplanar(orm_array, layer_idx, tp_pos, tp_weights).rgb;
+	} else {
+		vec2 uv = world_pos.xz / layer_uv_scales[layer_idx];
+		if (pom_enabled && layer_pom_enabled[layer_idx] > 0.5) {
+			float h_scale = layer_heightmap_scale[layer_idx] * pom_fade;
+			vec2 uv_hit = uv;
+			float h_hit = pom_offset(layer_idx, uv, view_dir_tangent, h_scale, uv_hit);
+			uv = uv_hit;
+			float shadow = 1.0;
+			if (pom_self_shadow_enabled) {
+				shadow = pom_self_shadow(layer_idx, uv, h_hit, light_dir_tangent, h_scale);
+			}
+			albedo = texture(albedo_array, vec3(uv, float(layer_idx))).rgb * shadow;
+		} else {
+			albedo = texture(albedo_array, vec3(uv, float(layer_idx))).rgb;
 		}
+		normal_tex = texture(normal_array, vec3(uv, float(layer_idx))).rgb;
+		orm = texture(orm_array, vec3(uv, float(layer_idx))).rgb;
 	}
-	vec3 albedo = texture(albedo_array, vec3(uv, float(layer_idx))).rgb * layer_albedo_colors[layer_idx].rgb * shadow;
-	vec3 orm = texture(orm_array, vec3(uv, float(layer_idx))).rgb;
-	orm.r = clamp(orm.r * layer_ao_strength[layer_idx] * shadow, 0.0, 1.0);
+
+	albedo *= layer_albedo_colors[layer_idx].rgb;
+	// mix(), not multiply: ao_strength = 0 should mean "no occlusion" (1.0,
+	// fully lit), not "full occlusion" (0.0, black) - a multiply sends low
+	// ao_strength values towards black instead of fading the effect out.
+	orm.r = mix(1.0, orm.r, layer_ao_strength[layer_idx]);
 	orm.g = clamp(orm.g * layer_roughness[layer_idx], 0.0, 1.0);
+
 	albedo_sum += albedo * w;
-	normal_sum += texture(normal_array, vec3(uv, float(layer_idx))).rgb * w;
+	normal_sum += normal_tex * w;
 	orm_sum += orm * w;
 	specular_sum += layer_specular[layer_idx] * w;
+	normal_strength_sum += layer_normal_strength[layer_idx] * w;
 	weight_sum += w;
 }
 
 void fragment() {
 	vec2 cm_uv = (world_pos.xz - terrain_origin.xz) / terrain_size;
 
-	// Shared tangent-space directions for every layer's POM this fragment:
-	// the same TBN construction (and the same mikktspace-style BINORMAL
-	// negation) Godot's own heightmap shader code uses.
+	// Shared per-fragment values every layer's accumulate_layer() call needs
+	// but can't compute itself (see its own comment for why): tangent-space
+	// directions for POM (the same TBN construction, and the same
+	// mikktspace-style BINORMAL negation, Godot's own heightmap shader code
+	// uses), a world-space normal for triplanar's blend weights, and how
+	// much pom_fade_start/end fades this fragment's parallax depth.
 	vec3 view_dir_tangent = vec3(0.0);
 	vec3 light_dir_tangent = vec3(0.0);
 	if (pom_enabled) {
@@ -228,11 +354,17 @@ void fragment() {
 			light_dir_tangent = normalize(light_dir_view * tbn);
 		}
 	}
+	vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	float pom_fade = 1.0;
+	if (pom_fade_end > pom_fade_start) {
+		pom_fade = 1.0 - smoothstep(pom_fade_start, pom_fade_end, length(VERTEX));
+	}
 
 	vec3 albedo_sum = vec3(0.0);
 	vec3 normal_sum = vec3(0.0);
 	vec3 orm_sum = vec3(0.0);
 	float specular_sum = 0.0;
+	float normal_strength_sum = 0.0;
 	float weight_sum = 0.0;
 
 	// Every layer's weight lives in one of ceil(layer_count / 4) array
@@ -242,16 +374,16 @@ void fragment() {
 		vec4 w = texture(weight_array, vec3(cm_uv, float(g)));
 		int base_layer = g * 4;
 		if (base_layer < layer_count) {
-			accumulate_layer(base_layer, w.r, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer, w.r, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 		if (base_layer + 1 < layer_count) {
-			accumulate_layer(base_layer + 1, w.g, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer + 1, w.g, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 		if (base_layer + 2 < layer_count) {
-			accumulate_layer(base_layer + 2, w.b, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer + 2, w.b, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 		if (base_layer + 3 < layer_count) {
-			accumulate_layer(base_layer + 3, w.a, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer + 3, w.a, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 	}
 
@@ -262,7 +394,7 @@ void fragment() {
 	float inv_weight = weight_sum > 0.001 ? 1.0 / weight_sum : 0.0;
 	ALBEDO = albedo_sum * inv_weight;
 	NORMAL_MAP = normal_sum * inv_weight;
-	NORMAL_MAP_DEPTH = 1.0;
+	NORMAL_MAP_DEPTH = normal_strength_sum * inv_weight;
 	vec3 orm = orm_sum * inv_weight;
 	AO = orm.r;
 	ROUGHNESS = orm.g;
@@ -325,8 +457,17 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_pom_shadow_steps", "steps"), &Landscape3D::set_pom_shadow_steps);
 	ClassDB::bind_method(D_METHOD("get_pom_shadow_steps"), &Landscape3D::get_pom_shadow_steps);
 
+	ClassDB::bind_method(D_METHOD("set_pom_shadow_strength", "strength"), &Landscape3D::set_pom_shadow_strength);
+	ClassDB::bind_method(D_METHOD("get_pom_shadow_strength"), &Landscape3D::get_pom_shadow_strength);
+
 	ClassDB::bind_method(D_METHOD("set_pom_shadow_light_direction", "direction"), &Landscape3D::set_pom_shadow_light_direction);
 	ClassDB::bind_method(D_METHOD("get_pom_shadow_light_direction"), &Landscape3D::get_pom_shadow_light_direction);
+
+	ClassDB::bind_method(D_METHOD("set_pom_fade_start", "distance"), &Landscape3D::set_pom_fade_start);
+	ClassDB::bind_method(D_METHOD("get_pom_fade_start"), &Landscape3D::get_pom_fade_start);
+
+	ClassDB::bind_method(D_METHOD("set_pom_fade_end", "distance"), &Landscape3D::set_pom_fade_end);
+	ClassDB::bind_method(D_METHOD("get_pom_fade_end"), &Landscape3D::get_pom_fade_end);
 
 	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(0.0f), DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index"), &Landscape3D::paint_layer);
@@ -363,7 +504,10 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_flip_binormal"), "set_pom_flip_binormal", "get_pom_flip_binormal");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_self_shadow_enabled"), "set_pom_self_shadow_enabled", "is_pom_self_shadow_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_shadow_steps", PROPERTY_HINT_RANGE, "1,32,1"), "set_pom_shadow_steps", "get_pom_shadow_steps");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pom_shadow_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_pom_shadow_strength", "get_pom_shadow_strength");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "pom_shadow_light_direction"), "set_pom_shadow_light_direction", "get_pom_shadow_light_direction");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pom_fade_start", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), "set_pom_fade_start", "get_pom_fade_start");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pom_fade_end", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), "set_pom_fade_end", "get_pom_fade_end");
 
 	ADD_GROUP("Collision", "collision_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
@@ -471,15 +615,37 @@ void Landscape3D::_rebuild_textures() {
 	specular_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array ao_strength_values;
 	ao_strength_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array normal_strength_values;
+	normal_strength_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array heightmap_scale_values;
 	heightmap_scale_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array height_min_values;
+	height_min_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array height_max_values;
+	height_max_values.resize(TerrainData::MAX_LAYERS);
+	// Godot's Variant system has no packed bool array type, so these two
+	// per-layer switches are encoded as 0.0/1.0 (checked as > 0.5 in the
+	// shader) - the same trick every other per-layer array here already
+	// relies on being a plain PackedFloat32Array upload.
+	PackedFloat32Array pom_enabled_values;
+	pom_enabled_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array triplanar_values;
+	triplanar_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array triplanar_sharpness_values;
+	triplanar_sharpness_values.resize(TerrainData::MAX_LAYERS);
 	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		uv_scales.write[i] = 1.0f;
 		albedo_colors.write[i] = Color(1, 1, 1);
 		roughness_values.write[i] = 1.0f;
 		specular_values.write[i] = 0.5f;
 		ao_strength_values.write[i] = 1.0f;
+		normal_strength_values.write[i] = 1.0f;
 		heightmap_scale_values.write[i] = 5.0f;
+		height_min_values.write[i] = 0.0f;
+		height_max_values.write[i] = 1.0f;
+		pom_enabled_values.write[i] = 0.0f;
+		triplanar_values.write[i] = 0.0f;
+		triplanar_sharpness_values.write[i] = 1.0f;
 	}
 
 	auto normalize_image = [](const Ref<Image> &p_src) -> Ref<Image> {
@@ -564,7 +730,13 @@ void Landscape3D::_rebuild_textures() {
 			roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
 			specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
 			ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
+			normal_strength_values.write[i] = layer.is_valid() ? layer->get_normal_strength() : 1.0f;
 			heightmap_scale_values.write[i] = layer.is_valid() ? layer->get_heightmap_scale() : 5.0f;
+			height_min_values.write[i] = layer.is_valid() ? layer->get_height_min() : 0.0f;
+			height_max_values.write[i] = layer.is_valid() ? layer->get_height_max() : 1.0f;
+			pom_enabled_values.write[i] = (layer.is_valid() && layer->is_pom_enabled()) ? 1.0f : 0.0f;
+			triplanar_values.write[i] = (layer.is_valid() && layer->is_triplanar_enabled()) ? 1.0f : 0.0f;
+			triplanar_sharpness_values.write[i] = layer.is_valid() ? layer->get_triplanar_sharpness() : 1.0f;
 		}
 	}
 
@@ -587,7 +759,13 @@ void Landscape3D::_rebuild_textures() {
 	material->set_shader_parameter("layer_roughness", roughness_values);
 	material->set_shader_parameter("layer_specular", specular_values);
 	material->set_shader_parameter("layer_ao_strength", ao_strength_values);
+	material->set_shader_parameter("layer_normal_strength", normal_strength_values);
 	material->set_shader_parameter("layer_heightmap_scale", heightmap_scale_values);
+	material->set_shader_parameter("layer_height_min", height_min_values);
+	material->set_shader_parameter("layer_height_max", height_max_values);
+	material->set_shader_parameter("layer_pom_enabled", pom_enabled_values);
+	material->set_shader_parameter("layer_triplanar", triplanar_values);
+	material->set_shader_parameter("layer_triplanar_sharpness", triplanar_sharpness_values);
 	material->set_shader_parameter("layer_count", layer_count);
 	material->set_shader_parameter("terrain_size", Vector2(terrain_data->get_size(), terrain_data->get_size()));
 	material->set_shader_parameter("terrain_origin", _get_safe_global_transform().origin);
@@ -597,7 +775,10 @@ void Landscape3D::_rebuild_textures() {
 	material->set_shader_parameter("pom_flip", Vector2(pom_flip_tangent ? -1.0f : 1.0f, pom_flip_binormal ? -1.0f : 1.0f));
 	material->set_shader_parameter("pom_self_shadow_enabled", pom_self_shadow_enabled);
 	material->set_shader_parameter("pom_shadow_steps", pom_shadow_steps);
+	material->set_shader_parameter("pom_shadow_strength", pom_shadow_strength);
 	material->set_shader_parameter("pom_shadow_light_direction", pom_shadow_light_direction);
+	material->set_shader_parameter("pom_fade_start", pom_fade_start);
+	material->set_shader_parameter("pom_fade_end", pom_fade_end);
 
 	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 		if (kv.value.mesh.is_valid()) {
@@ -1117,6 +1298,15 @@ int Landscape3D::get_pom_shadow_steps() const {
 	return pom_shadow_steps;
 }
 
+void Landscape3D::set_pom_shadow_strength(float p_strength) {
+	pom_shadow_strength = CLAMP(p_strength, 0.0f, 1.0f);
+	_rebuild_textures();
+}
+
+float Landscape3D::get_pom_shadow_strength() const {
+	return pom_shadow_strength;
+}
+
 void Landscape3D::set_pom_shadow_light_direction(const Vector3 &p_direction) {
 	pom_shadow_light_direction = p_direction;
 	_rebuild_textures();
@@ -1124,6 +1314,24 @@ void Landscape3D::set_pom_shadow_light_direction(const Vector3 &p_direction) {
 
 Vector3 Landscape3D::get_pom_shadow_light_direction() const {
 	return pom_shadow_light_direction;
+}
+
+void Landscape3D::set_pom_fade_start(float p_distance) {
+	pom_fade_start = MAX(p_distance, 0.0f);
+	_rebuild_textures();
+}
+
+float Landscape3D::get_pom_fade_start() const {
+	return pom_fade_start;
+}
+
+void Landscape3D::set_pom_fade_end(float p_distance) {
+	pom_fade_end = MAX(p_distance, 0.0f);
+	_rebuild_textures();
+}
+
+float Landscape3D::get_pom_fade_end() const {
+	return pom_fade_end;
 }
 
 void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height, bool p_update_collision) {

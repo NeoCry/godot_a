@@ -124,7 +124,13 @@ private:
 	// moving DirectionalLight3D automatically.
 	bool pom_self_shadow_enabled = true;
 	int pom_shadow_steps = 8;
+	float pom_shadow_strength = 1.0;
 	Vector3 pom_shadow_light_direction = Vector3(0.5, 0.75, 0.3);
+	// Fades pom_enabled's depth towards flat with distance from the camera,
+	// so a distant chunk's parallax doesn't shimmer/alias as it minifies;
+	// set pom_fade_end <= pom_fade_start to disable.
+	float pom_fade_start = 20.0;
+	float pom_fade_end = 60.0;
 
 	GeometryInstance3D::ShadowCastingSetting cast_shadow = GeometryInstance3D::SHADOW_CASTING_SETTING_ON;
 	GeometryInstance3D::GIMode gi_mode = GeometryInstance3D::GI_MODE_STATIC;
@@ -231,8 +237,17 @@ public:
 	void set_pom_shadow_steps(int p_steps);
 	int get_pom_shadow_steps() const;
 
+	void set_pom_shadow_strength(float p_strength);
+	float get_pom_shadow_strength() const;
+
 	void set_pom_shadow_light_direction(const Vector3 &p_direction);
 	Vector3 get_pom_shadow_light_direction() const;
+
+	void set_pom_fade_start(float p_distance);
+	float get_pom_fade_start() const;
+
+	void set_pom_fade_end(float p_distance);
+	float get_pom_fade_end() const;
 
 	// Sculpting/painting API. Positions are in this node's local space
 	// (XZ plane, Y up). Also directly usable at runtime (e.g. for explosion
