@@ -304,7 +304,14 @@ void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_
 	} else {
 		vec2 uv = world_pos.xz / layer_uv_scales[layer_idx];
 		if (pom_enabled && layer_pom_enabled[layer_idx] > 0.5) {
-			float h_scale = layer_heightmap_scale[layer_idx] * pom_fade;
+			// * 0.01: layer_heightmap_scale is documented (and exposed in the
+			// inspector, range -16..16) as a small BaseMaterial3D.heightmap_scale-
+			// alike, not a raw UV-space displacement - without this, ray_uv
+			// (which can exceed 1.0 at oblique view angles, since it divides by
+			// view_dir_tangent.z) turns a default of 5.0 into a multi-tile UV
+			// jump per fragment, scrambling the texture into visual mush
+			// instead of adding a plausible amount of depth.
+			float h_scale = layer_heightmap_scale[layer_idx] * 0.01 * pom_fade;
 			vec2 uv_hit = uv;
 			float h_hit = pom_offset(layer_idx, uv, view_dir_tangent, h_scale, uv_hit);
 			uv = uv_hit;
