@@ -30,6 +30,8 @@
 
 #pragma once
 
+// Ambient occlusion (GTAO) lives in its own dedicated effects/gtao.h/.cpp, not here — see that file for why.
+
 #include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_contact_shadows.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_reflection.glsl.gen.h"
@@ -38,9 +40,6 @@
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_reflection_hiz.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_reflection_resolve.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssao.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssao_blur.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssao_interleave.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssil.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssil_blur.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssil_importance_map.glsl.gen.h"
@@ -50,7 +49,6 @@
 #define RB_SCOPE_SSLF SNAME("rb_sslf")
 #define RB_SCOPE_SSDS SNAME("rb_ssds")
 #define RB_SCOPE_SSIL SNAME("rb_ssil")
-#define RB_SCOPE_SSAO SNAME("rb_ssao")
 #define RB_SCOPE_SSR SNAME("rb_ssr")
 #define RB_SCOPE_SSCS SNAME("rb_sscs")
 
@@ -118,29 +116,6 @@ public:
 	void ssil_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, SSILRenderBuffers &p_ssil_buffers, const SSILSettings &p_settings);
 	void screen_space_indirect_lighting(Ref<RenderSceneBuffersRD> p_render_buffers, SSILRenderBuffers &p_ssil_buffers, uint32_t p_view, RID p_normal_buffer, const Projection &p_projection, const Projection &p_last_projection, const SSILSettings &p_settings);
 
-	/* SSAO */
-	void ssao_set_quality(RSE::EnvironmentSSAOQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to);
-
-	struct SSAORenderBuffers {
-		bool half_size = false;
-		int buffer_width;
-		int buffer_height;
-	};
-
-	struct SSAOSettings {
-		float radius = 1.0;
-		float intensity = 2.0;
-		float power = 1.5;
-		float detail = 0.5;
-		float horizon = 0.06;
-		float sharpness = 0.98;
-
-		Size2i full_screen_size;
-	};
-
-	void ssao_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, SSAORenderBuffers &p_ssao_buffers, const SSAOSettings &p_settings);
-	void generate_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, SSAORenderBuffers &p_ssao_buffers, uint32_t p_view, RID p_normal_buffer, const Projection &p_projection, const SSAOSettings &p_settings);
-
 	/* Screen Space Reflection */
 	void ssr_set_half_size(bool p_half_size);
 
@@ -186,13 +161,6 @@ public:
 
 private:
 	/* Settings */
-
-	RSE::EnvironmentSSAOQuality ssao_quality = RSE::ENV_SSAO_QUALITY_MEDIUM;
-	bool ssao_half_size = false;
-	float ssao_adaptive_target = 0.5;
-	int ssao_blur_passes = 2;
-	float ssao_fadeout_from = 50.0;
-	float ssao_fadeout_to = 300.0;
 
 	RSE::EnvironmentSSILQuality ssil_quality = RSE::ENV_SSIL_QUALITY_MEDIUM;
 	bool ssil_half_size = false;
@@ -346,83 +314,6 @@ private:
 	} ssil;
 
 	void gather_ssil(RD::ComputeListID p_compute_list, const RID *p_ssil_slices, const RID *p_edges_slices, const SSILSettings &p_settings, bool p_adaptive_base_pass, RID p_gather_uniform_set, RID p_importance_map_uniform_set, RID p_projection_uniform_set);
-
-	/* SSAO */
-
-	enum SSAOMode {
-		SSAO_GATHER,
-		SSAO_BLUR_PASS,
-		SSAO_BLUR_PASS_SMART,
-		SSAO_BLUR_PASS_WIDE,
-		SSAO_INTERLEAVE,
-		SSAO_INTERLEAVE_SMART,
-		SSAO_INTERLEAVE_HALF,
-		SSAO_MAX
-	};
-
-	struct SSAOGatherPushConstant {
-		int32_t screen_size[2];
-		int pass;
-		int quality;
-
-		float half_screen_pixel_size[2];
-		int size_multiplier;
-		float detail_intensity;
-
-		float NDC_to_view_mul[2];
-		float NDC_to_view_add[2];
-
-		float pad[2];
-		float half_screen_pixel_size_x025[2];
-
-		float radius;
-		float intensity;
-		float shadow_power;
-		float shadow_clamp;
-
-		float fade_out_mul;
-		float fade_out_add;
-		float horizon_bias;
-		float inv_radius_near_limit;
-
-		uint32_t is_orthogonal;
-		float pad2;
-		float pad3;
-		float pad4;
-
-		int32_t pass_coord_offset[2];
-		float pass_uv_offset[2];
-	};
-
-	struct SSAOBlurPushConstant {
-		float edge_sharpness;
-		float pad;
-		float half_screen_pixel_size[2];
-	};
-
-	struct SSAOInterleavePushConstant {
-		float inv_sharpness;
-		uint32_t size_modifier;
-		float pixel_size[2];
-	};
-
-	struct SSAO {
-		SSAOGatherPushConstant gather_push_constant;
-		SsaoShaderRD gather_shader;
-		RID gather_shader_version;
-
-		SSAOBlurPushConstant blur_push_constant;
-		SsaoBlurShaderRD blur_shader;
-		RID blur_shader_version;
-
-		SSAOInterleavePushConstant interleave_push_constant;
-		SsaoInterleaveShaderRD interleave_shader;
-		RID interleave_shader_version;
-
-		PipelineDeferredRD pipelines[SSAO_MAX];
-	} ssao;
-
-	void gather_ssao(RD::ComputeListID p_compute_list, const RID *p_ao_slices, const SSAOSettings &p_settings, RID p_gather_uniform_set);
 
 	/* Screen Space Reflection */
 

@@ -1365,20 +1365,19 @@ public:
 	PASS1(environment_set_ssr_half_size, bool)
 	PASS1(environment_set_ssr_roughness_quality, RSE::EnvironmentSSRRoughnessQuality)
 
-	// SSAO
-	PASS10(environment_set_ssao, RID, bool, float, float, float, float, float, float, float, float)
+	// GTAO
+	PASS9(environment_set_gtao, RID, bool, float, float, float, float, float, float, float)
 
-	PASS1RC(bool, environment_get_ssao_enabled, RID)
-	PASS1RC(float, environment_get_ssao_radius, RID)
-	PASS1RC(float, environment_get_ssao_intensity, RID)
-	PASS1RC(float, environment_get_ssao_power, RID)
-	PASS1RC(float, environment_get_ssao_detail, RID)
-	PASS1RC(float, environment_get_ssao_horizon, RID)
-	PASS1RC(float, environment_get_ssao_sharpness, RID)
-	PASS1RC(float, environment_get_ssao_direct_light_affect, RID)
-	PASS1RC(float, environment_get_ssao_ao_channel_affect, RID)
+	PASS1RC(bool, environment_get_gtao_enabled, RID)
+	PASS1RC(float, environment_get_gtao_radius, RID)
+	PASS1RC(float, environment_get_gtao_intensity, RID)
+	PASS1RC(float, environment_get_gtao_power, RID)
+	PASS1RC(float, environment_get_gtao_horizon, RID)
+	PASS1RC(float, environment_get_gtao_sharpness, RID)
+	PASS1RC(float, environment_get_gtao_direct_light_affect, RID)
+	PASS1RC(float, environment_get_gtao_ao_channel_affect, RID)
 
-	PASS6(environment_set_ssao_quality, RSE::EnvironmentSSAOQuality, bool, float, int, float, float)
+	PASS4(environment_set_gtao_quality, RSE::EnvironmentGTAOQuality, bool, float, float)
 
 	// SSCS (screen space contact shadows)
 	PASS4(environment_set_sscs, RID, bool, RSE::ScreenSpaceContactShadowsLength, float)

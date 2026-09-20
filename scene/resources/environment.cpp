@@ -315,101 +315,91 @@ void Environment::_update_ssr() {
 			ssr_depth_tolerance);
 }
 
-// SSAO
+// GTAO
 
-void Environment::set_ssao_enabled(bool p_enabled) {
-	ssao_enabled = p_enabled;
-	_update_ssao();
+void Environment::set_gtao_enabled(bool p_enabled) {
+	gtao_enabled = p_enabled;
+	_update_gtao();
 }
 
-bool Environment::is_ssao_enabled() const {
-	return ssao_enabled;
+bool Environment::is_gtao_enabled() const {
+	return gtao_enabled;
 }
 
-void Environment::set_ssao_radius(float p_radius) {
-	ssao_radius = p_radius;
-	_update_ssao();
+void Environment::set_gtao_radius(float p_radius) {
+	gtao_radius = p_radius;
+	_update_gtao();
 }
 
-float Environment::get_ssao_radius() const {
-	return ssao_radius;
+float Environment::get_gtao_radius() const {
+	return gtao_radius;
 }
 
-void Environment::set_ssao_intensity(float p_intensity) {
-	ssao_intensity = p_intensity;
-	_update_ssao();
+void Environment::set_gtao_intensity(float p_intensity) {
+	gtao_intensity = p_intensity;
+	_update_gtao();
 }
 
-float Environment::get_ssao_intensity() const {
-	return ssao_intensity;
+float Environment::get_gtao_intensity() const {
+	return gtao_intensity;
 }
 
-void Environment::set_ssao_power(float p_power) {
-	ssao_power = p_power;
-	_update_ssao();
+void Environment::set_gtao_power(float p_power) {
+	gtao_power = p_power;
+	_update_gtao();
 }
 
-float Environment::get_ssao_power() const {
-	return ssao_power;
+float Environment::get_gtao_power() const {
+	return gtao_power;
 }
 
-void Environment::set_ssao_detail(float p_detail) {
-	ssao_detail = p_detail;
-	_update_ssao();
+void Environment::set_gtao_horizon(float p_horizon) {
+	gtao_horizon = p_horizon;
+	_update_gtao();
 }
 
-float Environment::get_ssao_detail() const {
-	return ssao_detail;
+float Environment::get_gtao_horizon() const {
+	return gtao_horizon;
 }
 
-void Environment::set_ssao_horizon(float p_horizon) {
-	ssao_horizon = p_horizon;
-	_update_ssao();
+void Environment::set_gtao_sharpness(float p_sharpness) {
+	gtao_sharpness = p_sharpness;
+	_update_gtao();
 }
 
-float Environment::get_ssao_horizon() const {
-	return ssao_horizon;
+float Environment::get_gtao_sharpness() const {
+	return gtao_sharpness;
 }
 
-void Environment::set_ssao_sharpness(float p_sharpness) {
-	ssao_sharpness = p_sharpness;
-	_update_ssao();
+void Environment::set_gtao_direct_light_affect(float p_direct_light_affect) {
+	gtao_direct_light_affect = p_direct_light_affect;
+	_update_gtao();
 }
 
-float Environment::get_ssao_sharpness() const {
-	return ssao_sharpness;
+float Environment::get_gtao_direct_light_affect() const {
+	return gtao_direct_light_affect;
 }
 
-void Environment::set_ssao_direct_light_affect(float p_direct_light_affect) {
-	ssao_direct_light_affect = p_direct_light_affect;
-	_update_ssao();
+void Environment::set_gtao_ao_channel_affect(float p_ao_channel_affect) {
+	gtao_ao_channel_affect = p_ao_channel_affect;
+	_update_gtao();
 }
 
-float Environment::get_ssao_direct_light_affect() const {
-	return ssao_direct_light_affect;
+float Environment::get_gtao_ao_channel_affect() const {
+	return gtao_ao_channel_affect;
 }
 
-void Environment::set_ssao_ao_channel_affect(float p_ao_channel_affect) {
-	ssao_ao_channel_affect = p_ao_channel_affect;
-	_update_ssao();
-}
-
-float Environment::get_ssao_ao_channel_affect() const {
-	return ssao_ao_channel_affect;
-}
-
-void Environment::_update_ssao() {
-	RS::get_singleton()->environment_set_ssao(
+void Environment::_update_gtao() {
+	RS::get_singleton()->environment_set_gtao(
 			environment,
-			ssao_enabled,
-			ssao_radius,
-			ssao_intensity,
-			ssao_power,
-			ssao_detail,
-			ssao_horizon,
-			ssao_sharpness,
-			ssao_direct_light_affect,
-			ssao_ao_channel_affect);
+			gtao_enabled,
+			gtao_radius,
+			gtao_intensity,
+			gtao_power,
+			gtao_horizon,
+			gtao_sharpness,
+			gtao_direct_light_affect,
+			gtao_ao_channel_affect);
 }
 
 // SSCS (screen space shadows)
@@ -1222,9 +1212,9 @@ void Environment::_validate_property(PropertyInfo &p_property) const {
 	}
 
 	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus") {
-		// Hide SSAO properties that only work in Forward+.
-		if (p_property.name.begins_with("ssao_")) {
-			if ((p_property.name != "ssao_enabled") && (p_property.name != "ssao_radius") && (p_property.name != "ssao_intensity")) {
+		// Hide GTAO properties that only work in Forward+.
+		if (p_property.name.begins_with("gtao_")) {
+			if ((p_property.name != "gtao_enabled") && (p_property.name != "gtao_radius") && (p_property.name != "gtao_intensity")) {
 				p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 			}
 			return;
@@ -1374,36 +1364,33 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssr_fade_out", PROPERTY_HINT_EXP_EASING, "positive_only"), "set_ssr_fade_out", "get_ssr_fade_out");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssr_depth_tolerance", PROPERTY_HINT_RANGE, "0.01,128,0.1"), "set_ssr_depth_tolerance", "get_ssr_depth_tolerance");
 
-	// SSAO
-	ClassDB::bind_method(D_METHOD("set_ssao_enabled", "enabled"), &Environment::set_ssao_enabled);
-	ClassDB::bind_method(D_METHOD("is_ssao_enabled"), &Environment::is_ssao_enabled);
-	ClassDB::bind_method(D_METHOD("set_ssao_radius", "radius"), &Environment::set_ssao_radius);
-	ClassDB::bind_method(D_METHOD("get_ssao_radius"), &Environment::get_ssao_radius);
-	ClassDB::bind_method(D_METHOD("set_ssao_intensity", "intensity"), &Environment::set_ssao_intensity);
-	ClassDB::bind_method(D_METHOD("get_ssao_intensity"), &Environment::get_ssao_intensity);
-	ClassDB::bind_method(D_METHOD("set_ssao_power", "power"), &Environment::set_ssao_power);
-	ClassDB::bind_method(D_METHOD("get_ssao_power"), &Environment::get_ssao_power);
-	ClassDB::bind_method(D_METHOD("set_ssao_detail", "detail"), &Environment::set_ssao_detail);
-	ClassDB::bind_method(D_METHOD("get_ssao_detail"), &Environment::get_ssao_detail);
-	ClassDB::bind_method(D_METHOD("set_ssao_horizon", "horizon"), &Environment::set_ssao_horizon);
-	ClassDB::bind_method(D_METHOD("get_ssao_horizon"), &Environment::get_ssao_horizon);
-	ClassDB::bind_method(D_METHOD("set_ssao_sharpness", "sharpness"), &Environment::set_ssao_sharpness);
-	ClassDB::bind_method(D_METHOD("get_ssao_sharpness"), &Environment::get_ssao_sharpness);
-	ClassDB::bind_method(D_METHOD("set_ssao_direct_light_affect", "amount"), &Environment::set_ssao_direct_light_affect);
-	ClassDB::bind_method(D_METHOD("get_ssao_direct_light_affect"), &Environment::get_ssao_direct_light_affect);
-	ClassDB::bind_method(D_METHOD("set_ssao_ao_channel_affect", "amount"), &Environment::set_ssao_ao_channel_affect);
-	ClassDB::bind_method(D_METHOD("get_ssao_ao_channel_affect"), &Environment::get_ssao_ao_channel_affect);
+	// GTAO
+	ClassDB::bind_method(D_METHOD("set_gtao_enabled", "enabled"), &Environment::set_gtao_enabled);
+	ClassDB::bind_method(D_METHOD("is_gtao_enabled"), &Environment::is_gtao_enabled);
+	ClassDB::bind_method(D_METHOD("set_gtao_radius", "radius"), &Environment::set_gtao_radius);
+	ClassDB::bind_method(D_METHOD("get_gtao_radius"), &Environment::get_gtao_radius);
+	ClassDB::bind_method(D_METHOD("set_gtao_intensity", "intensity"), &Environment::set_gtao_intensity);
+	ClassDB::bind_method(D_METHOD("get_gtao_intensity"), &Environment::get_gtao_intensity);
+	ClassDB::bind_method(D_METHOD("set_gtao_power", "power"), &Environment::set_gtao_power);
+	ClassDB::bind_method(D_METHOD("get_gtao_power"), &Environment::get_gtao_power);
+	ClassDB::bind_method(D_METHOD("set_gtao_horizon", "horizon"), &Environment::set_gtao_horizon);
+	ClassDB::bind_method(D_METHOD("get_gtao_horizon"), &Environment::get_gtao_horizon);
+	ClassDB::bind_method(D_METHOD("set_gtao_sharpness", "sharpness"), &Environment::set_gtao_sharpness);
+	ClassDB::bind_method(D_METHOD("get_gtao_sharpness"), &Environment::get_gtao_sharpness);
+	ClassDB::bind_method(D_METHOD("set_gtao_direct_light_affect", "amount"), &Environment::set_gtao_direct_light_affect);
+	ClassDB::bind_method(D_METHOD("get_gtao_direct_light_affect"), &Environment::get_gtao_direct_light_affect);
+	ClassDB::bind_method(D_METHOD("set_gtao_ao_channel_affect", "amount"), &Environment::set_gtao_ao_channel_affect);
+	ClassDB::bind_method(D_METHOD("get_gtao_ao_channel_affect"), &Environment::get_gtao_ao_channel_affect);
 
-	ADD_GROUP("SSAO", "ssao_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ssao_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ssao_enabled", "is_ssao_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_radius", PROPERTY_HINT_RANGE, "0.01,16,0.01,or_greater"), "set_ssao_radius", "get_ssao_radius");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ssao_intensity", "get_ssao_intensity");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_power", PROPERTY_HINT_EXP_EASING, "positive_only"), "set_ssao_power", "get_ssao_power");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_detail", PROPERTY_HINT_RANGE, "0,5,0.01"), "set_ssao_detail", "get_ssao_detail");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_horizon", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssao_horizon", "get_ssao_horizon");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_sharpness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssao_sharpness", "get_ssao_sharpness");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_light_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_ssao_direct_light_affect", "get_ssao_direct_light_affect");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_ao_channel_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_ssao_ao_channel_affect", "get_ssao_ao_channel_affect");
+	ADD_GROUP("GTAO", "gtao_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gtao_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_gtao_enabled", "is_gtao_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_radius", PROPERTY_HINT_RANGE, "0.01,16,0.01,or_greater"), "set_gtao_radius", "get_gtao_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_gtao_intensity", "get_gtao_intensity");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_power", PROPERTY_HINT_EXP_EASING, "positive_only"), "set_gtao_power", "get_gtao_power");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_horizon", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_gtao_horizon", "get_gtao_horizon");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_sharpness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_gtao_sharpness", "get_gtao_sharpness");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_light_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_gtao_direct_light_affect", "get_gtao_direct_light_affect");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_ao_channel_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_gtao_ao_channel_affect", "get_gtao_ao_channel_affect");
 
 	// SSCS (screen space shadows)
 	ClassDB::bind_method(D_METHOD("set_sscs_enabled", "enabled"), &Environment::set_sscs_enabled);
@@ -1705,7 +1692,7 @@ Environment::Environment() {
 	_update_ambient_light();
 	_update_tonemap();
 	_update_ssr();
-	_update_ssao();
+	_update_gtao();
 	_update_sscs();
 	_update_ssil();
 	_update_sdfgi();

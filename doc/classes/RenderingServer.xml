@@ -1408,6 +1408,31 @@
 				Configures glow for the specified environment RID. See [code]glow_*[/code] properties in [Environment] for more information.
 			</description>
 		</method>
+		<method name="environment_set_gtao">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="radius" type="float" />
+			<param index="3" name="intensity" type="float" />
+			<param index="4" name="power" type="float" />
+			<param index="5" name="horizon" type="float" />
+			<param index="6" name="sharpness" type="float" />
+			<param index="7" name="light_affect" type="float" />
+			<param index="8" name="ao_channel_affect" type="float" />
+			<description>
+				Sets the variables to be used with the Ground-Truth Ambient Occlusion (GTAO) post-process effect. See [Environment] for more details.
+			</description>
+		</method>
+		<method name="environment_set_gtao_quality">
+			<return type="void" />
+			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentGTAOQuality" />
+			<param index="1" name="half_size" type="bool" />
+			<param index="2" name="fadeout_from" type="float" />
+			<param index="3" name="fadeout_to" type="float" />
+			<description>
+				Sets the quality level of the Ground-Truth Ambient Occlusion (GTAO) post-process effect. See [Environment] for more details.
+			</description>
+		</method>
 		<method name="environment_set_sdfgi">
 			<return type="void" />
 			<param index="0" name="env" type="RID" />
@@ -1468,34 +1493,6 @@
 			<param index="1" name="orientation" type="Basis" />
 			<description>
 				Sets the rotation of the background [Sky] expressed as a [Basis]. Equivalent to [member Environment.sky_rotation], where the rotation vector is used to construct the [Basis].
-			</description>
-		</method>
-		<method name="environment_set_ssao">
-			<return type="void" />
-			<param index="0" name="env" type="RID" />
-			<param index="1" name="enable" type="bool" />
-			<param index="2" name="radius" type="float" />
-			<param index="3" name="intensity" type="float" />
-			<param index="4" name="power" type="float" />
-			<param index="5" name="detail" type="float" />
-			<param index="6" name="horizon" type="float" />
-			<param index="7" name="sharpness" type="float" />
-			<param index="8" name="light_affect" type="float" />
-			<param index="9" name="ao_channel_affect" type="float" />
-			<description>
-				Sets the variables to be used with the screen-space ambient occlusion (SSAO) post-process effect. See [Environment] for more details.
-			</description>
-		</method>
-		<method name="environment_set_ssao_quality">
-			<return type="void" />
-			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentSSAOQuality" />
-			<param index="1" name="half_size" type="bool" />
-			<param index="2" name="adaptive_target" type="float" />
-			<param index="3" name="blur_passes" type="int" />
-			<param index="4" name="fadeout_from" type="float" />
-			<param index="5" name="fadeout_to" type="float" />
-			<description>
-				Sets the quality level of the screen-space ambient occlusion (SSAO) post-process effect. See [Environment] for more details.
 			</description>
 		</method>
 		<method name="environment_set_sscs">
@@ -5654,8 +5651,8 @@
 			Draws the estimated scene luminance. This is a 1×1 texture that is generated when autoexposure is enabled to control the scene's exposure.
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SSAO" value="12" enum="ViewportDebugDraw">
-			Draws the screen space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssao_enabled] set in your [WorldEnvironment].
+		<constant name="VIEWPORT_DEBUG_DRAW_GTAO" value="12" enum="ViewportDebugDraw">
+			Draws the screen space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.gtao_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="VIEWPORT_DEBUG_DRAW_SSIL" value="13" enum="ViewportDebugDraw">
@@ -5883,20 +5880,20 @@
 		<constant name="ENV_SSR_ROUGHNESS_QUALITY_HIGH" value="3" enum="EnvironmentSSRRoughnessQuality">
 			High quality of roughness filter for screen-space reflections. This is the slowest option.
 		</constant>
-		<constant name="ENV_SSAO_QUALITY_VERY_LOW" value="0" enum="EnvironmentSSAOQuality">
+		<constant name="ENV_GTAO_QUALITY_VERY_LOW" value="0" enum="EnvironmentGTAOQuality">
 			Lowest quality of screen-space ambient occlusion.
 		</constant>
-		<constant name="ENV_SSAO_QUALITY_LOW" value="1" enum="EnvironmentSSAOQuality">
+		<constant name="ENV_GTAO_QUALITY_LOW" value="1" enum="EnvironmentGTAOQuality">
 			Low quality screen-space ambient occlusion.
 		</constant>
-		<constant name="ENV_SSAO_QUALITY_MEDIUM" value="2" enum="EnvironmentSSAOQuality">
+		<constant name="ENV_GTAO_QUALITY_MEDIUM" value="2" enum="EnvironmentGTAOQuality">
 			Medium quality screen-space ambient occlusion.
 		</constant>
-		<constant name="ENV_SSAO_QUALITY_HIGH" value="3" enum="EnvironmentSSAOQuality">
+		<constant name="ENV_GTAO_QUALITY_HIGH" value="3" enum="EnvironmentGTAOQuality">
 			High quality screen-space ambient occlusion.
 		</constant>
-		<constant name="ENV_SSAO_QUALITY_ULTRA" value="4" enum="EnvironmentSSAOQuality">
-			Highest quality screen-space ambient occlusion. Uses the adaptive target setting which can be dynamically adjusted to smoothly balance performance and visual quality.
+		<constant name="ENV_GTAO_QUALITY_ULTRA" value="4" enum="EnvironmentGTAOQuality">
+			Highest quality ground-truth ambient occlusion, searching the most directions and steps around each pixel.
 		</constant>
 		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT" value="0" enum="ScreenSpaceContactShadowsLength">
 			Cast shorter screen-space shadow rays. Fastest option, but the effect will not be able to reach as far.

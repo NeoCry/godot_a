@@ -163,9 +163,6 @@ Copyright: 2014-2015, NVIDIA CORPORATION
 License: BSD-3-clause and Expat
 
 Files: servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl
- servers/rendering/renderer_rd/shaders/effects/ssao_blur.glsl
- servers/rendering/renderer_rd/shaders/effects/ssao_interleave.glsl
- servers/rendering/renderer_rd/shaders/effects/ssao.glsl
  servers/rendering/renderer_rd/shaders/effects/ssil_blur.glsl
  servers/rendering/renderer_rd/shaders/effects/ssil_importance_map.glsl
  servers/rendering/renderer_rd/shaders/effects/ssil_interleave.glsl
