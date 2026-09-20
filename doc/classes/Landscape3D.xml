@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="Terrain3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+<class name="Landscape3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
 		A large, sculptable, texture-splatted heightmap terrain, in the spirit of CryEngine's terrain system.
 	</brief_description>
 	<description>
-		[Terrain3D] renders a [TerrainData] heightmap ([member terrain_data]) as a grid of small chunks, each with its own automatic level of detail: nearby chunks render at full density while distant ones use a cheaper, decimated mesh with no extra scripting or per-frame cost, using the same mesh LOD mechanism as [method ArrayMesh.add_surface_from_arrays]'s [code]lods[/code] parameter. A thin "skirt" of hidden geometry around each chunk's edges hides the small seams that can appear where two neighboring chunks are rendered at different levels of detail.
-		Up to 32 [TerrainLayer]s ([member layers]) can be painted onto the terrain. Every point on the terrain has its own independent weight for every layer (see [TerrainData]'s description); what's actually rendered there is every layer's material mixed in proportion to its share of the total weight, the same "weight-blended" model CryEngine and UE4/5's Landscape layers use, so any number of layers can overlap smoothly at once (not just two at a time) and painting one layer smoothly displaces the others rather than producing hard edges at the vertex grid. A [member Terrain3D.collision_layer] configurable [HeightMapShape3D] is kept in sync automatically so physics bodies collide with the terrain; see [method update_collision].
+		[Landscape3D] renders a [TerrainData] heightmap ([member terrain_data]) as a grid of small chunks, each with its own automatic level of detail: nearby chunks render at full density while distant ones use a cheaper, decimated mesh with no extra scripting or per-frame cost, using the same mesh LOD mechanism as [method ArrayMesh.add_surface_from_arrays]'s [code]lods[/code] parameter. A thin "skirt" of hidden geometry around each chunk's edges hides the small seams that can appear where two neighboring chunks are rendered at different levels of detail.
+		Up to 32 [TerrainLayer]s ([member layers]) can be painted onto the terrain. Every point on the terrain has its own independent weight for every layer (see [TerrainData]'s description); what's actually rendered there is every layer's material mixed in proportion to its share of the total weight, the same "weight-blended" model CryEngine and UE4/5's Landscape layers use, so any number of layers can overlap smoothly at once (not just two at a time) and painting one layer smoothly displaces the others rather than producing hard edges at the vertex grid. A [member Landscape3D.collision_layer] configurable [HeightMapShape3D] is kept in sync automatically so physics bodies collide with the terrain; see [method update_collision].
 		While selected in the editor, a toolbar appears in the 3D viewport with a brush for sculpting (raising, lowering, smoothing, and flattening the heightmap), painting texture layers, and cutting or filling holes (openings in the terrain's geometry itself, e.g. for a cave entrance, that the camera and physics bodies can pass through - see [method TerrainData.is_hole]). The same operations are available from a script through [method sculpt], [method paint_layer], and [method set_hole], for example to carve a crater into the terrain at runtime. The toolbar's [b]Import Heightmap...[/b] button imports a square grayscale image as the whole heightmap (see [method TerrainData.import_heightmap] for format/precision recommendations - EXR or HDR, not PNG or a lossy format), creating a [TerrainData] automatically if [member terrain_data] isn't set yet; this replaces the current heightmap and is not undoable.
-		[FoliagePainter3D] and [FoliageSpawner3D] both recognize a [Terrain3D] as a paintable/projectable ground surface alongside [MeshInstance3D], so vegetation can be scattered directly onto it.
-		[b]Note:[/b] [Terrain3D] is intended to be used unrotated (only its position and scale matter for mapping world space to the weight maps and to texture tiling); rotating it is not supported.
+		[FoliagePainter3D] and [FoliageSpawner3D] both recognize a [Landscape3D] as a paintable/projectable ground surface alongside [MeshInstance3D], so vegetation can be scattered directly onto it.
+		[b]Note:[/b] [Landscape3D] is intended to be used unrotated (only its position and scale matter for mapping world space to the weight maps and to texture tiling); rotating it is not supported.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -56,7 +56,7 @@
 			<param index="0" name="local_position" type="Vector3" />
 			<param index="1" name="radius" type="float" />
 			<param index="2" name="strength" type="float" />
-			<param index="3" name="operation" type="int" enum="Terrain3D.SculptOperation" />
+			<param index="3" name="operation" type="int" enum="Landscape3D.SculptOperation" />
 			<param index="4" name="flatten_height" type="float" default="0.0" />
 			<param index="5" name="update_collision" type="bool" default="true" />
 			<description>

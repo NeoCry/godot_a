@@ -107,7 +107,7 @@
 #include "editor/scene/3d/physics/physical_bone_3d_editor_plugin.h"
 #include "editor/scene/3d/polygon_3d_editor_plugin.h"
 #include "editor/scene/3d/skeleton_3d_editor_plugin.h"
-#include "editor/scene/3d/terrain_3d_editor_plugin.h"
+#include "editor/scene/3d/landscape_3d_editor_plugin.h"
 #include "editor/scene/3d/voxel_gi_editor_plugin.h"
 #include "editor/scene/curve_editor_plugin.h"
 #include "editor/scene/gradient_editor_plugin.h"
@@ -292,7 +292,7 @@ void register_editor_types() {
 	EditorPlugins::add_by_type<Path3DEditorPlugin>();
 	EditorPlugins::add_by_type<Polygon3DEditorPlugin>();
 	EditorPlugins::add_by_type<Skeleton3DEditorPlugin>();
-	EditorPlugins::add_by_type<Terrain3DEditorPlugin>();
+	EditorPlugins::add_by_type<Landscape3DEditorPlugin>();
 	EditorPlugins::add_by_type<VoxelGIEditorPlugin>();
 	// 3D physics editor plugins.
 	EditorPlugins::add_by_type<PhysicalBone3DEditorPlugin>();

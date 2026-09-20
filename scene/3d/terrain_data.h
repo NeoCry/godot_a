@@ -37,7 +37,7 @@
 
 class Image;
 
-// The actual terrain "world" data for a Terrain3D: a square grid of height
+// The actual terrain "world" data for a Landscape3D: a square grid of height
 // samples (a heightmap) plus, for texture splatting, one continuous 0-1
 // "how much of this TerrainLayer shows here" weight per layer, plus a hole
 // flag. All are stored as Images (a single-channel float heightmap, one
@@ -46,7 +46,7 @@ class Image;
 // textures with the normal Image/Texture machinery.
 //
 // Every layer's weight is independent (not just a blend between two "slots"
-// like a typical 2-layer control map): Terrain3D's shader samples all of
+// like a typical 2-layer control map): Landscape3D's shader samples all of
 // them and mixes each layer's material in proportion to its share of the
 // total weight at that point, the same "weight-blended" model CryEngine and
 // UE4/5's Landscape layers use. This is what lets weights be sampled with
@@ -54,7 +54,7 @@ class Image;
 // filtering would average together unrelated layer indices) for smooth
 // blending at any brush or geometry density, and lets any number of layers
 // overlap smoothly at a single point instead of only ever blending pairwise.
-// Painting a layer (see Terrain3D::paint_layer) raises its weight and
+// Painting a layer (see Landscape3D::paint_layer) raises its weight and
 // proportionally lowers every other layer's, keeping the total roughly
 // constant, so repeatedly painting one layer converges on it fully replacing
 // the others rather than capping out at an even split.
@@ -83,7 +83,7 @@ public:
 	static constexpr int MIN_RESOLUTION = 2;
 	static constexpr int MAX_RESOLUTION = 4097;
 
-	// Hard cap on distinct TerrainLayers (must match Terrain3D's shader:
+	// Hard cap on distinct TerrainLayers (must match Landscape3D's shader:
 	// layer_uv_scales' fixed uniform array size). Weights for every layer up
 	// to this count are always allocated, packed 4 per RGBA8 weight map.
 	static constexpr int MAX_LAYERS = 32;
@@ -131,7 +131,7 @@ public:
 	void fill_height(float p_height);
 	void import_heightmap(const Ref<Image> &p_image, float p_height_min, float p_height_max);
 
-	// Plain C++ helpers for Terrain3D's mesh building and texture upload; not
+	// Plain C++ helpers for Landscape3D's mesh building and texture upload; not
 	// bound to ClassDB, like FoliagePainter3D's own editor-only helpers.
 	Ref<Image> get_heightmap_image() const;
 	Ref<Image> get_weight_map_image(int p_group) const;

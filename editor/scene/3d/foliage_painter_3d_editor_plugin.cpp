@@ -38,7 +38,7 @@
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
-#include "scene/3d/terrain_3d.h"
+#include "scene/3d/landscape_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -195,13 +195,13 @@ void FoliagePainter3DEditorPlugin::_collect_mesh_instances(Node *p_node, Vector<
 	}
 }
 
-void FoliagePainter3DEditorPlugin::_collect_terrains(Node *p_node, Vector<Terrain3D *> &r_out) const {
+void FoliagePainter3DEditorPlugin::_collect_terrains(Node *p_node, Vector<Landscape3D *> &r_out) const {
 	if (p_node == nullptr) {
 		return;
 	}
 
 	if (p_node->get_internal_mode() == Node::INTERNAL_MODE_DISABLED) {
-		Terrain3D *terrain = Object::cast_to<Terrain3D>(p_node);
+		Landscape3D *terrain = Object::cast_to<Landscape3D>(p_node);
 		if (terrain != nullptr && terrain->is_visible_in_tree() && terrain->get_terrain_data().is_valid()) {
 			r_out.push_back(terrain);
 		}
@@ -267,10 +267,10 @@ bool FoliagePainter3DEditorPlugin::_raycast(const Vector3 &p_from, const Vector3
 		}
 	}
 
-	// Terrain3D has no single Mesh to raycast against (see paint_target_terrains'
+	// Landscape3D has no single Mesh to raycast against (see paint_target_terrains'
 	// comment); use its own physics collision body instead, which it already
 	// keeps in sync with its heightmap.
-	for (Terrain3D *terrain : paint_target_terrains) {
+	for (Landscape3D *terrain : paint_target_terrains) {
 		if (!terrain->is_inside_tree() || terrain->get_collision_body() == nullptr) {
 			continue;
 		}

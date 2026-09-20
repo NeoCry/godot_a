@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  terrain_3d_gizmo_plugin.h                                             */
+/*  landscape_3d_gizmo_plugin.h                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -32,11 +32,11 @@
 
 #include "editor/scene/3d/node_3d_editor_gizmos.h"
 
-// Selected-in-editor wireframe for Terrain3D: its world-space bounds, and
-// (when Terrain3D.debug_draw_chunks is enabled) each chunk's own bounds, to
-// help visualize the chunk/LOD grid described on Terrain3D.
-class Terrain3DGizmoPlugin : public EditorNode3DGizmoPlugin {
-	GDCLASS(Terrain3DGizmoPlugin, EditorNode3DGizmoPlugin);
+// Selected-in-editor wireframe for Landscape3D: its world-space bounds, and
+// (when Landscape3D.debug_draw_chunks is enabled) each chunk's own bounds, to
+// help visualize the chunk/LOD grid described on Landscape3D.
+class Landscape3DGizmoPlugin : public EditorNode3DGizmoPlugin {
+	GDCLASS(Landscape3DGizmoPlugin, EditorNode3DGizmoPlugin);
 
 public:
 	bool has_gizmo(Node3D *p_spatial) override;
@@ -44,5 +44,5 @@ public:
 	int get_priority() const override;
 	void redraw(EditorNode3DGizmo *p_gizmo) override;
 
-	Terrain3DGizmoPlugin();
+	Landscape3DGizmoPlugin();
 };

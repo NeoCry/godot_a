@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  terrain_3d.cpp                                                        */
+/*  landscape_3d.cpp                                                      */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "terrain_3d.h"
+#include "landscape_3d.h"
 
 #include "core/core_string_names.h"
 #include "core/io/image.h"
@@ -57,7 +57,7 @@ constexpr int LAYER_TEXTURE_SIZE = 512;
 // fixed-size, and TerrainData packs the same number of layers' weights into
 // its weight maps, so the two hard caps have to agree.
 
-void Terrain3D::init_shaders() {
+void Landscape3D::init_shaders() {
 	shader.instantiate();
 	shader->set_code(R"(
 shader_type spatial;
@@ -141,54 +141,54 @@ void fragment() {
 )");
 }
 
-void Terrain3D::finish_shaders() {
+void Landscape3D::finish_shaders() {
 	shader.unref();
 }
 
-void Terrain3D::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_terrain_data", "data"), &Terrain3D::set_terrain_data);
-	ClassDB::bind_method(D_METHOD("get_terrain_data"), &Terrain3D::get_terrain_data);
+void Landscape3D::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_terrain_data", "data"), &Landscape3D::set_terrain_data);
+	ClassDB::bind_method(D_METHOD("get_terrain_data"), &Landscape3D::get_terrain_data);
 
-	ClassDB::bind_method(D_METHOD("set_layers", "layers"), &Terrain3D::set_layers);
-	ClassDB::bind_method(D_METHOD("get_layers"), &Terrain3D::get_layers);
+	ClassDB::bind_method(D_METHOD("set_layers", "layers"), &Landscape3D::set_layers);
+	ClassDB::bind_method(D_METHOD("get_layers"), &Landscape3D::get_layers);
 
-	ClassDB::bind_method(D_METHOD("set_skirt_depth", "depth"), &Terrain3D::set_skirt_depth);
-	ClassDB::bind_method(D_METHOD("get_skirt_depth"), &Terrain3D::get_skirt_depth);
+	ClassDB::bind_method(D_METHOD("set_skirt_depth", "depth"), &Landscape3D::set_skirt_depth);
+	ClassDB::bind_method(D_METHOD("get_skirt_depth"), &Landscape3D::get_skirt_depth);
 
-	ClassDB::bind_method(D_METHOD("set_lod_bias", "bias"), &Terrain3D::set_lod_bias);
-	ClassDB::bind_method(D_METHOD("get_lod_bias"), &Terrain3D::get_lod_bias);
+	ClassDB::bind_method(D_METHOD("set_lod_bias", "bias"), &Landscape3D::set_lod_bias);
+	ClassDB::bind_method(D_METHOD("get_lod_bias"), &Landscape3D::get_lod_bias);
 
-	ClassDB::bind_method(D_METHOD("set_cast_shadow", "setting"), &Terrain3D::set_cast_shadow);
-	ClassDB::bind_method(D_METHOD("get_cast_shadow"), &Terrain3D::get_cast_shadow);
+	ClassDB::bind_method(D_METHOD("set_cast_shadow", "setting"), &Landscape3D::set_cast_shadow);
+	ClassDB::bind_method(D_METHOD("get_cast_shadow"), &Landscape3D::get_cast_shadow);
 
-	ClassDB::bind_method(D_METHOD("set_gi_mode", "mode"), &Terrain3D::set_gi_mode);
-	ClassDB::bind_method(D_METHOD("get_gi_mode"), &Terrain3D::get_gi_mode);
+	ClassDB::bind_method(D_METHOD("set_gi_mode", "mode"), &Landscape3D::set_gi_mode);
+	ClassDB::bind_method(D_METHOD("get_gi_mode"), &Landscape3D::get_gi_mode);
 
-	ClassDB::bind_method(D_METHOD("set_collision_layer", "layer"), &Terrain3D::set_collision_layer);
-	ClassDB::bind_method(D_METHOD("get_collision_layer"), &Terrain3D::get_collision_layer);
+	ClassDB::bind_method(D_METHOD("set_collision_layer", "layer"), &Landscape3D::set_collision_layer);
+	ClassDB::bind_method(D_METHOD("get_collision_layer"), &Landscape3D::get_collision_layer);
 
-	ClassDB::bind_method(D_METHOD("set_collision_mask", "mask"), &Terrain3D::set_collision_mask);
-	ClassDB::bind_method(D_METHOD("get_collision_mask"), &Terrain3D::get_collision_mask);
+	ClassDB::bind_method(D_METHOD("set_collision_mask", "mask"), &Landscape3D::set_collision_mask);
+	ClassDB::bind_method(D_METHOD("get_collision_mask"), &Landscape3D::get_collision_mask);
 
-	ClassDB::bind_method(D_METHOD("set_debug_draw_chunks", "enable"), &Terrain3D::set_debug_draw_chunks);
-	ClassDB::bind_method(D_METHOD("is_debug_draw_chunks_enabled"), &Terrain3D::is_debug_draw_chunks_enabled);
+	ClassDB::bind_method(D_METHOD("set_debug_draw_chunks", "enable"), &Landscape3D::set_debug_draw_chunks);
+	ClassDB::bind_method(D_METHOD("is_debug_draw_chunks_enabled"), &Landscape3D::is_debug_draw_chunks_enabled);
 
-	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "flatten_height", "update_collision"), &Terrain3D::sculpt, DEFVAL(0.0f), DEFVAL(true));
-	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index"), &Terrain3D::paint_layer);
-	ClassDB::bind_method(D_METHOD("set_hole", "local_position", "radius", "hole", "update_collision"), &Terrain3D::set_hole, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(0.0f), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index"), &Landscape3D::paint_layer);
+	ClassDB::bind_method(D_METHOD("set_hole", "local_position", "radius", "hole", "update_collision"), &Landscape3D::set_hole, DEFVAL(true));
 
-	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &Terrain3D::get_height_region);
-	ClassDB::bind_method(D_METHOD("set_height_region", "region", "heights", "update_collision"), &Terrain3D::set_height_region, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &Landscape3D::get_height_region);
+	ClassDB::bind_method(D_METHOD("set_height_region", "region", "heights", "update_collision"), &Landscape3D::set_height_region, DEFVAL(true));
 
-	ClassDB::bind_method(D_METHOD("get_layer_weight_region", "region", "layer_index"), &Terrain3D::get_layer_weight_region);
-	ClassDB::bind_method(D_METHOD("set_layer_weight_region", "region", "layer_index", "weights"), &Terrain3D::set_layer_weight_region);
+	ClassDB::bind_method(D_METHOD("get_layer_weight_region", "region", "layer_index"), &Landscape3D::get_layer_weight_region);
+	ClassDB::bind_method(D_METHOD("set_layer_weight_region", "region", "layer_index", "weights"), &Landscape3D::set_layer_weight_region);
 
-	ClassDB::bind_method(D_METHOD("get_hole_region", "region"), &Terrain3D::get_hole_region);
-	ClassDB::bind_method(D_METHOD("set_hole_region", "region", "holes"), &Terrain3D::set_hole_region);
+	ClassDB::bind_method(D_METHOD("get_hole_region", "region"), &Landscape3D::get_hole_region);
+	ClassDB::bind_method(D_METHOD("set_hole_region", "region", "holes"), &Landscape3D::set_hole_region);
 
-	ClassDB::bind_method(D_METHOD("update_collision"), &Terrain3D::update_collision);
+	ClassDB::bind_method(D_METHOD("update_collision"), &Landscape3D::update_collision);
 
-	ClassDB::bind_method(D_METHOD("get_aabb"), &Terrain3D::get_aabb);
+	ClassDB::bind_method(D_METHOD("get_aabb"), &Landscape3D::get_aabb);
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "terrain_data", PROPERTY_HINT_RESOURCE_TYPE, "TerrainData"), "set_terrain_data", "get_terrain_data");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("TerrainLayer")), "set_layers", "get_layers");
@@ -210,7 +210,7 @@ void Terrain3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(SCULPT_FLATTEN);
 }
 
-void Terrain3D::_notification(int p_what) {
+void Landscape3D::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
 			if (chunks.is_empty() && terrain_data.is_valid()) {
@@ -258,11 +258,11 @@ void Terrain3D::_notification(int p_what) {
 	}
 }
 
-Transform3D Terrain3D::_get_safe_global_transform() const {
+Transform3D Landscape3D::_get_safe_global_transform() const {
 	return is_inside_tree() ? get_global_transform() : Transform3D();
 }
 
-void Terrain3D::_ensure_material() {
+void Landscape3D::_ensure_material() {
 	if (material.is_valid()) {
 		return;
 	}
@@ -270,7 +270,7 @@ void Terrain3D::_ensure_material() {
 	material->set_shader(shader);
 }
 
-void Terrain3D::_rebuild_textures() {
+void Landscape3D::_rebuild_textures() {
 	_ensure_material();
 	if (terrain_data.is_null()) {
 		return;
@@ -368,7 +368,7 @@ void Terrain3D::_rebuild_textures() {
 	}
 }
 
-Vector2i Terrain3D::_get_chunk_grid_size() const {
+Vector2i Landscape3D::_get_chunk_grid_size() const {
 	if (terrain_data.is_null()) {
 		return Vector2i();
 	}
@@ -377,7 +377,7 @@ Vector2i Terrain3D::_get_chunk_grid_size() const {
 	return Vector2i(MAX(n, 1), MAX(n, 1));
 }
 
-Rect2i Terrain3D::_get_chunk_range_for_region(const Rect2i &p_vertex_region) const {
+Rect2i Landscape3D::_get_chunk_range_for_region(const Rect2i &p_vertex_region) const {
 	const Vector2i grid = _get_chunk_grid_size();
 	if (grid.x <= 0 || grid.y <= 0) {
 		return Rect2i();
@@ -396,7 +396,7 @@ Rect2i Terrain3D::_get_chunk_range_for_region(const Rect2i &p_vertex_region) con
 	return Rect2i(cx0, cz0, cx1 - cx0 + 1, cz1 - cz0 + 1);
 }
 
-void Terrain3D::_rebuild_all_chunks() {
+void Landscape3D::_rebuild_all_chunks() {
 	_clear_chunks();
 	if (terrain_data.is_null()) {
 		return;
@@ -409,7 +409,7 @@ void Terrain3D::_rebuild_all_chunks() {
 	}
 }
 
-void Terrain3D::_rebuild_chunks_in_region(const Rect2i &p_vertex_region) {
+void Landscape3D::_rebuild_chunks_in_region(const Rect2i &p_vertex_region) {
 	if (terrain_data.is_null()) {
 		return;
 	}
@@ -421,7 +421,7 @@ void Terrain3D::_rebuild_chunks_in_region(const Rect2i &p_vertex_region) {
 	}
 }
 
-void Terrain3D::_clear_chunks() {
+void Landscape3D::_clear_chunks() {
 	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 		if (kv.value.instance.is_valid()) {
 			RS::get_singleton()->free_rid(kv.value.instance);
@@ -430,14 +430,14 @@ void Terrain3D::_clear_chunks() {
 	chunks.clear();
 }
 
-void Terrain3D::_update_chunk_transform(Chunk &p_chunk) {
+void Landscape3D::_update_chunk_transform(Chunk &p_chunk) {
 	if (!p_chunk.instance.is_valid()) {
 		return;
 	}
 	RS::get_singleton()->instance_set_transform(p_chunk.instance, _get_safe_global_transform() * Transform3D(Basis(), p_chunk.local_origin));
 }
 
-void Terrain3D::_apply_render_settings_to_chunk(const Chunk &p_chunk) {
+void Landscape3D::_apply_render_settings_to_chunk(const Chunk &p_chunk) {
 	if (!p_chunk.instance.is_valid()) {
 		return;
 	}
@@ -451,7 +451,7 @@ void Terrain3D::_apply_render_settings_to_chunk(const Chunk &p_chunk) {
 	RS::get_singleton()->instance_set_visible(p_chunk.instance, is_visible_in_tree());
 }
 
-void Terrain3D::_rebuild_chunk(const Vector2i &p_coord) {
+void Landscape3D::_rebuild_chunk(const Vector2i &p_coord) {
 	if (terrain_data.is_null()) {
 		return;
 	}
@@ -663,7 +663,7 @@ void Terrain3D::_rebuild_chunk(const Vector2i &p_coord) {
 	_apply_render_settings_to_chunk(chunk);
 }
 
-void Terrain3D::_ensure_collision_nodes() {
+void Landscape3D::_ensure_collision_nodes() {
 	if (collision_body != nullptr) {
 		return;
 	}
@@ -677,11 +677,11 @@ void Terrain3D::_ensure_collision_nodes() {
 	collision_body->add_child(collision_shape_node, false, INTERNAL_MODE_FRONT);
 }
 
-void Terrain3D::_on_layers_changed() {
+void Landscape3D::_on_layers_changed() {
 	_rebuild_textures();
 }
 
-void Terrain3D::_on_terrain_data_changed() {
+void Landscape3D::_on_terrain_data_changed() {
 	// Coarse fallback for edits made directly to the TerrainData resource
 	// instead of through this node's own sculpt()/paint_layer()/set_hole()
 	// (which already know exactly which region to refresh, and refresh only
@@ -691,19 +691,19 @@ void Terrain3D::_on_terrain_data_changed() {
 	update_collision();
 }
 
-void Terrain3D::_disconnect_terrain_data_changed() {
+void Landscape3D::_disconnect_terrain_data_changed() {
 	if (terrain_data.is_valid()) {
-		terrain_data->disconnect_changed(callable_mp(this, &Terrain3D::_on_terrain_data_changed));
+		terrain_data->disconnect_changed(callable_mp(this, &Landscape3D::_on_terrain_data_changed));
 	}
 }
 
-void Terrain3D::_connect_terrain_data_changed() {
+void Landscape3D::_connect_terrain_data_changed() {
 	if (terrain_data.is_valid()) {
-		terrain_data->connect_changed(callable_mp(this, &Terrain3D::_on_terrain_data_changed));
+		terrain_data->connect_changed(callable_mp(this, &Landscape3D::_on_terrain_data_changed));
 	}
 }
 
-void Terrain3D::set_terrain_data(const Ref<TerrainData> &p_data) {
+void Landscape3D::set_terrain_data(const Ref<TerrainData> &p_data) {
 	_disconnect_terrain_data_changed();
 	terrain_data = p_data;
 	_connect_terrain_data_changed();
@@ -716,15 +716,15 @@ void Terrain3D::set_terrain_data(const Ref<TerrainData> &p_data) {
 	update_configuration_warnings();
 }
 
-Ref<TerrainData> Terrain3D::get_terrain_data() const {
+Ref<TerrainData> Landscape3D::get_terrain_data() const {
 	return terrain_data;
 }
 
-void Terrain3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
+void Landscape3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 	for (int i = 0; i < layers.size(); i++) {
 		Ref<TerrainLayer> old_layer = layers[i];
 		if (old_layer.is_valid()) {
-			old_layer->disconnect(CoreStringName(changed), callable_mp(this, &Terrain3D::_on_layers_changed));
+			old_layer->disconnect(CoreStringName(changed), callable_mp(this, &Landscape3D::_on_layers_changed));
 		}
 	}
 
@@ -733,7 +733,7 @@ void Terrain3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 	for (int i = 0; i < layers.size(); i++) {
 		Ref<TerrainLayer> layer = layers[i];
 		if (layer.is_valid()) {
-			layer->connect(CoreStringName(changed), callable_mp(this, &Terrain3D::_on_layers_changed));
+			layer->connect(CoreStringName(changed), callable_mp(this, &Landscape3D::_on_layers_changed));
 		}
 	}
 
@@ -741,82 +741,82 @@ void Terrain3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 	update_configuration_warnings();
 }
 
-TypedArray<TerrainLayer> Terrain3D::get_layers() const {
+TypedArray<TerrainLayer> Landscape3D::get_layers() const {
 	return layers;
 }
 
-void Terrain3D::set_skirt_depth(float p_depth) {
+void Landscape3D::set_skirt_depth(float p_depth) {
 	skirt_depth = MAX(p_depth, 0.0f);
 	_rebuild_all_chunks();
 }
 
-float Terrain3D::get_skirt_depth() const {
+float Landscape3D::get_skirt_depth() const {
 	return skirt_depth;
 }
 
-void Terrain3D::set_lod_bias(float p_bias) {
+void Landscape3D::set_lod_bias(float p_bias) {
 	lod_bias = MAX(p_bias, 0.001f);
 	_rebuild_all_chunks();
 }
 
-float Terrain3D::get_lod_bias() const {
+float Landscape3D::get_lod_bias() const {
 	return lod_bias;
 }
 
-void Terrain3D::set_cast_shadow(GeometryInstance3D::ShadowCastingSetting p_setting) {
+void Landscape3D::set_cast_shadow(GeometryInstance3D::ShadowCastingSetting p_setting) {
 	cast_shadow = p_setting;
 	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 		_apply_render_settings_to_chunk(kv.value);
 	}
 }
 
-GeometryInstance3D::ShadowCastingSetting Terrain3D::get_cast_shadow() const {
+GeometryInstance3D::ShadowCastingSetting Landscape3D::get_cast_shadow() const {
 	return cast_shadow;
 }
 
-void Terrain3D::set_gi_mode(GeometryInstance3D::GIMode p_mode) {
+void Landscape3D::set_gi_mode(GeometryInstance3D::GIMode p_mode) {
 	gi_mode = p_mode;
 	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 		_apply_render_settings_to_chunk(kv.value);
 	}
 }
 
-GeometryInstance3D::GIMode Terrain3D::get_gi_mode() const {
+GeometryInstance3D::GIMode Landscape3D::get_gi_mode() const {
 	return gi_mode;
 }
 
-void Terrain3D::set_collision_layer(uint32_t p_layer) {
+void Landscape3D::set_collision_layer(uint32_t p_layer) {
 	collision_layer = p_layer;
 	if (collision_body != nullptr) {
 		collision_body->set_collision_layer(collision_layer);
 	}
 }
 
-uint32_t Terrain3D::get_collision_layer() const {
+uint32_t Landscape3D::get_collision_layer() const {
 	return collision_layer;
 }
 
-void Terrain3D::set_collision_mask(uint32_t p_mask) {
+void Landscape3D::set_collision_mask(uint32_t p_mask) {
 	collision_mask = p_mask;
 	if (collision_body != nullptr) {
 		collision_body->set_collision_mask(collision_mask);
 	}
 }
 
-uint32_t Terrain3D::get_collision_mask() const {
+uint32_t Landscape3D::get_collision_mask() const {
 	return collision_mask;
 }
 
-void Terrain3D::set_debug_draw_chunks(bool p_enable) {
+void Landscape3D::set_debug_draw_chunks(bool p_enable) {
 	debug_draw_chunks = p_enable;
 	update_gizmos();
 }
 
-bool Terrain3D::is_debug_draw_chunks_enabled() const {
+bool Landscape3D::is_debug_draw_chunks_enabled() const {
 	return debug_draw_chunks;
 }
 
-void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height, bool p_update_collision) {
+void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height, bool p_update_collision) {
 	ERR_FAIL_COND(terrain_data.is_null());
 
 	const float spacing = terrain_data->get_vertex_spacing();
@@ -903,7 +903,7 @@ void Terrain3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_
 	}
 }
 
-void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index) {
+void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	ERR_FAIL_INDEX(p_layer_index, layers.size());
 	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
@@ -996,7 +996,7 @@ void Terrain3D::paint_layer(const Vector3 &p_local_position, float p_radius, flo
 	}
 }
 
-void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision) {
+void Landscape3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision) {
 	ERR_FAIL_COND(terrain_data.is_null());
 
 	const float spacing = terrain_data->get_vertex_spacing();
@@ -1040,12 +1040,12 @@ void Terrain3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p
 	// visible effect.
 }
 
-PackedFloat32Array Terrain3D::get_height_region(const Rect2i &p_region) const {
+PackedFloat32Array Landscape3D::get_height_region(const Rect2i &p_region) const {
 	ERR_FAIL_COND_V(terrain_data.is_null(), PackedFloat32Array());
 	return terrain_data->get_height_region(p_region);
 }
 
-void Terrain3D::set_height_region(const Rect2i &p_region, const PackedFloat32Array &p_heights, bool p_update_collision) {
+void Landscape3D::set_height_region(const Rect2i &p_region, const PackedFloat32Array &p_heights, bool p_update_collision) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	_disconnect_terrain_data_changed();
 	terrain_data->set_height_region(p_region, p_heights);
@@ -1056,12 +1056,12 @@ void Terrain3D::set_height_region(const Rect2i &p_region, const PackedFloat32Arr
 	}
 }
 
-PackedFloat32Array Terrain3D::get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const {
+PackedFloat32Array Landscape3D::get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const {
 	ERR_FAIL_COND_V(terrain_data.is_null(), PackedFloat32Array());
 	return terrain_data->get_layer_weight_region(p_region, p_layer_index);
 }
 
-void Terrain3D::set_layer_weight_region(const Rect2i &p_region, int p_layer_index, const PackedFloat32Array &p_weights) {
+void Landscape3D::set_layer_weight_region(const Rect2i &p_region, int p_layer_index, const PackedFloat32Array &p_weights) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	_disconnect_terrain_data_changed();
 	terrain_data->set_layer_weight_region(p_region, p_layer_index, p_weights);
@@ -1072,12 +1072,12 @@ void Terrain3D::set_layer_weight_region(const Rect2i &p_region, int p_layer_inde
 	}
 }
 
-PackedByteArray Terrain3D::get_hole_region(const Rect2i &p_region) const {
+PackedByteArray Landscape3D::get_hole_region(const Rect2i &p_region) const {
 	ERR_FAIL_COND_V(terrain_data.is_null(), PackedByteArray());
 	return terrain_data->get_hole_region(p_region);
 }
 
-void Terrain3D::set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes) {
+void Landscape3D::set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	_disconnect_terrain_data_changed();
 	terrain_data->set_hole_region(p_region, p_holes);
@@ -1085,7 +1085,7 @@ void Terrain3D::set_hole_region(const Rect2i &p_region, const PackedByteArray &p
 	_rebuild_chunks_in_region(p_region);
 }
 
-void Terrain3D::update_collision() {
+void Landscape3D::update_collision() {
 	if (terrain_data.is_null()) {
 		return;
 	}
@@ -1105,7 +1105,7 @@ void Terrain3D::update_collision() {
 	collision_body->set_collision_mask(collision_mask);
 }
 
-Vector2i Terrain3D::local_position_to_index(const Vector3 &p_local_position) const {
+Vector2i Landscape3D::local_position_to_index(const Vector3 &p_local_position) const {
 	if (terrain_data.is_null()) {
 		return Vector2i();
 	}
@@ -1113,7 +1113,7 @@ Vector2i Terrain3D::local_position_to_index(const Vector3 &p_local_position) con
 	return Vector2i((int)Math::round(p_local_position.x / spacing), (int)Math::round(p_local_position.z / spacing));
 }
 
-Vector<AABB> Terrain3D::get_chunk_local_aabbs() const {
+Vector<AABB> Landscape3D::get_chunk_local_aabbs() const {
 	Vector<AABB> result;
 	for (const KeyValue<Vector2i, Chunk> &kv : chunks) {
 		if (kv.value.mesh.is_null()) {
@@ -1126,7 +1126,7 @@ Vector<AABB> Terrain3D::get_chunk_local_aabbs() const {
 	return result;
 }
 
-AABB Terrain3D::get_aabb() const {
+AABB Landscape3D::get_aabb() const {
 	if (terrain_data.is_null()) {
 		return AABB();
 	}
@@ -1137,7 +1137,7 @@ AABB Terrain3D::get_aabb() const {
 	return AABB(Vector3(0, -4096, 0), Vector3(size, 8192, size));
 }
 
-PackedStringArray Terrain3D::get_configuration_warnings() const {
+PackedStringArray Landscape3D::get_configuration_warnings() const {
 	PackedStringArray warnings = Node3D::get_configuration_warnings();
 
 	if (terrain_data.is_null()) {
@@ -1150,16 +1150,16 @@ PackedStringArray Terrain3D::get_configuration_warnings() const {
 	return warnings;
 }
 
-Terrain3D::Terrain3D() {
+Landscape3D::Landscape3D() {
 	// Chunk instance transforms and the shader's terrain_origin uniform are
 	// kept in sync from NOTIFICATION_TRANSFORM_CHANGED, which Node3D only
 	// sends to nodes that opt in.
 	set_notify_transform(true);
 }
 
-Terrain3D::~Terrain3D() {
+Landscape3D::~Landscape3D() {
 	_clear_chunks();
 	if (terrain_data.is_valid()) {
-		terrain_data->disconnect_changed(callable_mp(this, &Terrain3D::_on_terrain_data_changed));
+		terrain_data->disconnect_changed(callable_mp(this, &Landscape3D::_on_terrain_data_changed));
 	}
 }

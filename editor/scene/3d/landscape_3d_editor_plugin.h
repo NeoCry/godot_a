@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  terrain_3d_editor_plugin.h                                            */
+/*  landscape_3d_editor_plugin.h                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -32,7 +32,7 @@
 
 #include "core/templates/hash_map.h"
 #include "editor/plugins/editor_plugin.h"
-#include "scene/3d/terrain_3d.h"
+#include "scene/3d/landscape_3d.h"
 
 class Button;
 class ButtonGroup;
@@ -43,13 +43,13 @@ class MenuButton;
 class SpinBox;
 class StandardMaterial3D;
 
-// In-viewport brush tool for Terrain3D: sculpts the heightmap (raise, lower,
+// In-viewport brush tool for Landscape3D: sculpts the heightmap (raise, lower,
 // smooth, flatten), paints texture layers, and cuts/fills holes, all by
 // raycasting against the terrain's own physics collider (kept in sync by
-// Terrain3D::update_collision) rather than needing separate pick geometry.
+// Landscape3D::update_collision) rather than needing separate pick geometry.
 // Modeled after FoliagePainter3DEditorPlugin's brush workflow.
-class Terrain3DEditorPlugin : public EditorPlugin {
-	GDCLASS(Terrain3DEditorPlugin, EditorPlugin);
+class Landscape3DEditorPlugin : public EditorPlugin {
+	GDCLASS(Landscape3DEditorPlugin, EditorPlugin);
 
 	enum Mode {
 		MODE_RAISE,
@@ -74,13 +74,13 @@ class Terrain3DEditorPlugin : public EditorPlugin {
 		PackedFloat32Array before_heights;
 		// One entry per layer that existed when the stroke started (PAINT
 		// mode only): painting one layer renormalizes every other layer's
-		// weight too (see Terrain3D::paint_layer), so undoing a stroke has
+		// weight too (see Landscape3D::paint_layer), so undoing a stroke has
 		// to restore all of them, not just the one the user picked.
 		Vector<PackedFloat32Array> before_weights;
 		PackedByteArray before_holes;
 	};
 
-	Terrain3D *terrain = nullptr;
+	Landscape3D *terrain = nullptr;
 
 	// Toolbar.
 	HBoxContainer *topmenu_bar = nullptr;
@@ -158,12 +158,12 @@ protected:
 	static void _bind_methods();
 
 public:
-	virtual String get_plugin_name() const override { return "Terrain3D"; }
+	virtual String get_plugin_name() const override { return "Landscape3D"; }
 	virtual bool handles(Object *p_object) const override;
 	virtual void edit(Object *p_object) override;
 	virtual void make_visible(bool p_visible) override;
 	virtual EditorPlugin::AfterGUIInput forward_3d_gui_input(Camera3D *p_camera, const Ref<InputEvent> &p_event) override;
 
-	Terrain3DEditorPlugin();
-	~Terrain3DEditorPlugin();
+	Landscape3DEditorPlugin();
+	~Landscape3DEditorPlugin();
 };

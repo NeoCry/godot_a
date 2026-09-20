@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <class name="TerrainData" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
-		The heightmap and per-layer texture weight maps for a [Terrain3D].
+		The heightmap and per-layer texture weight maps for a [Landscape3D].
 	</brief_description>
 	<description>
-		[TerrainData] is the actual "world" a [Terrain3D] renders and collides with: a square grid of [member resolution] × [member resolution] height samples spaced [member vertex_spacing] meters apart, plus one continuous weight per [TerrainLayer] at every sample, and a hole flag (see [method get_layer_weight] and [Terrain3D]'s description for how layer weights combine into a final blend).
-		This resource holds and serializes the data; it does not render anything or know about any particular [Terrain3D] node (several nodes could even share one [TerrainData], though editing it from one would then affect all of them). Assign it to a [Terrain3D]'s [member Terrain3D.terrain_data] to render and sculpt it.
-		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. A [Terrain3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Terrain3D] sharing it), but prefer going through [Terrain3D]'s own [method Terrain3D.sculpt], [method Terrain3D.set_height_region], and [method Terrain3D.paint_layer] instead of this resource's methods directly when a [Terrain3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Terrain3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
+		[TerrainData] is the actual "world" a [Landscape3D] renders and collides with: a square grid of [member resolution] × [member resolution] height samples spaced [member vertex_spacing] meters apart, plus one continuous weight per [TerrainLayer] at every sample, and a hole flag (see [method get_layer_weight] and [Landscape3D]'s description for how layer weights combine into a final blend).
+		This resource holds and serializes the data; it does not render anything or know about any particular [Landscape3D] node (several nodes could even share one [TerrainData], though editing it from one would then affect all of them). Assign it to a [Landscape3D]'s [member Landscape3D.terrain_data] to render and sculpt it.
+		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. A [Landscape3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Landscape3D] sharing it), but prefer going through [Landscape3D]'s own [method Landscape3D.sculpt], [method Landscape3D.set_height_region], and [method Landscape3D.paint_layer] instead of this resource's methods directly when a [Landscape3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Landscape3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -30,7 +30,7 @@
 			<return type="float" />
 			<param index="0" name="local_xz" type="Vector2" />
 			<description>
-				Returns the terrain height at the arbitrary local-space position [param local_xz] (X and Z; local to whatever [Terrain3D] this data is assigned to), bilinearly interpolated between the surrounding height samples. Useful for gameplay queries like snapping an object to the ground.
+				Returns the terrain height at the arbitrary local-space position [param local_xz] (X and Z; local to whatever [Landscape3D] this data is assigned to), bilinearly interpolated between the surrounding height samples. Useful for gameplay queries like snapping an object to the ground.
 			</description>
 		</method>
 		<method name="get_height_region" qualifiers="const">
@@ -53,7 +53,7 @@
 			<param index="1" name="z" type="int" />
 			<param index="2" name="layer_index" type="int" />
 			<description>
-				Returns how much of the [TerrainLayer] at [param layer_index] (its index into [member Terrain3D.layers]) shows at height sample [param x], [param z] (out-of-range coordinates are clamped to the valid range), from [code]0.0[/code] to [code]1.0[/code]. This is one independent weight per layer, not a shared pair like an older-style 2-layer control map: see the class description for how every layer's weight at a point combines into what's actually rendered there.
+				Returns how much of the [TerrainLayer] at [param layer_index] (its index into [member Landscape3D.layers]) shows at height sample [param x], [param z] (out-of-range coordinates are clamped to the valid range), from [code]0.0[/code] to [code]1.0[/code]. This is one independent weight per layer, not a shared pair like an older-style 2-layer control map: see the class description for how every layer's weight at a point combines into what's actually rendered there.
 			</description>
 		</method>
 		<method name="get_layer_weight_region" qualifiers="const">
@@ -100,7 +100,7 @@
 			<param index="0" name="x" type="int" />
 			<param index="1" name="z" type="int" />
 			<description>
-				Returns [code]true[/code] if height sample [param x], [param z] is flagged as a hole (see [method Terrain3D.set_hole]). A [Terrain3D] omits the geometry around a hole entirely, rather than just hiding it, so holes can be used for cave entrances and similar openings that the camera and physics bodies can pass through.
+				Returns [code]true[/code] if height sample [param x], [param z] is flagged as a hole (see [method Landscape3D.set_hole]). A [Landscape3D] omits the geometry around a hole entirely, rather than just hiding it, so holes can be used for cave entrances and similar openings that the camera and physics bodies can pass through.
 			</description>
 		</method>
 		<method name="set_height">
@@ -144,7 +144,7 @@
 			<param index="2" name="layer_index" type="int" />
 			<param index="3" name="weight" type="float" />
 			<description>
-				Sets how much of the [TerrainLayer] at [param layer_index] shows at height sample [param x], [param z] (out-of-range coordinates are ignored) to [param weight] (clamped to [code]0.0[/code]-[code]1.0[/code]). Unlike [method Terrain3D.paint_layer], this does not touch any other layer's weight at that point, so painting with it directly won't automatically keep the total weight normalized (see the class description) - prefer [method Terrain3D.paint_layer] unless you're deliberately managing every layer's weights yourself. Does not emit [signal Resource.changed]; callers making many edits should call [method Resource.emit_changed] once afterwards, or use [method set_layer_weight_region] instead.
+				Sets how much of the [TerrainLayer] at [param layer_index] shows at height sample [param x], [param z] (out-of-range coordinates are ignored) to [param weight] (clamped to [code]0.0[/code]-[code]1.0[/code]). Unlike [method Landscape3D.paint_layer], this does not touch any other layer's weight at that point, so painting with it directly won't automatically keep the total weight normalized (see the class description) - prefer [method Landscape3D.paint_layer] unless you're deliberately managing every layer's weights yourself. Does not emit [signal Resource.changed]; callers making many edits should call [method Resource.emit_changed] once afterwards, or use [method set_layer_weight_region] instead.
 			</description>
 		</method>
 		<method name="set_layer_weight_region">
@@ -153,7 +153,7 @@
 			<param index="1" name="layer_index" type="int" />
 			<param index="2" name="weights" type="PackedFloat32Array" />
 			<description>
-				Writes [param weights] (in the same row-major layout [method get_layer_weight_region] returns) into layer [param layer_index] at [param region] (in height sample coordinates) and emits [signal Resource.changed] once. See [method set_layer_weight] for how this compares to [method Terrain3D.paint_layer].
+				Writes [param weights] (in the same row-major layout [method get_layer_weight_region] returns) into layer [param layer_index] at [param region] (in height sample coordinates) and emits [signal Resource.changed] once. See [method set_layer_weight] for how this compares to [method Landscape3D.paint_layer].
 			</description>
 		</method>
 	</methods>
@@ -167,7 +167,7 @@
 	</members>
 	<constants>
 		<constant name="MAX_LAYERS" value="32">
-			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Terrain3D.layers]); [param layer_index] must be less than this in every method above.
+			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Landscape3D.layers]); [param layer_index] must be less than this in every method above.
 		</constant>
 	</constants>
 </class>

@@ -34,10 +34,10 @@
 
 class Texture2D;
 
-// One paintable ground material inside a Terrain3D: the textures used to
+// One paintable ground material inside a Landscape3D: the textures used to
 // render it (albedo, normal map, and a packed occlusion/roughness/metallic
 // map) plus how large one texture tile is in world space. This is pure
-// configuration; Terrain3D bakes every layer's textures into shared
+// configuration; Landscape3D bakes every layer's textures into shared
 // Texture2DArrays and paints this layer's weight into TerrainData's weight
 // maps (see TerrainData::set_layer_weight).
 class TerrainLayer : public Resource {

@@ -43,7 +43,7 @@ class MenuButton;
 class MeshInstance3D;
 class SpinBox;
 class StandardMaterial3D;
-class Terrain3D;
+class Landscape3D;
 
 // In-viewport brush tool for FoliagePainter3D: paints, erases, and single-place/
 // remove instances of one or more foliage layers directly onto the actual
@@ -100,10 +100,10 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 	Vector<StrokeOp> stroke_ops;
 	uint64_t last_stamp_msec = 0;
 	Vector<MeshInstance3D *> paint_targets;
-	// Terrain3D has no single conventional Mesh (it is chunked), so it is
+	// Landscape3D has no single conventional Mesh (it is chunked), so it is
 	// raycast separately, against its own physics collision body, rather than
 	// through the MeshFaceCache mechanism below.
-	Vector<Terrain3D *> paint_target_terrains;
+	Vector<Landscape3D *> paint_target_terrains;
 
 	RandomPCG rng;
 
@@ -116,7 +116,7 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 
 	const MeshFaceCache *_get_face_cache(MeshInstance3D *p_mesh_instance);
 	void _collect_mesh_instances(Node *p_node, Vector<MeshInstance3D *> &r_out) const;
-	void _collect_terrains(Node *p_node, Vector<Terrain3D *> &r_out) const;
+	void _collect_terrains(Node *p_node, Vector<Landscape3D *> &r_out) const;
 	bool _raycast(const Vector3 &p_from, const Vector3 &p_dir, float p_max_dist, Vector3 &r_position, Vector3 &r_normal);
 
 	void _rebuild_layers_menu();

@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  terrain_3d_gizmo_plugin.cpp                                           */
+/*  landscape_3d_gizmo_plugin.cpp                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,14 +28,14 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "terrain_3d_gizmo_plugin.h"
+#include "landscape_3d_gizmo_plugin.h"
 
 #include "editor/settings/editor_settings.h"
-#include "scene/3d/terrain_3d.h"
+#include "scene/3d/landscape_3d.h"
 #include "scene/3d/terrain_data.h"
 
-Terrain3DGizmoPlugin::Terrain3DGizmoPlugin() {
-	const Color gizmo_color = EDITOR_GET("editors/3d_gizmos/gizmo_colors/terrain_3d");
+Landscape3DGizmoPlugin::Landscape3DGizmoPlugin() {
+	const Color gizmo_color = EDITOR_GET("editors/3d_gizmos/gizmo_colors/landscape_3d");
 	create_material("bounds_material", gizmo_color);
 	// Distinct, unmissable color for the debug_draw_chunks wireframe, since it
 	// needs to stand out from both the bounds outline above and the terrain
@@ -43,20 +43,20 @@ Terrain3DGizmoPlugin::Terrain3DGizmoPlugin() {
 	create_material("chunks_material", Color(1.0, 0.6, 0.0, 0.5));
 }
 
-bool Terrain3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
-	return Object::cast_to<Terrain3D>(p_spatial) != nullptr;
+bool Landscape3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
+	return Object::cast_to<Landscape3D>(p_spatial) != nullptr;
 }
 
-String Terrain3DGizmoPlugin::get_gizmo_name() const {
-	return "Terrain3D";
+String Landscape3DGizmoPlugin::get_gizmo_name() const {
+	return "Landscape3D";
 }
 
-int Terrain3DGizmoPlugin::get_priority() const {
+int Landscape3DGizmoPlugin::get_priority() const {
 	return -1;
 }
 
-void Terrain3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
-	Terrain3D *terrain = Object::cast_to<Terrain3D>(p_gizmo->get_node_3d());
+void Landscape3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
+	Landscape3D *terrain = Object::cast_to<Landscape3D>(p_gizmo->get_node_3d());
 
 	p_gizmo->clear();
 
@@ -68,7 +68,7 @@ void Terrain3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	const float size = data->get_size();
 	const Ref<Material> material = get_material("bounds_material", p_gizmo);
 
-	// A flat footprint outline (rather than a full box) since Terrain3D has
+	// A flat footprint outline (rather than a full box) since Landscape3D has
 	// no fixed height range: heights can be sculpted arbitrarily high or low,
 	// so the footprint is the only bound that stays meaningful to show.
 	const Vector3 corners[4] = {

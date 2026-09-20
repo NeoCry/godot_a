@@ -193,7 +193,7 @@ float TerrainData::get_size() const {
 // Image::get_data() returns that buffer by reference (free), while a write
 // needs one get_data()+set_data() round trip to commit (one copy-on-write of
 // the whole image) - cheap by itself, but still worth batching: callers
-// doing many edits (TerrainData's own *_region methods, and Terrain3D's
+// doing many edits (TerrainData's own *_region methods, and Landscape3D's
 // sculpt/paint_layer/set_hole) do exactly one such round trip per call, not
 // one per sample.
 float TerrainData::get_height(int p_x, int p_z) const {

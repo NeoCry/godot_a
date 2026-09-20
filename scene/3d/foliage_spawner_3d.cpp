@@ -40,7 +40,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/mesh_instance_3d.h"
-#include "scene/3d/terrain_3d.h"
+#include "scene/3d/landscape_3d.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
@@ -164,7 +164,7 @@ void FoliageSpawner3D::_bind_methods() {
 
 	ADD_GROUP("Ground Projection", "");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "project_on_mesh"), "set_project_on_mesh", "is_projecting_on_mesh");
-	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "ground_mesh_path", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "MeshInstance3D,Terrain3D"), "set_ground_mesh_path", "get_ground_mesh_path");
+	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "ground_mesh_path", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "MeshInstance3D,Landscape3D"), "set_ground_mesh_path", "get_ground_mesh_path");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_slope_degrees", PROPERTY_HINT_RANGE, "0,90,0.1,suffix:°"), "set_max_slope_degrees", "get_max_slope_degrees");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "align_to_normal"), "set_align_to_normal", "is_aligned_to_normal");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "align_to_normal_amount", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_align_to_normal_amount", "get_align_to_normal_amount");
@@ -796,12 +796,12 @@ void FoliageSpawner3D::regenerate() {
 	HashMap<Vector2i, LocalVector<uint32_t>> face_grid;
 	float face_cell_size = 1.0f;
 
-	// Terrain3D has no single conventional Mesh (it is chunked), so it is
+	// Landscape3D has no single conventional Mesh (it is chunked), so it is
 	// sampled directly through TerrainData's height field below instead of
 	// through the face_grid raycasting mechanism built for MeshInstance3D.
 	Node *ground_node = is_inside_tree() ? get_node_or_null(ground_mesh_path) : nullptr;
 	MeshInstance3D *ground_mesh_instance = Object::cast_to<MeshInstance3D>(ground_node);
-	Terrain3D *ground_terrain = Object::cast_to<Terrain3D>(ground_node);
+	Landscape3D *ground_terrain = Object::cast_to<Landscape3D>(ground_node);
 	Ref<TerrainData> ground_terrain_data = ground_terrain != nullptr ? ground_terrain->get_terrain_data() : Ref<TerrainData>();
 
 	if (project_on_mesh && ground_terrain != nullptr) {
@@ -1082,13 +1082,13 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 	if (project_on_mesh) {
 		Node *ground = is_inside_tree() ? get_node_or_null(ground_mesh_path) : nullptr;
 		MeshInstance3D *ground_mesh_instance = Object::cast_to<MeshInstance3D>(ground);
-		Terrain3D *ground_terrain = Object::cast_to<Terrain3D>(ground);
+		Landscape3D *ground_terrain = Object::cast_to<Landscape3D>(ground);
 		if (ground_mesh_instance == nullptr && ground_terrain == nullptr) {
-			warnings.push_back(RTR("Project On Mesh is enabled, but Ground Mesh Path does not point to a MeshInstance3D or Terrain3D. Assign one, or disable Project On Mesh."));
+			warnings.push_back(RTR("Project On Mesh is enabled, but Ground Mesh Path does not point to a MeshInstance3D or Landscape3D. Assign one, or disable Project On Mesh."));
 		} else if (ground_mesh_instance != nullptr && ground_mesh_instance->get_mesh().is_null()) {
 			warnings.push_back(RTR("The MeshInstance3D referenced by Ground Mesh Path has no Mesh assigned."));
 		} else if (ground_terrain != nullptr && ground_terrain->get_terrain_data().is_null()) {
-			warnings.push_back(RTR("The Terrain3D referenced by Ground Mesh Path has no TerrainData assigned."));
+			warnings.push_back(RTR("The Landscape3D referenced by Ground Mesh Path has no TerrainData assigned."));
 		}
 	}
 

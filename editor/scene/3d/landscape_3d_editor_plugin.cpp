@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  terrain_3d_editor_plugin.cpp                                          */
+/*  landscape_3d_editor_plugin.cpp                                        */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "terrain_3d_editor_plugin.h"
+#include "landscape_3d_editor_plugin.h"
 
 #include "core/io/image.h"
 #include "core/object/callable_mp.h"
@@ -53,17 +53,17 @@
 #include "servers/physics_3d/physics_server_3d.h"
 #include "servers/rendering/rendering_server.h"
 
-void Terrain3DEditorPlugin::_bind_methods() {
+void Landscape3DEditorPlugin::_bind_methods() {
 }
 
-bool Terrain3DEditorPlugin::handles(Object *p_object) const {
-	return Object::cast_to<Terrain3D>(p_object) != nullptr;
+bool Landscape3DEditorPlugin::handles(Object *p_object) const {
+	return Object::cast_to<Landscape3D>(p_object) != nullptr;
 }
 
-void Terrain3DEditorPlugin::edit(Object *p_object) {
+void Landscape3DEditorPlugin::edit(Object *p_object) {
 	_end_stroke();
 
-	terrain = Object::cast_to<Terrain3D>(p_object);
+	terrain = Object::cast_to<Landscape3D>(p_object);
 
 	if (cursor_instance.is_valid()) {
 		RS::get_singleton()->instance_set_visible(cursor_instance, false);
@@ -72,7 +72,7 @@ void Terrain3DEditorPlugin::edit(Object *p_object) {
 	_rebuild_paint_layer_menu();
 }
 
-void Terrain3DEditorPlugin::make_visible(bool p_visible) {
+void Landscape3DEditorPlugin::make_visible(bool p_visible) {
 	if (p_visible) {
 		topmenu_bar->show();
 	} else {
@@ -85,20 +85,20 @@ void Terrain3DEditorPlugin::make_visible(bool p_visible) {
 	}
 }
 
-void Terrain3DEditorPlugin::_mode_pressed(int p_mode) {
+void Landscape3DEditorPlugin::_mode_pressed(int p_mode) {
 	_end_stroke();
 	mode = (Mode)p_mode;
 }
 
-void Terrain3DEditorPlugin::_set_brush_radius(double p_value) {
+void Landscape3DEditorPlugin::_set_brush_radius(double p_value) {
 	brush_radius = MAX(0.01f, (float)p_value);
 }
 
-void Terrain3DEditorPlugin::_set_brush_strength(double p_value) {
+void Landscape3DEditorPlugin::_set_brush_strength(double p_value) {
 	brush_strength = MAX(0.001f, (float)p_value);
 }
 
-void Terrain3DEditorPlugin::_rebuild_paint_layer_menu() {
+void Landscape3DEditorPlugin::_rebuild_paint_layer_menu() {
 	PopupMenu *popup = paint_layer_menu->get_popup();
 	popup->clear();
 
@@ -127,19 +127,19 @@ void Terrain3DEditorPlugin::_rebuild_paint_layer_menu() {
 	paint_layer_menu->set_text(vformat(TTR("Layer: %s"), current_name));
 }
 
-void Terrain3DEditorPlugin::_paint_layer_menu_id_pressed(int p_id) {
+void Landscape3DEditorPlugin::_paint_layer_menu_id_pressed(int p_id) {
 	paint_layer_index = p_id;
 	_rebuild_paint_layer_menu();
 }
 
-void Terrain3DEditorPlugin::_import_heightmap_pressed() {
+void Landscape3DEditorPlugin::_import_heightmap_pressed() {
 	if (terrain == nullptr) {
 		return;
 	}
 	import_file_dialog->popup_file_dialog();
 }
 
-void Terrain3DEditorPlugin::_import_file_selected(const String &p_path) {
+void Landscape3DEditorPlugin::_import_file_selected(const String &p_path) {
 	pending_import_path = p_path;
 	import_height_range_dialog->popup_centered();
 }
@@ -167,7 +167,7 @@ bool _is_high_precision_image_format(Image::Format p_format) {
 }
 } // namespace
 
-void Terrain3DEditorPlugin::_do_import_heightmap() {
+void Landscape3DEditorPlugin::_do_import_heightmap() {
 	if (terrain == nullptr || pending_import_path.is_empty()) {
 		return;
 	}
@@ -203,7 +203,7 @@ void Terrain3DEditorPlugin::_do_import_heightmap() {
 	terrain->get_terrain_data()->import_heightmap(image, height_min, height_max);
 }
 
-Terrain3DEditorPlugin::DataKind Terrain3DEditorPlugin::_get_mode_data_kind() const {
+Landscape3DEditorPlugin::DataKind Landscape3DEditorPlugin::_get_mode_data_kind() const {
 	switch (mode) {
 		case MODE_PAINT:
 			return DataKind::WEIGHTS;
@@ -215,7 +215,7 @@ Terrain3DEditorPlugin::DataKind Terrain3DEditorPlugin::_get_mode_data_kind() con
 	}
 }
 
-String Terrain3DEditorPlugin::_get_mode_action_name() const {
+String Landscape3DEditorPlugin::_get_mode_action_name() const {
 	switch (mode) {
 		case MODE_PAINT:
 			return TTR("Paint Terrain Layer");
@@ -228,7 +228,7 @@ String Terrain3DEditorPlugin::_get_mode_action_name() const {
 	}
 }
 
-Rect2i Terrain3DEditorPlugin::_get_brush_vertex_region(const Vector3 &p_local_position, float p_radius) const {
+Rect2i Landscape3DEditorPlugin::_get_brush_vertex_region(const Vector3 &p_local_position, float p_radius) const {
 	Ref<TerrainData> terrain_data = terrain->get_terrain_data();
 	if (terrain_data.is_null()) {
 		return Rect2i();
@@ -248,12 +248,12 @@ Rect2i Terrain3DEditorPlugin::_get_brush_vertex_region(const Vector3 &p_local_po
 	return Rect2i(x0, z0, x1 - x0 + 1, z1 - z0 + 1);
 }
 
-void Terrain3DEditorPlugin::_snapshot_chunk_if_needed(const Vector2i &p_chunk) {
+void Landscape3DEditorPlugin::_snapshot_chunk_if_needed(const Vector2i &p_chunk) {
 	if (touched_regions.has(p_chunk)) {
 		return;
 	}
 	TouchedChunkRegion snap;
-	snap.region = Rect2i(p_chunk.x * Terrain3D::CHUNK_QUADS, p_chunk.y * Terrain3D::CHUNK_QUADS, Terrain3D::CHUNK_QUADS + 1, Terrain3D::CHUNK_QUADS + 1);
+	snap.region = Rect2i(p_chunk.x * Landscape3D::CHUNK_QUADS, p_chunk.y * Landscape3D::CHUNK_QUADS, Landscape3D::CHUNK_QUADS + 1, Landscape3D::CHUNK_QUADS + 1);
 	switch (_get_mode_data_kind()) {
 		case DataKind::WEIGHTS: {
 			const int layer_count = terrain->get_layers().size();
@@ -272,14 +272,14 @@ void Terrain3DEditorPlugin::_snapshot_chunk_if_needed(const Vector2i &p_chunk) {
 	touched_regions[p_chunk] = snap;
 }
 
-void Terrain3DEditorPlugin::_snapshot_region_chunks(const Rect2i &p_vertex_region) {
+void Landscape3DEditorPlugin::_snapshot_region_chunks(const Rect2i &p_vertex_region) {
 	if (p_vertex_region.size.x <= 0 || p_vertex_region.size.y <= 0) {
 		return;
 	}
-	const int cx0 = (int)Math::floor((float)p_vertex_region.position.x / Terrain3D::CHUNK_QUADS);
-	const int cz0 = (int)Math::floor((float)p_vertex_region.position.y / Terrain3D::CHUNK_QUADS);
-	const int cx1 = (int)Math::floor((float)(p_vertex_region.position.x + p_vertex_region.size.x - 1) / Terrain3D::CHUNK_QUADS);
-	const int cz1 = (int)Math::floor((float)(p_vertex_region.position.y + p_vertex_region.size.y - 1) / Terrain3D::CHUNK_QUADS);
+	const int cx0 = (int)Math::floor((float)p_vertex_region.position.x / Landscape3D::CHUNK_QUADS);
+	const int cz0 = (int)Math::floor((float)p_vertex_region.position.y / Landscape3D::CHUNK_QUADS);
+	const int cx1 = (int)Math::floor((float)(p_vertex_region.position.x + p_vertex_region.size.x - 1) / Landscape3D::CHUNK_QUADS);
+	const int cz1 = (int)Math::floor((float)(p_vertex_region.position.y + p_vertex_region.size.y - 1) / Landscape3D::CHUNK_QUADS);
 	for (int cz = cz0; cz <= cz1; cz++) {
 		for (int cx = cx0; cx <= cx1; cx++) {
 			_snapshot_chunk_if_needed(Vector2i(cx, cz));
@@ -287,7 +287,7 @@ void Terrain3DEditorPlugin::_snapshot_region_chunks(const Rect2i &p_vertex_regio
 	}
 }
 
-bool Terrain3DEditorPlugin::_raycast_terrain(Camera3D *p_camera, const Point2 &p_screen_pos, Vector3 &r_local_position, Vector3 &r_world_position, Vector3 &r_world_normal) {
+bool Landscape3DEditorPlugin::_raycast_terrain(Camera3D *p_camera, const Point2 &p_screen_pos, Vector3 &r_local_position, Vector3 &r_world_position, Vector3 &r_world_normal) {
 	if (terrain == nullptr || !terrain->is_inside_tree() || terrain->get_collision_body() == nullptr) {
 		return false;
 	}
@@ -323,7 +323,7 @@ bool Terrain3DEditorPlugin::_raycast_terrain(Camera3D *p_camera, const Point2 &p
 	return true;
 }
 
-void Terrain3DEditorPlugin::_ensure_cursor_instance() {
+void Landscape3DEditorPlugin::_ensure_cursor_instance() {
 	if (cursor_mesh.is_valid()) {
 		return;
 	}
@@ -356,7 +356,7 @@ void Terrain3DEditorPlugin::_ensure_cursor_instance() {
 	RS::get_singleton()->mesh_surface_set_material(cursor_mesh, 0, cursor_material->get_rid());
 }
 
-void Terrain3DEditorPlugin::_update_cursor(const Vector3 &p_world_position, const Vector3 &p_world_normal, bool p_visible) {
+void Landscape3DEditorPlugin::_update_cursor(const Vector3 &p_world_position, const Vector3 &p_world_normal, bool p_visible) {
 	if (terrain == nullptr) {
 		p_visible = false;
 	}
@@ -391,7 +391,7 @@ void Terrain3DEditorPlugin::_update_cursor(const Vector3 &p_world_position, cons
 	RS::get_singleton()->instance_set_visible(cursor_instance, p_visible);
 }
 
-void Terrain3DEditorPlugin::_stamp(const Vector3 &p_local_position) {
+void Landscape3DEditorPlugin::_stamp(const Vector3 &p_local_position) {
 	if (terrain == nullptr) {
 		return;
 	}
@@ -403,16 +403,16 @@ void Terrain3DEditorPlugin::_stamp(const Vector3 &p_local_position) {
 
 	switch (mode) {
 		case MODE_RAISE: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Terrain3D::SCULPT_RAISE, 0.0f, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_RAISE, 0.0f, false);
 		} break;
 		case MODE_LOWER: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Terrain3D::SCULPT_LOWER, 0.0f, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_LOWER, 0.0f, false);
 		} break;
 		case MODE_SMOOTH: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Terrain3D::SCULPT_SMOOTH, 0.0f, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_SMOOTH, 0.0f, false);
 		} break;
 		case MODE_FLATTEN: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Terrain3D::SCULPT_FLATTEN, stroke_flatten_height, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_FLATTEN, stroke_flatten_height, false);
 		} break;
 		case MODE_PAINT: {
 			terrain->paint_layer(p_local_position, brush_radius, brush_strength, paint_layer_index);
@@ -426,13 +426,13 @@ void Terrain3DEditorPlugin::_stamp(const Vector3 &p_local_position) {
 	}
 }
 
-void Terrain3DEditorPlugin::_begin_stroke() {
+void Landscape3DEditorPlugin::_begin_stroke() {
 	stroke_active = true;
 	touched_regions.clear();
 	last_stamp_msec = 0;
 }
 
-void Terrain3DEditorPlugin::_end_stroke() {
+void Landscape3DEditorPlugin::_end_stroke() {
 	if (!stroke_active) {
 		return;
 	}
@@ -475,7 +475,7 @@ void Terrain3DEditorPlugin::_end_stroke() {
 	touched_regions.clear();
 }
 
-void Terrain3DEditorPlugin::_cancel_stroke() {
+void Landscape3DEditorPlugin::_cancel_stroke() {
 	if (stroke_active && terrain != nullptr) {
 		const DataKind kind = _get_mode_data_kind();
 		for (KeyValue<Vector2i, TouchedChunkRegion> &kv : touched_regions) {
@@ -498,7 +498,7 @@ void Terrain3DEditorPlugin::_cancel_stroke() {
 	touched_regions.clear();
 }
 
-bool Terrain3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Point2 &p_screen_pos, bool p_click) {
+bool Landscape3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Point2 &p_screen_pos, bool p_click) {
 	Vector3 local_pos, world_pos, world_normal;
 	const bool hit = _raycast_terrain(p_camera, p_screen_pos, local_pos, world_pos, world_normal);
 
@@ -519,7 +519,7 @@ bool Terrain3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Point2 &p
 	return true;
 }
 
-EditorPlugin::AfterGUIInput Terrain3DEditorPlugin::forward_3d_gui_input(Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+EditorPlugin::AfterGUIInput Landscape3DEditorPlugin::forward_3d_gui_input(Camera3D *p_camera, const Ref<InputEvent> &p_event) {
 	if (terrain == nullptr || !terrain->is_inside_tree()) {
 		return EditorPlugin::AFTER_GUI_INPUT_PASS;
 	}
@@ -565,7 +565,7 @@ EditorPlugin::AfterGUIInput Terrain3DEditorPlugin::forward_3d_gui_input(Camera3D
 	return EditorPlugin::AFTER_GUI_INPUT_PASS;
 }
 
-Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
+Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	topmenu_bar = memnew(HBoxContainer);
 	topmenu_bar->hide();
 
@@ -581,7 +581,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_raise_button->set_text(TTR("Raise"));
 	mode_raise_button->set_tooltip_text(TTR("Raise the terrain height within the brush."));
 	toolbar->add_child(mode_raise_button);
-	mode_raise_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_RAISE));
+	mode_raise_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_RAISE));
 
 	mode_lower_button = memnew(Button);
 	mode_lower_button->set_toggle_mode(true);
@@ -589,7 +589,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_lower_button->set_text(TTR("Lower"));
 	mode_lower_button->set_tooltip_text(TTR("Lower the terrain height within the brush."));
 	toolbar->add_child(mode_lower_button);
-	mode_lower_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_LOWER));
+	mode_lower_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_LOWER));
 
 	mode_smooth_button = memnew(Button);
 	mode_smooth_button->set_toggle_mode(true);
@@ -597,7 +597,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_smooth_button->set_text(TTR("Smooth"));
 	mode_smooth_button->set_tooltip_text(TTR("Average the terrain height with its neighbors within the brush."));
 	toolbar->add_child(mode_smooth_button);
-	mode_smooth_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_SMOOTH));
+	mode_smooth_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_SMOOTH));
 
 	mode_flatten_button = memnew(Button);
 	mode_flatten_button->set_toggle_mode(true);
@@ -605,7 +605,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_flatten_button->set_text(TTR("Flatten"));
 	mode_flatten_button->set_tooltip_text(TTR("Flatten the terrain within the brush towards the height at the start of the stroke."));
 	toolbar->add_child(mode_flatten_button);
-	mode_flatten_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_FLATTEN));
+	mode_flatten_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_FLATTEN));
 
 	mode_paint_button = memnew(Button);
 	mode_paint_button->set_toggle_mode(true);
@@ -613,7 +613,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_paint_button->set_text(TTR("Paint"));
 	mode_paint_button->set_tooltip_text(TTR("Paint the selected texture layer within the brush."));
 	toolbar->add_child(mode_paint_button);
-	mode_paint_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_PAINT));
+	mode_paint_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_PAINT));
 
 	mode_hole_button = memnew(Button);
 	mode_hole_button->set_toggle_mode(true);
@@ -621,7 +621,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_hole_button->set_text(TTR("Hole"));
 	mode_hole_button->set_tooltip_text(TTR("Cut a hole in the terrain within the brush."));
 	toolbar->add_child(mode_hole_button);
-	mode_hole_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_HOLE));
+	mode_hole_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_HOLE));
 
 	mode_unhole_button = memnew(Button);
 	mode_unhole_button->set_toggle_mode(true);
@@ -629,7 +629,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	mode_unhole_button->set_text(TTR("Unhole"));
 	mode_unhole_button->set_tooltip_text(TTR("Fill in holes within the brush."));
 	toolbar->add_child(mode_unhole_button);
-	mode_unhole_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_mode_pressed).bind((int)MODE_UNHOLE));
+	mode_unhole_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_mode_pressed).bind((int)MODE_UNHOLE));
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -644,7 +644,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	brush_radius_spin->set_value(brush_radius);
 	brush_radius_spin->set_tooltip_text(TTR("Brush radius, in meters."));
 	toolbar->add_child(brush_radius_spin);
-	brush_radius_spin->connect(SceneStringName(value_changed), callable_mp(this, &Terrain3DEditorPlugin::_set_brush_radius));
+	brush_radius_spin->connect(SceneStringName(value_changed), callable_mp(this, &Landscape3DEditorPlugin::_set_brush_radius));
 
 	Label *strength_label = memnew(Label);
 	strength_label->set_text(TTR("Strength:"));
@@ -657,15 +657,15 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	brush_strength_spin->set_value(brush_strength);
 	brush_strength_spin->set_tooltip_text(TTR("Effect applied per brush stamp: meters of height change for Raise/Lower/Smooth/Flatten, or blend amount (0-1 is typical) for Paint/Hole/Unhole."));
 	toolbar->add_child(brush_strength_spin);
-	brush_strength_spin->connect(SceneStringName(value_changed), callable_mp(this, &Terrain3DEditorPlugin::_set_brush_strength));
+	brush_strength_spin->connect(SceneStringName(value_changed), callable_mp(this, &Landscape3DEditorPlugin::_set_brush_strength));
 
 	toolbar->add_child(memnew(VSeparator));
 
 	paint_layer_menu = memnew(MenuButton);
 	paint_layer_menu->set_text(TTR("No Layers"));
 	paint_layer_menu->set_tooltip_text(TTR("Choose which TerrainLayer the Paint brush applies."));
-	paint_layer_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &Terrain3DEditorPlugin::_paint_layer_menu_id_pressed));
-	paint_layer_menu->connect("about_to_popup", callable_mp(this, &Terrain3DEditorPlugin::_rebuild_paint_layer_menu));
+	paint_layer_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &Landscape3DEditorPlugin::_paint_layer_menu_id_pressed));
+	paint_layer_menu->connect("about_to_popup", callable_mp(this, &Landscape3DEditorPlugin::_rebuild_paint_layer_menu));
 	toolbar->add_child(paint_layer_menu);
 
 	toolbar->add_child(memnew(VSeparator));
@@ -674,7 +674,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	import_heightmap_button->set_text(TTR("Import Heightmap..."));
 	import_heightmap_button->set_tooltip_text(TTR("Import a grayscale image as this terrain's heightmap, replacing the current one and resizing the terrain to match the image. Prefer an EXR or HDR heightmap over PNG: Godot always decodes PNG to 8 bits per channel (256 possible heights), while EXR/HDR keep real height precision."));
 	toolbar->add_child(import_heightmap_button);
-	import_heightmap_button->connect(SceneStringName(pressed), callable_mp(this, &Terrain3DEditorPlugin::_import_heightmap_pressed));
+	import_heightmap_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_import_heightmap_pressed));
 
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
 
@@ -689,13 +689,13 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	// artifacts in a heightmap show up as actual bumps in the terrain surface.
 	import_file_dialog->add_filter("*.exr,*.hdr", TTR("High-Precision Heightmap (Recommended)"));
 	import_file_dialog->add_filter("*.png", TTR("8-Bit Heightmap"));
-	import_file_dialog->connect("file_selected", callable_mp(this, &Terrain3DEditorPlugin::_import_file_selected));
+	import_file_dialog->connect("file_selected", callable_mp(this, &Landscape3DEditorPlugin::_import_file_selected));
 	EditorInterface::get_singleton()->get_base_control()->add_child(import_file_dialog);
 
 	import_height_range_dialog = memnew(ConfirmationDialog);
 	import_height_range_dialog->set_title(TTR("Heightmap Height Range"));
 	import_height_range_dialog->set_ok_button_text(TTR("Import"));
-	import_height_range_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Terrain3DEditorPlugin::_do_import_heightmap));
+	import_height_range_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Landscape3DEditorPlugin::_do_import_heightmap));
 	EditorInterface::get_singleton()->get_base_control()->add_child(import_height_range_dialog);
 
 	VBoxContainer *import_vbc = memnew(VBoxContainer);
@@ -716,7 +716,7 @@ Terrain3DEditorPlugin::Terrain3DEditorPlugin() {
 	import_vbc->add_margin_child(TTR("Height Max (meters):"), import_height_max_spin);
 }
 
-Terrain3DEditorPlugin::~Terrain3DEditorPlugin() {
+Landscape3DEditorPlugin::~Landscape3DEditorPlugin() {
 	if (cursor_instance.is_valid()) {
 		RS::get_singleton()->free_rid(cursor_instance);
 	}

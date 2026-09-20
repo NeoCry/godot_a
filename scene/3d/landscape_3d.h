@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  terrain_3d.h                                                          */
+/*  landscape_3d.h                                                        */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -54,13 +54,14 @@ class Texture2DArray;
 // hidden vertical geometry around each chunk hides the resulting seams.
 //
 // Texture layers (see TerrainLayer) are combined into shared Texture2DArrays
-// and blended per-vertex in a single splatting shader, driven by TerrainData's
-// control map, so any number of layers can be painted without extra draw
-// calls. Sculpting (raise/lower/smooth/flatten) and hole cutting edit
-// TerrainData directly and rebuild just the chunks that changed; painting
-// texture layers only re-uploads the (single, shared) control map texture.
-class Terrain3D : public Node3D {
-	GDCLASS(Terrain3D, Node3D);
+// and blended per-pixel in a single splatting shader, weighted by TerrainData's
+// per-layer weight maps, so any number of layers can overlap smoothly and be
+// painted without extra draw calls. Sculpting (raise/lower/smooth/flatten) and
+// hole cutting edit TerrainData directly and rebuild just the chunks that
+// changed; painting texture layers only re-uploads the affected layers'
+// weight textures.
+class Landscape3D : public Node3D {
+	GDCLASS(Landscape3D, Node3D);
 
 public:
 	enum SculptOperation {
@@ -139,7 +140,7 @@ private:
 	// set_hole_region() already know exactly which region they touched and refresh precisely
 	// that; _on_terrain_data_changed() is a coarse full-terrain rebuild meant
 	// only for edits made directly to a TerrainData resource (bypassing this
-	// node's own methods, e.g. from a script, or another Terrain3D sharing the
+	// node's own methods, e.g. from a script, or another Landscape3D sharing the
 	// same resource). Without suppressing it here, every self-driven edit
 	// would trigger both the precise update AND a full rebuild of every
 	// chunk/texture/collision sample, which is what made brush strokes slow.
@@ -210,8 +211,8 @@ public:
 	AABB get_aabb() const;
 	PackedStringArray get_configuration_warnings() const override;
 
-	Terrain3D();
-	~Terrain3D();
+	Landscape3D();
+	~Landscape3D();
 };
 
-VARIANT_ENUM_CAST(Terrain3D::SculptOperation)
+VARIANT_ENUM_CAST(Landscape3D::SculptOperation)
