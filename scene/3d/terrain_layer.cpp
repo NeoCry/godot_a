@@ -46,6 +46,12 @@ void TerrainLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_orm_texture", "texture"), &TerrainLayer::set_orm_texture);
 	ClassDB::bind_method(D_METHOD("get_orm_texture"), &TerrainLayer::get_orm_texture);
 
+	ClassDB::bind_method(D_METHOD("set_height_texture", "texture"), &TerrainLayer::set_height_texture);
+	ClassDB::bind_method(D_METHOD("get_height_texture"), &TerrainLayer::get_height_texture);
+
+	ClassDB::bind_method(D_METHOD("set_heightmap_scale", "scale"), &TerrainLayer::set_heightmap_scale);
+	ClassDB::bind_method(D_METHOD("get_heightmap_scale"), &TerrainLayer::get_heightmap_scale);
+
 	ClassDB::bind_method(D_METHOD("set_uv_scale", "scale"), &TerrainLayer::set_uv_scale);
 	ClassDB::bind_method(D_METHOD("get_uv_scale"), &TerrainLayer::get_uv_scale);
 
@@ -69,6 +75,8 @@ void TerrainLayer::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "roughness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_roughness", "get_roughness");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "specular", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_specular", "get_specular");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ao_strength", "get_ao_strength");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "height_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_height_texture", "get_height_texture");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heightmap_scale", PROPERTY_HINT_RANGE, "-16,16,0.001"), "set_heightmap_scale", "get_heightmap_scale");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "uv_scale", PROPERTY_HINT_RANGE, "0.01,256.0,0.01,or_greater,suffix:m"), "set_uv_scale", "get_uv_scale");
 }
 
@@ -151,6 +159,24 @@ void TerrainLayer::set_ao_strength(float p_strength) {
 
 float TerrainLayer::get_ao_strength() const {
 	return ao_strength;
+}
+
+void TerrainLayer::set_height_texture(const Ref<Texture2D> &p_texture) {
+	height_texture = p_texture;
+	emit_changed();
+}
+
+Ref<Texture2D> TerrainLayer::get_height_texture() const {
+	return height_texture;
+}
+
+void TerrainLayer::set_heightmap_scale(float p_scale) {
+	heightmap_scale = p_scale;
+	emit_changed();
+}
+
+float TerrainLayer::get_heightmap_scale() const {
+	return heightmap_scale;
 }
 
 TerrainLayer::TerrainLayer() {

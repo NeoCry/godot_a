@@ -59,7 +59,11 @@ class Texture2DArray;
 // painted without extra draw calls. Sculpting (raise/lower/smooth/flatten) and
 // hole cutting edit TerrainData directly and rebuild just the chunks that
 // changed; painting texture layers only re-uploads the affected layers'
-// weight textures.
+// weight textures. Optionally (see pom_enabled), the same shader also offsets
+// each layer's texture lookups using its TerrainLayer.height_texture
+// (Parallax Occlusion Mapping) for extra apparent depth without more
+// geometry, with an optional self-shadowing pass that darkens crevices
+// facing away from pom_shadow_light_direction.
 class Landscape3D : public Node3D {
 	GDCLASS(Landscape3D, Node3D);
 
@@ -97,9 +101,30 @@ private:
 	Ref<Texture2DArray> albedo_array;
 	Ref<Texture2DArray> normal_array;
 	Ref<Texture2DArray> orm_array;
+	Ref<Texture2DArray> height_array;
 
 	float skirt_depth = 2.0;
 	float lod_bias = 1.0;
+
+	// Parallax Occlusion Mapping (see TerrainLayer.height_texture/
+	// heightmap_scale for the per-layer half of this). Off by default, like
+	// BaseMaterial3D's own equivalent heightmap_enabled feature this is
+	// modeled on: it only does anything once layers have height textures
+	// assigned, but the ray-marching it adds to every fragment isn't free
+	// even when they don't, so it stays opt-in.
+	bool pom_enabled = false;
+	int pom_min_layers = 8;
+	int pom_max_layers = 32;
+	bool pom_flip_tangent = false;
+	bool pom_flip_binormal = false;
+	// Self-shadowing needs a light direction to march towards, but a
+	// fragment shader (unlike a custom light() processor) has no access to
+	// the scene's actual lights - this is a fixed approximation the user
+	// points at whatever their main light is, not something that tracks a
+	// moving DirectionalLight3D automatically.
+	bool pom_self_shadow_enabled = true;
+	int pom_shadow_steps = 8;
+	Vector3 pom_shadow_light_direction = Vector3(0.5, 0.75, 0.3);
 
 	GeometryInstance3D::ShadowCastingSetting cast_shadow = GeometryInstance3D::SHADOW_CASTING_SETTING_ON;
 	GeometryInstance3D::GIMode gi_mode = GeometryInstance3D::GI_MODE_STATIC;
@@ -184,6 +209,30 @@ public:
 
 	void set_debug_draw_chunks(bool p_enable);
 	bool is_debug_draw_chunks_enabled() const;
+
+	void set_pom_enabled(bool p_enable);
+	bool is_pom_enabled() const;
+
+	void set_pom_min_layers(int p_layers);
+	int get_pom_min_layers() const;
+
+	void set_pom_max_layers(int p_layers);
+	int get_pom_max_layers() const;
+
+	void set_pom_flip_tangent(bool p_flip);
+	bool get_pom_flip_tangent() const;
+
+	void set_pom_flip_binormal(bool p_flip);
+	bool get_pom_flip_binormal() const;
+
+	void set_pom_self_shadow_enabled(bool p_enable);
+	bool is_pom_self_shadow_enabled() const;
+
+	void set_pom_shadow_steps(int p_steps);
+	int get_pom_shadow_steps() const;
+
+	void set_pom_shadow_light_direction(const Vector3 &p_direction);
+	Vector3 get_pom_shadow_light_direction() const;
 
 	// Sculpting/painting API. Positions are in this node's local space
 	// (XZ plane, Y up). Also directly usable at runtime (e.g. for explosion

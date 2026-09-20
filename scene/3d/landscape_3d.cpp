@@ -72,6 +72,7 @@ uniform sampler2DArray weight_array : filter_linear;
 uniform sampler2DArray albedo_array : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray orm_array : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray height_array : hint_default_white, filter_linear, repeat_enable;
 uniform float layer_uv_scales[32];
 // Per-layer scalar tweaks (see TerrainLayer): albedo_color multiplies the
 // albedo texture, roughness/ao_strength multiply the ORM texture's
@@ -82,9 +83,34 @@ uniform vec4 layer_albedo_colors[32];
 uniform float layer_roughness[32];
 uniform float layer_specular[32];
 uniform float layer_ao_strength[32];
+uniform float layer_heightmap_scale[32];
 uniform int layer_count = 0;
 uniform vec3 terrain_origin = vec3(0.0);
 uniform vec2 terrain_size = vec2(1.0, 1.0);
+
+// Parallax Occlusion Mapping (see Landscape3D.pom_enabled). Off by default;
+// a layer with no height_texture assigned reads a flat white height_array
+// entry (hint_default_white), which makes pom_offset() below a no-op for it
+// even while POM is on.
+uniform bool pom_enabled = false;
+uniform int pom_min_layers = 8;
+uniform int pom_max_layers = 32;
+// Godot's own BaseMaterial3D heightmap feature negates BINORMAL to correct
+// for its mikktspace-imported tangents; this mesh's tangents are generated
+// directly from the heightmap (see Landscape3D::_rebuild_chunk), not
+// mikktspace, so whether either axis needs flipping to point the parallax
+// offset the right way isn't known in advance - these are this shader's
+// equivalent of BaseMaterial3D's heightmap_flip_tangent/flip_binormal,
+// there to be toggled if parallax looks inverted.
+uniform vec2 pom_flip = vec2(1.0, 1.0);
+uniform bool pom_self_shadow_enabled = true;
+uniform int pom_shadow_steps = 8;
+// A fragment shader has no access to the scene's actual lights (only a
+// custom light() processor does, and writing one means reimplementing
+// Godot's whole PBR lighting response by hand) - this is a fixed direction
+// the self-shadow ray marches towards, meant to be pointed at whatever the
+// main light is, not something that tracks a moving light automatically.
+uniform vec3 pom_shadow_light_direction = vec3(0.5, 0.75, 0.3);
 
 varying vec3 world_pos;
 
@@ -92,17 +118,92 @@ void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
+// Steep parallax mapping with a linear-interpolation refinement step - the
+// same technique (and largely the same derivation) as Godot's own
+// BaseMaterial3D "Deep Parallax" heightmap feature. Returns the displaced
+// UV and writes the ray's depth there to r_depth (self-shadowing needs it
+// as its starting depth).
+vec2 pom_offset(int layer_idx, vec2 base_uv, vec3 view_dir_tangent, out float r_depth) {
+	float num_layers = mix(float(pom_max_layers), float(pom_min_layers), abs(view_dir_tangent.z));
+	float layer_depth = 1.0 / num_layers;
+	vec2 p = view_dir_tangent.xy * layer_heightmap_scale[layer_idx] * 0.01;
+	vec2 delta = p / num_layers;
+	vec2 ofs = base_uv;
+	float depth = 1.0 - texture(height_array, vec3(ofs, float(layer_idx))).r;
+	float current_depth = 0.0;
+	while (current_depth < depth) {
+		ofs -= delta;
+		depth = 1.0 - texture(height_array, vec3(ofs, float(layer_idx))).r;
+		current_depth += layer_depth;
+	}
+
+	vec2 prev_ofs = ofs + delta;
+	float after_depth = depth - current_depth;
+	float before_depth = (1.0 - texture(height_array, vec3(prev_ofs, float(layer_idx))).r) - current_depth + layer_depth;
+	float weight = after_depth / (after_depth - before_depth);
+	r_depth = current_depth;
+	return mix(ofs, prev_ofs, weight);
+}
+
+// Soft self-shadowing: marches from the parallaxed point towards the light
+// through the same height field, and darkens the result wherever a nearby
+// point along that path sits above the unoccluded ray - i.e. would block
+// the light. See Landscape3D.pom_shadow_light_direction for why the light
+// direction is a fixed uniform rather than an actual scene light.
+float pom_self_shadow(int layer_idx, vec2 uv, float initial_depth, vec3 light_dir_tangent) {
+	if (light_dir_tangent.z <= 0.05) {
+		// The light is nearly edge-on (or below) the local tangent plane: a
+		// per-texel march can't say anything useful this close to grazing
+		// incidence, so leave shading to the normal map's own slope instead
+		// of guessing.
+		return 1.0;
+	}
+
+	float num_steps = float(pom_shadow_steps);
+	float layer_depth = initial_depth / num_steps;
+	// Same UV-per-depth scale as pom_offset()'s main ray (using the light
+	// direction in place of the view direction), so a step here covers the
+	// same ground a step of the main ray would.
+	vec2 delta = light_dir_tangent.xy * layer_heightmap_scale[layer_idx] * 0.01 / num_steps;
+	float current_depth = initial_depth - layer_depth;
+	vec2 sample_uv = uv + delta;
+	float shadow = 0.0;
+
+	for (int i = 0; i < pom_shadow_steps; i++) {
+		if (current_depth < 0.0) {
+			break;
+		}
+		float sampled_depth = 1.0 - texture(height_array, vec3(sample_uv, float(layer_idx))).r;
+		if (sampled_depth < current_depth) {
+			float blocked = (current_depth - sampled_depth) * (1.0 - float(i) / num_steps);
+			shadow = max(shadow, blocked);
+		}
+		sample_uv += delta;
+		current_depth -= layer_depth;
+	}
+
+	return clamp(1.0 - shadow, 0.0, 1.0);
+}
+
 // Accumulates one layer's contribution, weighted, into the running sums -
 // skipped entirely for a layer with (near-)zero weight here, so a terrain
 // only pays for the layers actually present at a given point.
-void accumulate_layer(int layer_idx, float w, vec2 world_xz, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float weight_sum) {
+void accumulate_layer(int layer_idx, float w, vec2 world_xz, vec3 view_dir_tangent, vec3 light_dir_tangent, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float weight_sum) {
 	if (w <= 0.001) {
 		return;
 	}
 	vec2 uv = world_xz / layer_uv_scales[layer_idx];
-	vec3 albedo = texture(albedo_array, vec3(uv, float(layer_idx))).rgb * layer_albedo_colors[layer_idx].rgb;
+	float shadow = 1.0;
+	if (pom_enabled) {
+		float depth = 0.0;
+		uv = pom_offset(layer_idx, uv, view_dir_tangent, depth);
+		if (pom_self_shadow_enabled) {
+			shadow = pom_self_shadow(layer_idx, uv, depth, light_dir_tangent);
+		}
+	}
+	vec3 albedo = texture(albedo_array, vec3(uv, float(layer_idx))).rgb * layer_albedo_colors[layer_idx].rgb * shadow;
 	vec3 orm = texture(orm_array, vec3(uv, float(layer_idx))).rgb;
-	orm.r = clamp(orm.r * layer_ao_strength[layer_idx], 0.0, 1.0);
+	orm.r = clamp(orm.r * layer_ao_strength[layer_idx] * shadow, 0.0, 1.0);
 	orm.g = clamp(orm.g * layer_roughness[layer_idx], 0.0, 1.0);
 	albedo_sum += albedo * w;
 	normal_sum += texture(normal_array, vec3(uv, float(layer_idx))).rgb * w;
@@ -113,6 +214,20 @@ void accumulate_layer(int layer_idx, float w, vec2 world_xz, inout vec3 albedo_s
 
 void fragment() {
 	vec2 cm_uv = (world_pos.xz - terrain_origin.xz) / terrain_size;
+
+	// Shared tangent-space directions for every layer's POM this fragment:
+	// the same TBN construction (and the same mikktspace-style BINORMAL
+	// negation) Godot's own heightmap shader code uses.
+	vec3 view_dir_tangent = vec3(0.0);
+	vec3 light_dir_tangent = vec3(0.0);
+	if (pom_enabled) {
+		mat3 tbn = mat3(TANGENT * pom_flip.x, -BINORMAL * pom_flip.y, NORMAL);
+		view_dir_tangent = normalize(normalize(-VERTEX) * tbn);
+		if (pom_self_shadow_enabled) {
+			vec3 light_dir_view = normalize((VIEW_MATRIX * vec4(pom_shadow_light_direction, 0.0)).xyz);
+			light_dir_tangent = normalize(light_dir_view * tbn);
+		}
+	}
 
 	vec3 albedo_sum = vec3(0.0);
 	vec3 normal_sum = vec3(0.0);
@@ -127,16 +242,16 @@ void fragment() {
 		vec4 w = texture(weight_array, vec3(cm_uv, float(g)));
 		int base_layer = g * 4;
 		if (base_layer < layer_count) {
-			accumulate_layer(base_layer, w.r, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer, w.r, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 		if (base_layer + 1 < layer_count) {
-			accumulate_layer(base_layer + 1, w.g, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer + 1, w.g, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 		if (base_layer + 2 < layer_count) {
-			accumulate_layer(base_layer + 2, w.b, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer + 2, w.b, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 		if (base_layer + 3 < layer_count) {
-			accumulate_layer(base_layer + 3, w.a, world_pos.xz, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
+			accumulate_layer(base_layer + 3, w.a, world_pos.xz, view_dir_tangent, light_dir_tangent, albedo_sum, normal_sum, orm_sum, specular_sum, weight_sum);
 		}
 	}
 
@@ -189,6 +304,30 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_debug_draw_chunks", "enable"), &Landscape3D::set_debug_draw_chunks);
 	ClassDB::bind_method(D_METHOD("is_debug_draw_chunks_enabled"), &Landscape3D::is_debug_draw_chunks_enabled);
 
+	ClassDB::bind_method(D_METHOD("set_pom_enabled", "enable"), &Landscape3D::set_pom_enabled);
+	ClassDB::bind_method(D_METHOD("is_pom_enabled"), &Landscape3D::is_pom_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_pom_min_layers", "layers"), &Landscape3D::set_pom_min_layers);
+	ClassDB::bind_method(D_METHOD("get_pom_min_layers"), &Landscape3D::get_pom_min_layers);
+
+	ClassDB::bind_method(D_METHOD("set_pom_max_layers", "layers"), &Landscape3D::set_pom_max_layers);
+	ClassDB::bind_method(D_METHOD("get_pom_max_layers"), &Landscape3D::get_pom_max_layers);
+
+	ClassDB::bind_method(D_METHOD("set_pom_flip_tangent", "flip"), &Landscape3D::set_pom_flip_tangent);
+	ClassDB::bind_method(D_METHOD("get_pom_flip_tangent"), &Landscape3D::get_pom_flip_tangent);
+
+	ClassDB::bind_method(D_METHOD("set_pom_flip_binormal", "flip"), &Landscape3D::set_pom_flip_binormal);
+	ClassDB::bind_method(D_METHOD("get_pom_flip_binormal"), &Landscape3D::get_pom_flip_binormal);
+
+	ClassDB::bind_method(D_METHOD("set_pom_self_shadow_enabled", "enable"), &Landscape3D::set_pom_self_shadow_enabled);
+	ClassDB::bind_method(D_METHOD("is_pom_self_shadow_enabled"), &Landscape3D::is_pom_self_shadow_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_pom_shadow_steps", "steps"), &Landscape3D::set_pom_shadow_steps);
+	ClassDB::bind_method(D_METHOD("get_pom_shadow_steps"), &Landscape3D::get_pom_shadow_steps);
+
+	ClassDB::bind_method(D_METHOD("set_pom_shadow_light_direction", "direction"), &Landscape3D::set_pom_shadow_light_direction);
+	ClassDB::bind_method(D_METHOD("get_pom_shadow_light_direction"), &Landscape3D::get_pom_shadow_light_direction);
+
 	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(0.0f), DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index"), &Landscape3D::paint_layer);
 	ClassDB::bind_method(D_METHOD("set_hole", "local_position", "radius", "hole", "update_collision"), &Landscape3D::set_hole, DEFVAL(true));
@@ -215,6 +354,16 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "cast_shadow", PROPERTY_HINT_ENUM, "Off,On,Double-Sided,Shadows Only"), "set_cast_shadow", "get_cast_shadow");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw_chunks"), "set_debug_draw_chunks", "is_debug_draw_chunks_enabled");
+
+	ADD_GROUP("Parallax Occlusion Mapping", "pom_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_enabled"), "set_pom_enabled", "is_pom_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_min_layers", PROPERTY_HINT_RANGE, "1,64,1"), "set_pom_min_layers", "get_pom_min_layers");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_max_layers", PROPERTY_HINT_RANGE, "1,64,1"), "set_pom_max_layers", "get_pom_max_layers");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_flip_tangent"), "set_pom_flip_tangent", "get_pom_flip_tangent");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_flip_binormal"), "set_pom_flip_binormal", "get_pom_flip_binormal");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_self_shadow_enabled"), "set_pom_self_shadow_enabled", "is_pom_self_shadow_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_shadow_steps", PROPERTY_HINT_RANGE, "1,32,1"), "set_pom_shadow_steps", "get_pom_shadow_steps");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "pom_shadow_light_direction"), "set_pom_shadow_light_direction", "get_pom_shadow_light_direction");
 
 	ADD_GROUP("Collision", "collision_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
@@ -306,9 +455,11 @@ void Landscape3D::_rebuild_textures() {
 	Vector<Ref<Image>> albedo_images;
 	Vector<Ref<Image>> normal_images;
 	Vector<Ref<Image>> orm_images;
+	Vector<Ref<Image>> height_images;
 	albedo_images.resize(array_layers);
 	normal_images.resize(array_layers);
 	orm_images.resize(array_layers);
+	height_images.resize(array_layers);
 
 	PackedFloat32Array uv_scales;
 	uv_scales.resize(TerrainData::MAX_LAYERS);
@@ -320,12 +471,15 @@ void Landscape3D::_rebuild_textures() {
 	specular_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array ao_strength_values;
 	ao_strength_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array heightmap_scale_values;
+	heightmap_scale_values.resize(TerrainData::MAX_LAYERS);
 	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		uv_scales.write[i] = 1.0f;
 		albedo_colors.write[i] = Color(1, 1, 1);
 		roughness_values.write[i] = 1.0f;
 		specular_values.write[i] = 0.5f;
 		ao_strength_values.write[i] = 1.0f;
+		heightmap_scale_values.write[i] = 5.0f;
 	}
 
 	auto normalize_image = [](const Ref<Image> &p_src) -> Ref<Image> {
@@ -353,6 +507,40 @@ void Landscape3D::_rebuild_textures() {
 		img->fill(p_color);
 		return img;
 	};
+	// Single-channel, unlike the other three arrays: POM only ever reads one
+	// value per sample, so this halves the format's storage cost. Height
+	// textures are quite loose about which channel actually carries the
+	// data, so this converts most incoming formats via just their overall
+	// grayscale weighting, but for a texture authored specifically for this
+	// (e.g. a raw heightmap) the red channel dominates anyway.
+	auto normalize_height_image = [](const Ref<Image> &p_src) -> Ref<Image> {
+		Ref<Image> img;
+		img.instantiate();
+		img->copy_internals_from(p_src);
+		if (img->is_compressed()) {
+			img->decompress();
+		}
+		if (img->has_mipmaps()) {
+			img->clear_mipmaps();
+		}
+		if (img->get_format() != Image::FORMAT_R8) {
+			img->convert(Image::FORMAT_R8);
+		}
+		if (img->get_width() != LAYER_TEXTURE_SIZE || img->get_height() != LAYER_TEXTURE_SIZE) {
+			img->resize(LAYER_TEXTURE_SIZE, LAYER_TEXTURE_SIZE);
+		}
+		return img;
+	};
+	// White = a height of 1.0 = zero parallax depth (see pom_offset()), so a
+	// layer with no height_texture assigned is unaffected by POM even while
+	// it's enabled on the node.
+	auto default_height_image = []() -> Ref<Image> {
+		Ref<Image> img;
+		img.instantiate();
+		img->initialize_data(LAYER_TEXTURE_SIZE, LAYER_TEXTURE_SIZE, false, Image::FORMAT_R8);
+		img->fill(Color(1, 1, 1));
+		return img;
+	};
 
 	for (int i = 0; i < array_layers; i++) {
 		Ref<TerrainLayer> layer;
@@ -363,10 +551,12 @@ void Landscape3D::_rebuild_textures() {
 		Ref<Texture2D> albedo_tex = layer.is_valid() ? layer->get_albedo_texture() : Ref<Texture2D>();
 		Ref<Texture2D> normal_tex = layer.is_valid() ? layer->get_normal_texture() : Ref<Texture2D>();
 		Ref<Texture2D> orm_tex = layer.is_valid() ? layer->get_orm_texture() : Ref<Texture2D>();
+		Ref<Texture2D> height_tex = layer.is_valid() ? layer->get_height_texture() : Ref<Texture2D>();
 
 		albedo_images.write[i] = (albedo_tex.is_valid() && albedo_tex->get_image().is_valid()) ? normalize_image(albedo_tex->get_image()) : default_image(Color(0.6, 0.6, 0.6, 1.0));
 		normal_images.write[i] = (normal_tex.is_valid() && normal_tex->get_image().is_valid()) ? normalize_image(normal_tex->get_image()) : default_image(Color(0.5, 0.5, 1.0, 1.0));
 		orm_images.write[i] = (orm_tex.is_valid() && orm_tex->get_image().is_valid()) ? normalize_image(orm_tex->get_image()) : default_image(Color(1.0, 0.5, 0.0, 1.0));
+		height_images.write[i] = (height_tex.is_valid() && height_tex->get_image().is_valid()) ? normalize_height_image(height_tex->get_image()) : default_height_image();
 
 		if (i < TerrainData::MAX_LAYERS) {
 			uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
@@ -374,6 +564,7 @@ void Landscape3D::_rebuild_textures() {
 			roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
 			specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
 			ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
+			heightmap_scale_values.write[i] = layer.is_valid() ? layer->get_heightmap_scale() : 5.0f;
 		}
 	}
 
@@ -383,19 +574,30 @@ void Landscape3D::_rebuild_textures() {
 	normal_array->create_from_images(normal_images);
 	orm_array.instantiate();
 	orm_array->create_from_images(orm_images);
+	height_array.instantiate();
+	height_array->create_from_images(height_images);
 
 	material->set_shader_parameter("weight_array", weight_array);
 	material->set_shader_parameter("albedo_array", albedo_array);
 	material->set_shader_parameter("normal_array", normal_array);
 	material->set_shader_parameter("orm_array", orm_array);
+	material->set_shader_parameter("height_array", height_array);
 	material->set_shader_parameter("layer_uv_scales", uv_scales);
 	material->set_shader_parameter("layer_albedo_colors", albedo_colors);
 	material->set_shader_parameter("layer_roughness", roughness_values);
 	material->set_shader_parameter("layer_specular", specular_values);
 	material->set_shader_parameter("layer_ao_strength", ao_strength_values);
+	material->set_shader_parameter("layer_heightmap_scale", heightmap_scale_values);
 	material->set_shader_parameter("layer_count", layer_count);
 	material->set_shader_parameter("terrain_size", Vector2(terrain_data->get_size(), terrain_data->get_size()));
 	material->set_shader_parameter("terrain_origin", _get_safe_global_transform().origin);
+	material->set_shader_parameter("pom_enabled", pom_enabled);
+	material->set_shader_parameter("pom_min_layers", pom_min_layers);
+	material->set_shader_parameter("pom_max_layers", pom_max_layers);
+	material->set_shader_parameter("pom_flip", Vector2(pom_flip_tangent ? -1.0f : 1.0f, pom_flip_binormal ? -1.0f : 1.0f));
+	material->set_shader_parameter("pom_self_shadow_enabled", pom_self_shadow_enabled);
+	material->set_shader_parameter("pom_shadow_steps", pom_shadow_steps);
+	material->set_shader_parameter("pom_shadow_light_direction", pom_shadow_light_direction);
 
 	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 		if (kv.value.mesh.is_valid()) {
@@ -850,6 +1052,78 @@ void Landscape3D::set_debug_draw_chunks(bool p_enable) {
 
 bool Landscape3D::is_debug_draw_chunks_enabled() const {
 	return debug_draw_chunks;
+}
+
+void Landscape3D::set_pom_enabled(bool p_enable) {
+	pom_enabled = p_enable;
+	_rebuild_textures();
+}
+
+bool Landscape3D::is_pom_enabled() const {
+	return pom_enabled;
+}
+
+void Landscape3D::set_pom_min_layers(int p_layers) {
+	pom_min_layers = MAX(p_layers, 1);
+	_rebuild_textures();
+}
+
+int Landscape3D::get_pom_min_layers() const {
+	return pom_min_layers;
+}
+
+void Landscape3D::set_pom_max_layers(int p_layers) {
+	pom_max_layers = MAX(p_layers, 1);
+	_rebuild_textures();
+}
+
+int Landscape3D::get_pom_max_layers() const {
+	return pom_max_layers;
+}
+
+void Landscape3D::set_pom_flip_tangent(bool p_flip) {
+	pom_flip_tangent = p_flip;
+	_rebuild_textures();
+}
+
+bool Landscape3D::get_pom_flip_tangent() const {
+	return pom_flip_tangent;
+}
+
+void Landscape3D::set_pom_flip_binormal(bool p_flip) {
+	pom_flip_binormal = p_flip;
+	_rebuild_textures();
+}
+
+bool Landscape3D::get_pom_flip_binormal() const {
+	return pom_flip_binormal;
+}
+
+void Landscape3D::set_pom_self_shadow_enabled(bool p_enable) {
+	pom_self_shadow_enabled = p_enable;
+	_rebuild_textures();
+}
+
+bool Landscape3D::is_pom_self_shadow_enabled() const {
+	return pom_self_shadow_enabled;
+}
+
+void Landscape3D::set_pom_shadow_steps(int p_steps) {
+	pom_shadow_steps = MAX(p_steps, 1);
+	_rebuild_textures();
+}
+
+int Landscape3D::get_pom_shadow_steps() const {
+	return pom_shadow_steps;
+}
+
+void Landscape3D::set_pom_shadow_light_direction(const Vector3 &p_direction) {
+	pom_shadow_light_direction = p_direction;
+	_rebuild_textures();
+}
+
+Vector3 Landscape3D::get_pom_shadow_light_direction() const {
+	return pom_shadow_light_direction;
 }
 
 void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height, bool p_update_collision) {

@@ -4,7 +4,7 @@
 		A single paintable ground material inside a [Landscape3D].
 	</brief_description>
 	<description>
-		[TerrainLayer] describes one ground material a [Landscape3D]'s Paint brush can blend in: an albedo texture and tint, an optional normal map, an optional packed occlusion/roughness/metallic ([member orm_texture]) map with scalar tweaks on top of it, a specular value, and how large one texture tile is in world space ([member uv_scale]).
+		[TerrainLayer] describes one ground material a [Landscape3D]'s Paint brush can blend in: an albedo texture and tint, an optional normal map, an optional packed occlusion/roughness/metallic ([member orm_texture]) map with scalar tweaks on top of it, a specular value, an optional heightmap for Parallax Occlusion Mapping (see [member Landscape3D.pom_enabled]), and how large one texture tile is in world space ([member uv_scale]).
 		This resource is pure configuration; it does not store where it is painted (see [TerrainData]'s per-layer weight maps and [method Landscape3D.paint_layer]). [Landscape3D] combines every layer's textures into shared [Texture2DArray]s and blends any number of layers together smoothly at each point of the terrain, weighted by how much of each layer is painted there. Layer textures are resampled to a common size when built into those arrays, so very high-resolution source textures do not need to match each other exactly.
 	</description>
 	<tutorials>
@@ -18,6 +18,12 @@
 		</member>
 		<member name="ao_strength" type="float" setter="set_ao_strength" getter="get_ao_strength" default="1.0">
 			Multiplies [member orm_texture]'s occlusion (red) channel. Lower values weaken the baked ambient occlusion this layer contributes.
+		</member>
+		<member name="height_texture" type="Texture2D" setter="set_height_texture" getter="get_height_texture">
+			An optional grayscale heightmap for this layer, used only when [member Landscape3D.pom_enabled] is [code]true[/code] on the [Landscape3D] this layer is painted on (see its description). Brighter areas sit higher (less depth); if unset, this layer is unaffected by Parallax Occlusion Mapping even while it's enabled.
+		</member>
+		<member name="heightmap_scale" type="float" setter="set_heightmap_scale" getter="get_heightmap_scale" default="5.0">
+			Scales how much apparent depth [member height_texture] produces under Parallax Occlusion Mapping. Matches [member BaseMaterial3D.heightmap_scale]'s range and usable values (internally scaled down for convenience, so typical values are small double-digit numbers, not fractions).
 		</member>
 		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
 			A display name for this layer, shown in [Landscape3D]'s Paint brush layer list.

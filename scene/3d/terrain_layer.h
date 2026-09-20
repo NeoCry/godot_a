@@ -36,11 +36,13 @@
 class Texture2D;
 
 // One paintable ground material inside a Landscape3D: the textures used to
-// render it (albedo, normal map, and a packed occlusion/roughness/metallic
-// map) plus how large one texture tile is in world space. This is pure
-// configuration; Landscape3D bakes every layer's textures into shared
-// Texture2DArrays and paints this layer's weight into TerrainData's weight
-// maps (see TerrainData::set_layer_weight).
+// render it (albedo, normal map, a packed occlusion/roughness/metallic map,
+// and an optional heightmap for Parallax Occlusion Mapping - see
+// Landscape3D.pom_enabled) plus scalar tweaks on top of them and how large
+// one texture tile is in world space. This is pure configuration;
+// Landscape3D bakes every layer's textures into shared Texture2DArrays and
+// paints this layer's weight into TerrainData's weight maps (see
+// TerrainData::set_layer_weight).
 class TerrainLayer : public Resource {
 	GDCLASS(TerrainLayer, Resource);
 
@@ -48,7 +50,12 @@ class TerrainLayer : public Resource {
 	Ref<Texture2D> albedo_texture;
 	Ref<Texture2D> normal_texture;
 	Ref<Texture2D> orm_texture;
+	Ref<Texture2D> height_texture;
 	float uv_scale = 4.0;
+	// See Landscape3D.pom_enabled; matches BaseMaterial3D.heightmap_scale's
+	// range/default and its *0.01 internal scale factor "to improve
+	// heightmap scale usability" (i.e. so typical values stay small).
+	float heightmap_scale = 5.0;
 
 	// Scalar tweaks on top of the ORM texture's occlusion/roughness channels
 	// (or, with no texture assigned, on top of its flat default), the same
@@ -77,6 +84,12 @@ public:
 
 	void set_orm_texture(const Ref<Texture2D> &p_texture);
 	Ref<Texture2D> get_orm_texture() const;
+
+	void set_height_texture(const Ref<Texture2D> &p_texture);
+	Ref<Texture2D> get_height_texture() const;
+
+	void set_heightmap_scale(float p_scale);
+	float get_heightmap_scale() const;
 
 	void set_uv_scale(float p_scale);
 	float get_uv_scale() const;
