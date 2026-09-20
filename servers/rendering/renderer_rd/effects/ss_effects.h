@@ -40,7 +40,6 @@
 #include "servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssao.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssao_blur.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssao_importance_map.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssao_interleave.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssil.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/ssil_blur.glsl.gen.h"
@@ -126,8 +125,6 @@ public:
 		bool half_size = false;
 		int buffer_width;
 		int buffer_height;
-		int half_buffer_width;
-		int half_buffer_height;
 	};
 
 	struct SSAOSettings {
@@ -354,11 +351,6 @@ private:
 
 	enum SSAOMode {
 		SSAO_GATHER,
-		SSAO_GATHER_BASE,
-		SSAO_GATHER_ADAPTIVE,
-		SSAO_GENERATE_IMPORTANCE_MAP,
-		SSAO_PROCESS_IMPORTANCE_MAPA,
-		SSAO_PROCESS_IMPORTANCE_MAPB,
 		SSAO_BLUR_PASS,
 		SSAO_BLUR_PASS_SMART,
 		SSAO_BLUR_PASS_WIDE,
@@ -390,22 +382,16 @@ private:
 
 		float fade_out_mul;
 		float fade_out_add;
-		float horizon_angle_threshold;
+		float horizon_bias;
 		float inv_radius_near_limit;
 
 		uint32_t is_orthogonal;
-		float neg_inv_radius;
-		float load_counter_avg_div;
-		float adaptive_sample_limit;
+		float pad2;
+		float pad3;
+		float pad4;
 
 		int32_t pass_coord_offset[2];
 		float pass_uv_offset[2];
-	};
-
-	struct SSAOImportanceMapPushConstant {
-		float half_screen_pixel_size[2];
-		float intensity;
-		float power;
 	};
 
 	struct SSAOBlurPushConstant {
@@ -425,12 +411,6 @@ private:
 		SsaoShaderRD gather_shader;
 		RID gather_shader_version;
 
-		SSAOImportanceMapPushConstant importance_map_push_constant;
-		SsaoImportanceMapShaderRD importance_map_shader;
-		RID importance_map_shader_version;
-		RID importance_map_load_counter;
-		RID counter_uniform_set;
-
 		SSAOBlurPushConstant blur_push_constant;
 		SsaoBlurShaderRD blur_shader;
 		RID blur_shader_version;
@@ -442,7 +422,7 @@ private:
 		PipelineDeferredRD pipelines[SSAO_MAX];
 	} ssao;
 
-	void gather_ssao(RD::ComputeListID p_compute_list, const RID *p_ao_slices, const SSAOSettings &p_settings, bool p_adaptive_base_pass, RID p_gather_uniform_set, RID p_importance_map_uniform_set);
+	void gather_ssao(RD::ComputeListID p_compute_list, const RID *p_ao_slices, const SSAOSettings &p_settings, RID p_gather_uniform_set);
 
 	/* Screen Space Reflection */
 

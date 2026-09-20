@@ -194,50 +194,13 @@ SSEffects::SSEffects() {
 			Vector<String> ssao_modes;
 
 			ssao_modes.push_back("\n");
-			ssao_modes.push_back("\n#define SSAO_BASE\n");
-			ssao_modes.push_back("\n#define ADAPTIVE\n");
 
 			ssao.gather_shader.initialize(ssao_modes);
 
 			ssao.gather_shader_version = ssao.gather_shader.version_create();
 
-			for (int i = 0; i <= SSAO_GATHER_ADAPTIVE; i++) {
-				ssao.pipelines[pipeline].create_compute_pipeline(ssao.gather_shader.version_get_shader(ssao.gather_shader_version, i));
-				pipeline++;
-			}
-		}
-
-		{
-			Vector<String> ssao_modes;
-			ssao_modes.push_back("\n#define GENERATE_MAP\n");
-			ssao_modes.push_back("\n#define PROCESS_MAPA\n");
-			ssao_modes.push_back("\n#define PROCESS_MAPB\n");
-
-			ssao.importance_map_shader.initialize(ssao_modes);
-
-			ssao.importance_map_shader_version = ssao.importance_map_shader.version_create();
-
-			for (int i = SSAO_GENERATE_IMPORTANCE_MAP; i <= SSAO_PROCESS_IMPORTANCE_MAPB; i++) {
-				ssao.pipelines[pipeline].create_compute_pipeline(ssao.importance_map_shader.version_get_shader(ssao.importance_map_shader_version, i - SSAO_GENERATE_IMPORTANCE_MAP));
-
-				pipeline++;
-			}
-
-			ssao.importance_map_load_counter = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t));
-			int zero[1] = { 0 };
-			RD::get_singleton()->buffer_update(ssao.importance_map_load_counter, 0, sizeof(uint32_t), &zero);
-			RD::get_singleton()->set_resource_name(ssao.importance_map_load_counter, "Importance Map Load Counter");
-
-			Vector<RD::Uniform> uniforms;
-			{
-				RD::Uniform u;
-				u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-				u.binding = 0;
-				u.append_id(ssao.importance_map_load_counter);
-				uniforms.push_back(u);
-			}
-			ssao.counter_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, ssao.importance_map_shader.version_get_shader(ssao.importance_map_shader_version, 2), 2);
-			RD::get_singleton()->set_resource_name(ssao.counter_uniform_set, "Load Counter Uniform Set");
+			ssao.pipelines[pipeline].create_compute_pipeline(ssao.gather_shader.version_get_shader(ssao.gather_shader_version, 0));
+			pipeline++;
 		}
 
 		{
@@ -515,9 +478,6 @@ SSEffects::~SSEffects() {
 		ssao.blur_shader.version_free(ssao.blur_shader_version);
 		ssao.gather_shader.version_free(ssao.gather_shader_version);
 		ssao.interleave_shader.version_free(ssao.interleave_shader_version);
-		ssao.importance_map_shader.version_free(ssao.importance_map_shader_version);
-
-		RD::get_singleton()->free_rid(ssao.importance_map_load_counter);
 	}
 
 	{
@@ -1086,16 +1046,13 @@ void SSEffects::ssao_set_quality(RSE::EnvironmentSSAOQuality p_quality, bool p_h
 	ssao_fadeout_to = p_fadeout_to;
 }
 
-void SSEffects::gather_ssao(RD::ComputeListID p_compute_list, const RID *p_ao_slices, const SSAOSettings &p_settings, bool p_adaptive_base_pass, RID p_gather_uniform_set, RID p_importance_map_uniform_set) {
+void SSEffects::gather_ssao(RD::ComputeListID p_compute_list, const RID *p_ao_slices, const SSAOSettings &p_settings, RID p_gather_uniform_set) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	ERR_FAIL_NULL(uniform_set_cache);
 
 	RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, p_gather_uniform_set, 0);
-	if ((ssao_quality == RSE::ENV_SSAO_QUALITY_ULTRA) && !p_adaptive_base_pass) {
-		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, p_importance_map_uniform_set, 1);
-	}
 
-	RID shader = ssao.gather_shader.version_get_shader(ssao.gather_shader_version, 1); //
+	RID shader = ssao.gather_shader.version_get_shader(ssao.gather_shader_version, 0);
 
 	for (int i = 0; i < 4; i++) {
 		if ((ssao_quality == RSE::ENV_SSAO_QUALITY_VERY_LOW) && ((i == 1) || (i == 2))) {
@@ -1109,7 +1066,7 @@ void SSEffects::gather_ssao(RD::ComputeListID p_compute_list, const RID *p_ao_sl
 		ssao.gather_push_constant.pass_uv_offset[0] = ((i % 2) - 0.0) / p_settings.full_screen_size.x;
 		ssao.gather_push_constant.pass_uv_offset[1] = ((i / 2) - 0.0) / p_settings.full_screen_size.y;
 		ssao.gather_push_constant.pass = i;
-		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, uniform_set_cache->get_cache(shader, 2, u_ao_slice), 2);
+		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, uniform_set_cache->get_cache(shader, 1, u_ao_slice), 1);
 		RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &ssao.gather_push_constant, sizeof(SSAOGatherPushConstant));
 
 		Size2i size;
@@ -1136,26 +1093,19 @@ void SSEffects::ssao_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers
 	if (ssao_half_size) {
 		p_ssao_buffers.buffer_width = (p_settings.full_screen_size.x + 3) / 4;
 		p_ssao_buffers.buffer_height = (p_settings.full_screen_size.y + 3) / 4;
-		p_ssao_buffers.half_buffer_width = (p_settings.full_screen_size.x + 7) / 8;
-		p_ssao_buffers.half_buffer_height = (p_settings.full_screen_size.y + 7) / 8;
 	} else {
 		p_ssao_buffers.buffer_width = (p_settings.full_screen_size.x + 1) / 2;
 		p_ssao_buffers.buffer_height = (p_settings.full_screen_size.y + 1) / 2;
-		p_ssao_buffers.half_buffer_width = (p_settings.full_screen_size.x + 3) / 4;
-		p_ssao_buffers.half_buffer_height = (p_settings.full_screen_size.y + 3) / 4;
 	}
 
 	uint32_t view_count = p_render_buffers->get_view_count();
 	Size2i full_size = Size2i(p_ssao_buffers.buffer_width, p_ssao_buffers.buffer_height);
-	Size2i half_size = Size2i(p_ssao_buffers.half_buffer_width, p_ssao_buffers.half_buffer_height);
 
 	// As we're not clearing these, and render buffers will return the cached texture if it already exists,
 	// we don't first check has_texture here
 
 	p_render_buffers->create_texture(RB_SCOPE_SSAO, RB_DEINTERLEAVED, RD::DATA_FORMAT_R8G8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, full_size, 4 * view_count);
 	p_render_buffers->create_texture(RB_SCOPE_SSAO, RB_DEINTERLEAVED_PONG, RD::DATA_FORMAT_R8G8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, full_size, 4 * view_count);
-	p_render_buffers->create_texture(RB_SCOPE_SSAO, RB_IMPORTANCE_MAP, RD::DATA_FORMAT_R8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, half_size);
-	p_render_buffers->create_texture(RB_SCOPE_SSAO, RB_IMPORTANCE_PONG, RD::DATA_FORMAT_R8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, half_size);
 	p_render_buffers->create_texture(RB_SCOPE_SSAO, RB_FINAL, RD::DATA_FORMAT_R8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1);
 }
 
@@ -1168,8 +1118,6 @@ void SSEffects::generate_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, SSAORe
 	// Obtain our (cached) buffer slices for the view we are rendering.
 	RID ao_deinterleaved = p_render_buffers->get_texture_slice(RB_SCOPE_SSAO, RB_DEINTERLEAVED, p_view * 4, 0, 4, 1);
 	RID ao_pong = p_render_buffers->get_texture_slice(RB_SCOPE_SSAO, RB_DEINTERLEAVED_PONG, p_view * 4, 0, 4, 1);
-	RID importance_map = p_render_buffers->get_texture_slice(RB_SCOPE_SSAO, RB_IMPORTANCE_MAP, p_view, 0);
-	RID importance_pong = p_render_buffers->get_texture_slice(RB_SCOPE_SSAO, RB_IMPORTANCE_PONG, p_view, 0);
 	RID ao_final = p_render_buffers->get_texture_slice(RB_SCOPE_SSAO, RB_FINAL, p_view, 0);
 
 	RID ao_deinterleaved_slices[4];
@@ -1225,15 +1173,11 @@ void SSEffects::generate_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, SSAORe
 		ssao.gather_push_constant.shadow_clamp = 0.98;
 		ssao.gather_push_constant.fade_out_mul = -1.0 / (ssao_fadeout_to - ssao_fadeout_from);
 		ssao.gather_push_constant.fade_out_add = ssao_fadeout_from / (ssao_fadeout_to - ssao_fadeout_from) + 1.0;
-		ssao.gather_push_constant.horizon_angle_threshold = p_settings.horizon;
+		ssao.gather_push_constant.horizon_bias = p_settings.horizon;
 		ssao.gather_push_constant.inv_radius_near_limit = 1.0f / radius_near_limit;
-		ssao.gather_push_constant.neg_inv_radius = -1.0 / ssao.gather_push_constant.radius;
-
-		ssao.gather_push_constant.load_counter_avg_div = 9.0 / float((p_ssao_buffers.half_buffer_width) * (p_ssao_buffers.half_buffer_height) * 255);
-		ssao.gather_push_constant.adaptive_sample_limit = ssao_adaptive_target;
 
 		ssao.gather_push_constant.detail_intensity = p_settings.detail;
-		ssao.gather_push_constant.quality = MAX(0, ssao_quality - 1);
+		ssao.gather_push_constant.quality = int(ssao_quality);
 		ssao.gather_push_constant.size_multiplier = ssao_half_size ? 2 : 1;
 
 		// We are using our uniform cache so our uniform sets are automatically freed when our textures are freed.
@@ -1254,95 +1198,11 @@ void SSEffects::generate_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, SSAORe
 			u_normal_buffer.binding = 1;
 			u_normal_buffer.append_id(p_normal_buffer);
 
-			RD::Uniform u_gather_constants_buffer;
-			u_gather_constants_buffer.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
-			u_gather_constants_buffer.binding = 2;
-			u_gather_constants_buffer.append_id(ss_effects.gather_constants_buffer);
-
-			gather_uniform_set = uniform_set_cache->get_cache(shader, 0, u_depth_texture_view, u_normal_buffer, u_gather_constants_buffer);
+			gather_uniform_set = uniform_set_cache->get_cache(shader, 0, u_depth_texture_view, u_normal_buffer);
 		}
 
-		RID importance_map_uniform_set;
-		{
-			RD::Uniform u_pong;
-			u_pong.uniform_type = RD::UNIFORM_TYPE_IMAGE;
-			u_pong.binding = 0;
-			u_pong.append_id(ao_pong);
-
-			RD::Uniform u_importance_map;
-			u_importance_map.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
-			u_importance_map.binding = 1;
-			u_importance_map.append_id(default_sampler);
-			u_importance_map.append_id(importance_map);
-
-			RD::Uniform u_load_counter;
-			u_load_counter.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-			u_load_counter.binding = 2;
-			u_load_counter.append_id(ssao.importance_map_load_counter);
-
-			RID shader_adaptive = ssao.gather_shader.version_get_shader(ssao.gather_shader_version, SSAO_GATHER_ADAPTIVE);
-			importance_map_uniform_set = uniform_set_cache->get_cache(shader_adaptive, 1, u_pong, u_importance_map, u_load_counter);
-		}
-
-		if (ssao_quality == RSE::ENV_SSAO_QUALITY_ULTRA) {
-			RD::get_singleton()->draw_command_begin_label("Generate Importance Map");
-			ssao.importance_map_push_constant.half_screen_pixel_size[0] = 1.0 / p_ssao_buffers.buffer_width;
-			ssao.importance_map_push_constant.half_screen_pixel_size[1] = 1.0 / p_ssao_buffers.buffer_height;
-			ssao.importance_map_push_constant.intensity = p_settings.intensity;
-			ssao.importance_map_push_constant.power = p_settings.power;
-
-			//base pass
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_GATHER_BASE].get_rid());
-			gather_ssao(compute_list, ao_pong_slices, p_settings, true, gather_uniform_set, RID());
-
-			//generate importance map
-			RID gen_imp_shader = ssao.importance_map_shader.version_get_shader(ssao.importance_map_shader_version, 0);
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_GENERATE_IMPORTANCE_MAP].get_rid());
-
-			RD::Uniform u_ao_pong_with_sampler(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, ao_pong }));
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(gen_imp_shader, 0, u_ao_pong_with_sampler), 0);
-
-			RD::Uniform u_importance_map(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ importance_map }));
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(gen_imp_shader, 1, u_importance_map), 1);
-
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &ssao.importance_map_push_constant, sizeof(SSAOImportanceMapPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_ssao_buffers.half_buffer_width, p_ssao_buffers.half_buffer_height, 1);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-
-			//process importance map A
-			RID proc_imp_shader_a = ssao.importance_map_shader.version_get_shader(ssao.importance_map_shader_version, 1);
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_PROCESS_IMPORTANCE_MAPA].get_rid());
-
-			RD::Uniform u_importance_map_with_sampler(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, importance_map }));
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(proc_imp_shader_a, 0, u_importance_map_with_sampler), 0);
-
-			RD::Uniform u_importance_map_pong(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ importance_pong }));
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(proc_imp_shader_a, 1, u_importance_map_pong), 1);
-
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &ssao.importance_map_push_constant, sizeof(SSAOImportanceMapPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_ssao_buffers.half_buffer_width, p_ssao_buffers.half_buffer_height, 1);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-
-			//process Importance Map B
-			RID proc_imp_shader_b = ssao.importance_map_shader.version_get_shader(ssao.importance_map_shader_version, 2);
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_PROCESS_IMPORTANCE_MAPB].get_rid());
-
-			RD::Uniform u_importance_map_pong_with_sampler(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, importance_pong }));
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(proc_imp_shader_b, 0, u_importance_map_pong_with_sampler), 0);
-
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(proc_imp_shader_b, 1, u_importance_map), 1);
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, ssao.counter_uniform_set, 2);
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &ssao.importance_map_push_constant, sizeof(SSAOImportanceMapPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_ssao_buffers.half_buffer_width, p_ssao_buffers.half_buffer_height, 1);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_GATHER_ADAPTIVE].get_rid());
-			RD::get_singleton()->draw_command_end_label(); // Importance Map
-		} else {
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_GATHER].get_rid());
-		}
-
-		gather_ssao(compute_list, ao_deinterleaved_slices, p_settings, false, gather_uniform_set, importance_map_uniform_set);
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, ssao.pipelines[SSAO_GATHER].get_rid());
+		gather_ssao(compute_list, ao_deinterleaved_slices, p_settings, gather_uniform_set);
 		RD::get_singleton()->draw_command_end_label(); // Gather SSAO
 	}
 
@@ -1449,9 +1309,6 @@ void SSEffects::generate_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, SSAORe
 	}
 	RD::get_singleton()->draw_command_end_label(); //SSAO
 	RD::get_singleton()->compute_list_end();
-
-	int zero[1] = { 0 };
-	RD::get_singleton()->buffer_update(ssao.importance_map_load_counter, 0, sizeof(uint32_t), &zero);
 }
 
 /* Screen Space Reflection */
