@@ -473,13 +473,25 @@ void TerrainData::import_heightmap(const Ref<Image> &p_image, float p_height_min
 
 	set_resolution(p_image->get_width());
 
+	// Build the whole heightmap in one local buffer and commit it with a
+	// single set_height_region() call, instead of one set_height() call per
+	// sample: set_height() commits via its own get_data()+set_data() round
+	// trip (a full copy-on-write of the whole heightmap) every time it's
+	// called, which is fine for a handful of calls but is O(resolution^4)
+	// total work across a resolution x resolution loop - unnoticeable at the
+	// tiny sizes used while testing this, but enough to make the editor
+	// freeze for a very long time (with nothing actually failing, hence no
+	// error) on a realistically-sized heightmap image.
+	PackedFloat32Array heights;
+	heights.resize(resolution * resolution);
+	float *dst = heights.ptrw();
 	for (int z = 0; z < resolution; z++) {
 		for (int x = 0; x < resolution; x++) {
 			const float t = p_image->get_pixel(x, z).r;
-			set_height(x, z, Math::lerp(p_height_min, p_height_max, t));
+			dst[z * resolution + x] = Math::lerp(p_height_min, p_height_max, t);
 		}
 	}
-	emit_changed();
+	set_height_region(Rect2i(0, 0, resolution, resolution), heights);
 }
 
 Ref<Image> TerrainData::get_heightmap_image() const {
