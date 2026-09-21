@@ -200,6 +200,31 @@
 			The strength that is used when blurring across the screen to generate the glow effect. This affects the distance and intensity of the blur. When using the Mobile rendering method, this should be increased to compensate for the lower dynamic range.
 			[b]Note:[/b] [member glow_strength] has no effect when using the Compatibility rendering method, due to this rendering method using a simpler glow implementation optimized for low-end devices.
 		</member>
+		<member name="gtao_ao_channel_affect" type="float" setter="set_gtao_ao_channel_affect" getter="get_gtao_ao_channel_affect" default="0.0">
+			The screen-space ambient occlusion intensity on materials that have an AO texture defined. Values higher than [code]0[/code] will make the GTAO effect visible in areas darkened by AO textures.
+		</member>
+		<member name="gtao_enabled" type="bool" setter="set_gtao_enabled" getter="is_gtao_enabled" default="false">
+			If [code]true[/code], the screen-space ambient occlusion effect is enabled. This darkens objects' corners and cavities to simulate ambient light not reaching the entire object as in real life. This works well for small, dynamic objects, but baked lighting or ambient occlusion textures will do a better job at displaying ambient occlusion on large static objects. Godot uses Ground Truth Ambient Occlusion (GTAO), a horizon-based technique that searches for occluders around each pixel to closely match how ambient occlusion would look if it were ray traced.
+			[b]Note:[/b] GTAO is only supported in the Forward+ rendering method. The Compatibility rendering method uses a separate screen-space ambient occlusion (SSAO) implementation instead, and Mobile does not support this effect at all.
+		</member>
+		<member name="gtao_horizon" type="float" setter="set_gtao_horizon" getter="get_gtao_horizon" default="0.06">
+			The threshold for considering whether a given point on a surface is occluded or not represented as an angle from the horizon mapped into the [code]0.0-1.0[/code] range. A value of [code]1.0[/code] results in no occlusion.
+		</member>
+		<member name="gtao_intensity" type="float" setter="set_gtao_intensity" getter="get_gtao_intensity" default="2.0">
+			The primary screen-space ambient occlusion intensity. Acts as a multiplier for the screen-space ambient occlusion effect. A higher value results in darker occlusion.
+		</member>
+		<member name="gtao_light_affect" type="float" setter="set_gtao_direct_light_affect" getter="get_gtao_direct_light_affect" default="0.0">
+			The screen-space ambient occlusion intensity in direct light. In real life, ambient occlusion only applies to indirect light, which means its effects can't be seen in direct light. Values higher than [code]0[/code] will make the GTAO effect visible in direct light.
+		</member>
+		<member name="gtao_power" type="float" setter="set_gtao_power" getter="get_gtao_power" default="1.5">
+			The distribution of occlusion. A higher value results in darker occlusion, similar to [member gtao_intensity], but with a sharper falloff.
+		</member>
+		<member name="gtao_radius" type="float" setter="set_gtao_radius" getter="get_gtao_radius" default="1.0">
+			The distance at which objects can occlude each other when calculating screen-space ambient occlusion. Higher values will result in occlusion over a greater distance at the cost of performance and quality.
+		</member>
+		<member name="gtao_sharpness" type="float" setter="set_gtao_sharpness" getter="get_gtao_sharpness" default="0.98">
+			The amount that the screen-space ambient occlusion effect is allowed to blur over the edges of objects. Setting too high will result in aliasing around the edges of objects. Setting too low will make object edges appear blurry.
+		</member>
 		<member name="reflected_light_source" type="int" setter="set_reflection_source" getter="get_reflection_source" enum="Environment.ReflectionSource" default="0">
 			The reflected (specular) light source.
 		</member>
@@ -254,34 +279,6 @@
 		</member>
 		<member name="sky_rotation" type="Vector3" setter="set_sky_rotation" getter="get_sky_rotation" default="Vector3(0, 0, 0)">
 			The rotation to use for sky rendering.
-		</member>
-		<member name="ssao_ao_channel_affect" type="float" setter="set_ssao_ao_channel_affect" getter="get_ssao_ao_channel_affect" default="0.0">
-			The screen-space ambient occlusion intensity on materials that have an AO texture defined. Values higher than [code]0[/code] will make the SSAO effect visible in areas darkened by AO textures.
-		</member>
-		<member name="ssao_detail" type="float" setter="set_ssao_detail" getter="get_ssao_detail" default="0.5">
-			Sets the strength of the additional level of detail for the screen-space ambient occlusion effect. A high value makes the detail pass more prominent, but it may contribute to aliasing in your final image.
-		</member>
-		<member name="ssao_enabled" type="bool" setter="set_ssao_enabled" getter="is_ssao_enabled" default="false">
-			If [code]true[/code], the screen-space ambient occlusion effect is enabled. This darkens objects' corners and cavities to simulate ambient light not reaching the entire object as in real life. This works well for small, dynamic objects, but baked lighting or ambient occlusion textures will do a better job at displaying ambient occlusion on large static objects. Godot uses a form of SSAO called Adaptive Screen Space Ambient Occlusion which is itself a form of Horizon Based Ambient Occlusion.
-			[b]Note:[/b] SSAO is only supported in the Forward+ and Compatibility rendering methods, not Mobile.
-		</member>
-		<member name="ssao_horizon" type="float" setter="set_ssao_horizon" getter="get_ssao_horizon" default="0.06">
-			The threshold for considering whether a given point on a surface is occluded or not represented as an angle from the horizon mapped into the [code]0.0-1.0[/code] range. A value of [code]1.0[/code] results in no occlusion.
-		</member>
-		<member name="ssao_intensity" type="float" setter="set_ssao_intensity" getter="get_ssao_intensity" default="2.0">
-			The primary screen-space ambient occlusion intensity. Acts as a multiplier for the screen-space ambient occlusion effect. A higher value results in darker occlusion.
-		</member>
-		<member name="ssao_light_affect" type="float" setter="set_ssao_direct_light_affect" getter="get_ssao_direct_light_affect" default="0.0">
-			The screen-space ambient occlusion intensity in direct light. In real life, ambient occlusion only applies to indirect light, which means its effects can't be seen in direct light. Values higher than [code]0[/code] will make the SSAO effect visible in direct light.
-		</member>
-		<member name="ssao_power" type="float" setter="set_ssao_power" getter="get_ssao_power" default="1.5">
-			The distribution of occlusion. A higher value results in darker occlusion, similar to [member ssao_intensity], but with a sharper falloff.
-		</member>
-		<member name="ssao_radius" type="float" setter="set_ssao_radius" getter="get_ssao_radius" default="1.0">
-			The distance at which objects can occlude each other when calculating screen-space ambient occlusion. Higher values will result in occlusion over a greater distance at the cost of performance and quality.
-		</member>
-		<member name="ssao_sharpness" type="float" setter="set_ssao_sharpness" getter="get_ssao_sharpness" default="0.98">
-			The amount that the screen-space ambient occlusion effect is allowed to blur over the edges of objects. Setting too high will result in aliasing around the edges of objects. Setting too low will make object edges appear blurry.
 		</member>
 		<member name="sscs_enabled" type="bool" setter="set_sscs_enabled" getter="is_sscs_enabled" default="false">
 			If [code]true[/code], enables screen-space shadows for this environment, regardless of the project-wide [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] setting. This allows enabling screen-space shadows only for specific scenarios (for example a single level or cutscene) via [WorldEnvironment], while keeping them off elsewhere. When enabled, [member sscs_length] and [member sscs_surface_thickness] override the project-wide quality settings for this environment. Individual [DirectionalLight3D] nodes must also have [member Light3D.shadow_contact_shadows_allow] enabled (which is the default) to cast screen-space shadows, and a [GeometryInstance3D] can opt out of casting them using [member GeometryInstance3D.ignore_screen_space_shadows].

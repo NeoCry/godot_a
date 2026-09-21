@@ -470,46 +470,42 @@ float RendererSceneRender::environment_get_ssr_depth_tolerance(RID p_env) const 
 	return environment_storage.environment_get_ssr_depth_tolerance(p_env);
 }
 
-// SSAO
+// GTAO
 
-void RendererSceneRender::environment_set_ssao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_detail, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) {
-	environment_storage.environment_set_ssao(p_env, p_enable, p_radius, p_intensity, p_power, p_detail, p_horizon, p_sharpness, p_light_affect, p_ao_channel_affect);
+void RendererSceneRender::environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) {
+	environment_storage.environment_set_gtao(p_env, p_enable, p_radius, p_intensity, p_power, p_horizon, p_sharpness, p_light_affect, p_ao_channel_affect);
 }
 
-bool RendererSceneRender::environment_get_ssao_enabled(RID p_env) const {
-	return environment_storage.environment_get_ssao_enabled(p_env);
+bool RendererSceneRender::environment_get_gtao_enabled(RID p_env) const {
+	return environment_storage.environment_get_gtao_enabled(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_radius(RID p_env) const {
-	return environment_storage.environment_get_ssao_radius(p_env);
+float RendererSceneRender::environment_get_gtao_radius(RID p_env) const {
+	return environment_storage.environment_get_gtao_radius(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_intensity(RID p_env) const {
-	return environment_storage.environment_get_ssao_intensity(p_env);
+float RendererSceneRender::environment_get_gtao_intensity(RID p_env) const {
+	return environment_storage.environment_get_gtao_intensity(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_power(RID p_env) const {
-	return environment_storage.environment_get_ssao_power(p_env);
+float RendererSceneRender::environment_get_gtao_power(RID p_env) const {
+	return environment_storage.environment_get_gtao_power(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_detail(RID p_env) const {
-	return environment_storage.environment_get_ssao_detail(p_env);
+float RendererSceneRender::environment_get_gtao_horizon(RID p_env) const {
+	return environment_storage.environment_get_gtao_horizon(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_horizon(RID p_env) const {
-	return environment_storage.environment_get_ssao_horizon(p_env);
+float RendererSceneRender::environment_get_gtao_sharpness(RID p_env) const {
+	return environment_storage.environment_get_gtao_sharpness(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_sharpness(RID p_env) const {
-	return environment_storage.environment_get_ssao_sharpness(p_env);
+float RendererSceneRender::environment_get_gtao_direct_light_affect(RID p_env) const {
+	return environment_storage.environment_get_gtao_direct_light_affect(p_env);
 }
 
-float RendererSceneRender::environment_get_ssao_direct_light_affect(RID p_env) const {
-	return environment_storage.environment_get_ssao_direct_light_affect(p_env);
-}
-
-float RendererSceneRender::environment_get_ssao_ao_channel_affect(RID p_env) const {
-	return environment_storage.environment_get_ssao_ao_channel_affect(p_env);
+float RendererSceneRender::environment_get_gtao_ao_channel_affect(RID p_env) const {
+	return environment_storage.environment_get_gtao_ao_channel_affect(p_env);
 }
 
 // SSCS (screen space contact shadows)

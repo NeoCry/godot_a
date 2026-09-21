@@ -1171,7 +1171,7 @@ void RasterizerSceneGLES3::environment_set_ssr_half_size(bool p_half_size) {
 void RasterizerSceneGLES3::environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) {
 }
 
-void RasterizerSceneGLES3::environment_set_ssao_quality(RSE::EnvironmentSSAOQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) {
+void RasterizerSceneGLES3::environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) {
 	ssao_quality = p_quality;
 }
 
@@ -2446,7 +2446,7 @@ void RasterizerSceneGLES3::render_scene(const Ref<RenderSceneBuffers> &p_render_
 		// We apply tonemapping, etc. in post when any of these are true. In this
 		// case, set apply_environment_effects_in_post to true to skip tonemapping during rendering.
 		glow_enabled = environment_get_glow_enabled(p_environment);
-		ssao_enabled = environment_get_ssao_enabled(p_environment);
+		ssao_enabled = environment_get_gtao_enabled(p_environment);
 		use_bcs = environment_get_adjustments_enabled(p_environment);
 		bool canvas_tonemapping = environment_get_background(p_environment) == RSE::ENV_BG_CANVAS && environment_get_tone_mapper(p_environment) != RSE::ENV_TONE_MAPPER_LINEAR;
 		if (glow_enabled || ssao_enabled || use_bcs || canvas_tonemapping) {
@@ -3029,11 +3029,11 @@ void RasterizerSceneGLES3::_render_post_processing(const RenderDataGLES3 *p_rend
 	float ssao_strength = 4.0;
 	float ssao_radius = 0.5;
 	if (p_render_data->environment.is_valid()) {
-		ssao_enabled = environment_get_ssao_enabled(p_render_data->environment);
+		ssao_enabled = environment_get_gtao_enabled(p_render_data->environment);
 		// This SSAO is not implemented the same way, but uses the intensity and radius
 		// in a similar way.  The parameters are scaled so the SSAO defaults look ok.
-		ssao_strength = environment_get_ssao_intensity(p_render_data->environment) * 2.0;
-		ssao_radius = environment_get_ssao_radius(p_render_data->environment) * 0.5;
+		ssao_strength = environment_get_gtao_intensity(p_render_data->environment) * 2.0;
+		ssao_radius = environment_get_gtao_radius(p_render_data->environment) * 0.5;
 	}
 
 	uint64_t bcs_spec_constants = 0;

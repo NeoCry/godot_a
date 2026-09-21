@@ -134,17 +134,16 @@ private:
 	float ssr_depth_tolerance = 0.5;
 	void _update_ssr();
 
-	// SSAO
-	bool ssao_enabled = false;
-	float ssao_radius = 1.0;
-	float ssao_intensity = 2.0;
-	float ssao_power = 1.5;
-	float ssao_detail = 0.5;
-	float ssao_horizon = 0.06;
-	float ssao_sharpness = 0.98;
-	float ssao_direct_light_affect = 0.0;
-	float ssao_ao_channel_affect = 0.0;
-	void _update_ssao();
+	// GTAO
+	bool gtao_enabled = false;
+	float gtao_radius = 1.0;
+	float gtao_intensity = 2.0;
+	float gtao_power = 1.5;
+	float gtao_horizon = 0.06;
+	float gtao_sharpness = 0.98;
+	float gtao_direct_light_affect = 0.0;
+	float gtao_ao_channel_affect = 0.0;
+	void _update_gtao();
 
 	// SSCS (screen space shadows)
 	bool sscs_enabled = false;
@@ -303,25 +302,23 @@ public:
 	void set_ssr_depth_tolerance(float p_depth_tolerance);
 	float get_ssr_depth_tolerance() const;
 
-	// SSAO
-	void set_ssao_enabled(bool p_enabled);
-	bool is_ssao_enabled() const;
-	void set_ssao_radius(float p_radius);
-	float get_ssao_radius() const;
-	void set_ssao_intensity(float p_intensity);
-	float get_ssao_intensity() const;
-	void set_ssao_power(float p_power);
-	float get_ssao_power() const;
-	void set_ssao_detail(float p_detail);
-	float get_ssao_detail() const;
-	void set_ssao_horizon(float p_horizon);
-	float get_ssao_horizon() const;
-	void set_ssao_sharpness(float p_sharpness);
-	float get_ssao_sharpness() const;
-	void set_ssao_direct_light_affect(float p_direct_light_affect);
-	float get_ssao_direct_light_affect() const;
-	void set_ssao_ao_channel_affect(float p_ao_channel_affect);
-	float get_ssao_ao_channel_affect() const;
+	// GTAO
+	void set_gtao_enabled(bool p_enabled);
+	bool is_gtao_enabled() const;
+	void set_gtao_radius(float p_radius);
+	float get_gtao_radius() const;
+	void set_gtao_intensity(float p_intensity);
+	float get_gtao_intensity() const;
+	void set_gtao_power(float p_power);
+	float get_gtao_power() const;
+	void set_gtao_horizon(float p_horizon);
+	float get_gtao_horizon() const;
+	void set_gtao_sharpness(float p_sharpness);
+	float get_gtao_sharpness() const;
+	void set_gtao_direct_light_affect(float p_direct_light_affect);
+	float get_gtao_direct_light_affect() const;
+	void set_gtao_ao_channel_affect(float p_ao_channel_affect);
+	float get_gtao_ao_channel_affect() const;
 
 	// SSCS (screen space shadows)
 	void set_sscs_enabled(bool p_enabled);

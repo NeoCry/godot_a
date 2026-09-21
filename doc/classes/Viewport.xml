@@ -696,8 +696,8 @@
 			Draws the scene luminance buffer (if available) in the upper left quadrant of the [Viewport].
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="DEBUG_DRAW_SSAO" value="12" enum="DebugDraw">
-			Draws the screen-space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssao_enabled] set in your [WorldEnvironment].
+		<constant name="DEBUG_DRAW_GTAO" value="12" enum="DebugDraw">
+			Draws the screen-space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.gtao_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="DEBUG_DRAW_SSIL" value="13" enum="DebugDraw">

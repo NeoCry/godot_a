@@ -197,7 +197,7 @@ layout(set = 0, binding = 2) uniform sampler shadow_sampler;
 //3 bits of stride
 #define INSTANCE_FLAGS_PARTICLE_TRAIL_MASK 0xFF
 
-#define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSAO (1 << 0)
+#define SCREEN_SPACE_EFFECTS_FLAGS_USE_GTAO (1 << 0)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL (1 << 1)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSR (1 << 2)
 #define SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR (1 << 3)
@@ -333,8 +333,8 @@ struct ImplementationData {
 	uint max_cluster_element_count_div_32;
 
 	uint ss_effects_flags;
-	float ssao_light_affect;
-	float ssao_ao_affect;
+	float gtao_light_affect;
+	float gtao_ao_affect;
 	uint pad1;
 
 	mat4 sdf_to_bounds;

@@ -1,0 +1,274 @@
+/**************************************************************************/
+/*  gtao.glsl                                                             */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+// Ground-Truth Ambient Occlusion (GTAO) horizon search, following Jimenez, Wu, Pesce & Jarabo, "Practical
+// Realtime Strategies for Accurate Indirect Occlusion" (Activision, 2016). For each (half-resolution) pixel,
+// a few slices (directions) around the view vector search for the maximum horizon angle on both sides; the
+// per-slice visibility integral is then solved analytically once the shading normal is projected into the
+// slice plane (eq. 7-8 of the paper), rather than accumulated as a weighted sample sum. This pass produces a
+// single noisy-but-unbiased visibility estimate per pixel; gtao_temporal.glsl denoises it spatially and
+// temporally afterwards, which is what the paper itself relies on for its final quality ("we distribute the
+// occlusion integral over both space and time").
+
+#[compute]
+
+#version 450
+
+#VERSION_DEFINES
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source_depth_mipmaps;
+layout(rgba8, set = 0, binding = 1) uniform restrict readonly image2D source_normal;
+
+layout(r16f, set = 1, binding = 0) uniform restrict writeonly image2D dest_image;
+
+layout(push_constant, std430) uniform Params {
+	ivec2 screen_size; // half-resolution size of this pass
+	float NDC_to_view_mul_x;
+	float NDC_to_view_mul_y;
+
+	float NDC_to_view_add_x;
+	float NDC_to_view_add_y;
+	bool is_orthogonal;
+	int quality;
+
+	float radius;
+	float horizon_bias;
+	uint frame_index;
+	uint mip_count;
+
+	ivec2 full_screen_size; // native resolution of source_normal, independent of screen_size above
+	vec2 depth_texture_pixel_size; // 1 / half-resolution size, in the *depth* texture's own space
+	float thin_occluder_compensation;
+	float pad;
+}
+params;
+
+#define GTAO_PI 3.14159265359
+#define GOLDEN_RATIO 0.61803398875
+
+// Number of horizon-search slices (directions) and steps searched per side of each slice, indexed by the
+// GTAO quality preset (Very Low .. Ultra). Each step is sampled on both sides of the slice, so the actual
+// per-pixel tap count is 2x this; spatial+temporal denoising in gtao_temporal.glsl is what lets these counts
+// stay low without the result looking undersampled.
+const int gtao_slice_count[5] = { 1, 2, 2, 3, 3 };
+const int gtao_step_count[5] = { 3, 3, 4, 4, 6 };
+
+vec3 NDC_to_view_space(vec2 p_pos, float p_viewspace_depth) {
+	vec2 mul = vec2(params.NDC_to_view_mul_x, params.NDC_to_view_mul_y);
+	vec2 add = vec2(params.NDC_to_view_add_x, params.NDC_to_view_add_y);
+	if (params.is_orthogonal) {
+		return vec3(mul * p_pos + add, p_viewspace_depth);
+	} else {
+		return vec3((mul * p_pos + add) * p_viewspace_depth, p_viewspace_depth);
+	}
+}
+
+vec3 load_normal(ivec2 p_full_res_pos) {
+	vec3 n = normalize(imageLoad(source_normal, p_full_res_pos).xyz * 2.0 - 1.0);
+	n.z = -n.z;
+	return n;
+}
+
+// Closed form of the paper's per-slice inner integral (eq. 7): the cosine-weighted visible arc from the view
+// direction out to a horizon at signed angle p_horizon, for a slice whose projected normal sits at signed
+// angle p_gamma. Both angles are measured from V in the same signed frame, so the two horizons of a slice
+// come in with opposite signs.
+float integrate_arc(float p_horizon, float p_gamma) {
+	return -cos(2.0 * p_horizon - p_gamma) + cos(p_gamma) + 2.0 * p_horizon * sin(p_gamma);
+}
+
+// Jimenez et al. 2014, "Next Generation Post Processing in Call of Duty: Advanced Warfare".
+float interleaved_gradient_noise(vec2 p_pixel) {
+	return fract(52.9829189 * fract(dot(p_pixel, vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(pos, params.screen_size))) {
+		return;
+	}
+
+	vec2 uv = (vec2(pos) + 0.5) * params.depth_texture_pixel_size;
+	float depth = textureLod(source_depth_mipmaps, uv, 0.0).x;
+	vec3 view_pos = NDC_to_view_space(uv, depth);
+
+	// source_normal is always at native (full) resolution, independent of whether this gather itself runs at
+	// half resolution (screen_size == full_screen_size / 2) or full resolution (screen_size ==
+	// full_screen_size, half_size disabled) — derive the matching texel from the resolution-independent uv
+	// rather than assuming a fixed 2x ratio.
+	ivec2 full_res_pos = clamp(ivec2(uv * vec2(params.full_screen_size)), ivec2(0), params.full_screen_size - ivec2(1));
+	vec3 N = load_normal(full_res_pos);
+
+	vec2 pixel_size_at_center = NDC_to_view_space(uv + params.depth_texture_pixel_size, view_pos.z).xy - view_pos.xy;
+	float pixel_radius = params.radius / max(pixel_size_at_center.x, 0.00001);
+
+	// NDC_to_view_space returns z as POSITIVE distance from the eye, so the camera looks toward +z here and
+	// the direction back toward it is -z (matching normalize(-view_pos) in the perspective case, and
+	// load_normal()'s own z flip).
+	vec3 V = params.is_orthogonal ? vec3(0.0, 0.0, -1.0) : normalize(-view_pos);
+
+	// Orthonormal basis of the plane perpendicular to V. Slices are swept around the VIEW VECTOR in this
+	// basis rather than around the screen's own axis: the two coincide only at the exact centre of the
+	// screen, and anywhere else a screen-uniform sweep covers the azimuth around V non-uniformly. That
+	// biases the estimate by several percent in a pattern that drifts smoothly across the viewport (a flat,
+	// unoccluded floor reads ~0.96 low-centre but ~1.09 toward the side edges), which survives both slice
+	// jitter and temporal accumulation because it is systematic rather than noise.
+	// V never approaches +/-X (that would need V.z == 0, i.e. a ray perpendicular to the view axis), so this
+	// reference axis never degenerates.
+	vec3 slice_basis_u = normalize(vec3(1.0, 0.0, 0.0) - V * V.x);
+	vec3 slice_basis_v = cross(V, slice_basis_u);
+
+	// This pixel's ray direction normalized to z = 1, used to map a view-space slice direction back to the
+	// screen-space direction its samples have to step along. Orthogonal projections don't scale x/y with
+	// depth, so there is no such term for them.
+	vec2 ray_xy = params.is_orthogonal ? vec2(0.0) : view_pos.xy / max(view_pos.z, 0.0001);
+
+	int quality = clamp(params.quality, 0, 4);
+	int slice_count = gtao_slice_count[quality];
+	int step_count = gtao_step_count[quality];
+
+	// Per-pixel spatial jitter, plus a per-frame rotation cycling through 6 offsets (golden-ratio spaced),
+	// matching the paper's "alternating between 6 different rotations" — gtao_temporal.glsl accumulates the
+	// results of consecutive frames, so different frames must search different slice angles for the
+	// temporal history to actually add new information instead of repeating the same noise.
+	float jitter = fract(interleaved_gradient_noise(vec2(full_res_pos)) + GOLDEN_RATIO * float(params.frame_index % 6u));
+
+	float visibility_sum = 0.0;
+	int used_slices = 0;
+
+	for (int slice = 0; slice < slice_count; slice++) {
+		float phi = (GTAO_PI / float(slice_count)) * (float(slice) + jitter);
+		vec3 slice_tangent = slice_basis_u * cos(phi) + slice_basis_v * sin(phi);
+
+		// The screen-space direction whose samples stay inside this slice's plane. Dividing by the
+		// NDC_to_view muls also carries their (negative for Y) sign, so the UV/view-space Y flip falls out
+		// of the mapping instead of having to be applied by hand. Never degenerate: it could only vanish if
+		// slice_tangent were parallel to this pixel's ray, and it is perpendicular to V by construction.
+		vec2 dir_screen = normalize(vec2(
+				(slice_tangent.x - ray_xy.x * slice_tangent.z) / params.NDC_to_view_mul_x,
+				(slice_tangent.y - ray_xy.y * slice_tangent.z) / params.NDC_to_view_mul_y));
+
+		vec3 slice_normal = normalize(cross(slice_tangent, V));
+		vec3 normal_in_slice = N - slice_normal * dot(N, slice_normal);
+		float normal_in_slice_len = length(normal_in_slice);
+
+		if (normal_in_slice_len < 0.001) {
+			continue;
+		}
+
+		vec3 normal_in_slice_n = normal_in_slice / normal_in_slice_len;
+		// slice_tangent is perpendicular to V by construction, so it is already the in-slice reference axis
+		// gamma is measured against. Clamped to the visible hemisphere: a normal-mapped (or near-grazing)
+		// pixel can report a shading normal tipped slightly away from V, which would otherwise push the
+		// tangent-plane bounds below zero.
+		float gamma = clamp(atan(dot(normal_in_slice_n, slice_tangent), dot(normal_in_slice_n, V)),
+				-GTAO_PI * 0.5, GTAO_PI * 0.5);
+
+		// -1 (horizon angle = pi, nothing found yet) rather than 0 (horizon sitting at V's own tangent
+		// plane): the tangent-plane clamp below is what establishes the real "no occluder" limit, and it can
+		// only do so by lowering an already-open horizon. Starting from 0 pins the side of the slice tipped
+		// away from the camera at pi/2 even when the true unoccluded limit is wider than that, so a flat,
+		// completely unoccluded surface still integrates to less than full visibility — by more and more as
+		// the view angle grows.
+		float horizon_cos[2] = float[2](-1.0, -1.0);
+
+		for (int side = 0; side < 2; side++) {
+			float side_sign = (side == 0) ? 1.0 : -1.0;
+
+			for (int s = 0; s < step_count; s++) {
+				float t = (float(s) + 0.5) / float(step_count);
+				// At least one texel of separation per step. pixel_radius is the search radius expressed in
+				// texels and shrinks with distance (a 1 m radius is only a handful of texels across at
+				// 50 m), so without this the quadratic ramp puts the first samples less than a texel out.
+				// The depth sampler is NEAREST, so those land back on the centre texel and contribute a
+				// delta of ~0: a wasted tap that carries no occlusion information, and more of them are
+				// wasted the more steps the quality level asks for (step 0 sits at 1/(2*step_count) of the
+				// ramp, so it lands closer in the more steps there are).
+				float step_dist = max(t * t * pixel_radius, float(s) + 1.0);
+
+				vec2 sample_uv = uv + (dir_screen * side_sign * step_dist) * params.depth_texture_pixel_size;
+				// Deliberately conservative, step-POSITION-based mip schedule (t*t*step_count is independent
+				// of pixel_radius, unlike step_dist itself) that only reaches the coarser mips for the last
+				// one or two farthest steps, regardless of how large pixel_radius is: the depth mip chain is
+				// built with min-reduction (gtao_downsample.glsl biases every level toward whichever nearby
+				// depth is closest, to keep thin occluders from disappearing), so sampling a coarse mip near
+				// a real silhouette smears its occlusion well past the actual edge. Selecting by raw
+				// step_dist instead reaches the coarsest available mip after only a small fraction of the
+				// search at realistic radius/distance combinations (e.g. a 1m radius a few meters from the
+				// camera is already hundreds of texels), which is what caused that smearing to dominate over
+				// genuine concave detail.
+				float sample_mip = clamp(floor(log2(max(t * t * float(step_count) * 0.5, 1.0))), 0.0, float(params.mip_count - 1));
+
+				float sample_z = textureLod(source_depth_mipmaps, sample_uv, sample_mip).x;
+				vec3 sample_pos = NDC_to_view_space(sample_uv, sample_z);
+
+				vec3 sample_delta = sample_pos - view_pos;
+				float sample_dist = length(sample_delta);
+				float sample_cos = dot(sample_delta, V) / max(sample_dist, 0.0001) - params.horizon_bias;
+
+				// Fade out smoothly at the search radius, and soften thin occluders (a conservative stand-in
+				// for the paper's thickness heuristic, Section 4.1, eq. 9): a sample that would lower the
+				// horizon is only partially accepted, so a thin occluder doesn't fully re-open the horizon
+				// right behind it the way an infinitely thick one would.
+				float falloff = clamp(1.0 - (sample_dist * sample_dist) / (params.radius * params.radius), 0.0, 1.0);
+				sample_cos = mix(horizon_cos[side], sample_cos, falloff);
+				horizon_cos[side] = (sample_cos >= horizon_cos[side]) ? sample_cos : mix(horizon_cos[side], sample_cos, params.thin_occluder_compensation);
+			}
+		}
+
+		float theta0 = acos(clamp(horizon_cos[0], -1.0, 1.0));
+		float theta1 = acos(clamp(horizon_cos[1], -1.0, 1.0));
+
+		// Clamp each horizon to the surface's own tangent plane (gamma +/- pi/2): anything past that would
+		// count contributions from behind the surface, which the search itself has no way to exclude.
+		theta0 = min(theta0, GTAO_PI * 0.5 + gamma);
+		theta1 = min(theta1, GTAO_PI * 0.5 - gamma);
+
+		// Both horizons are unsigned magnitudes out of acos(), but they lie on OPPOSITE sides of the slice
+		// and the integral is parametrized by a single signed angle measured from V in the same frame gamma
+		// uses. Side 1 searched along -slice_tangent, so it enters as a negative angle; feeding it in
+		// positive instead integrates the wrong arc entirely and is what turns flat, unoccluded surfaces
+		// dark as soon as gamma moves away from 0 (at gamma = 0 the two happen to coincide, which is why
+		// head-on surfaces looked correct while everything else did not).
+		visibility_sum += normal_in_slice_len * 0.25 * (integrate_arc(theta0, gamma) + integrate_arc(-theta1, gamma));
+		used_slices++;
+	}
+
+	// Deliberately not clamped to 1 here, only to a sane upper bound. With a handful of slices per frame the
+	// per-frame estimate overshoots and undershoots around the true value; clipping the overshoots while
+	// letting the undershoots through biases the temporal average downward, as a faint view-dependent
+	// darkening of surfaces that are in fact completely unoccluded. gtao_upscale.glsl already clamps once
+	// where intensity/power are applied, which is the right place for it.
+	float visibility = (used_slices > 0) ? clamp(visibility_sum / float(used_slices), 0.0, 2.0) : 1.0;
+
+	imageStore(dest_image, pos, vec4(visibility));
+}
