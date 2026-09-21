@@ -1784,6 +1784,22 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			// GTAO has its own dedicated depth downsampler (effects/gtao.cpp), so it doesn't need the
 			// ss_effects shared one SSIL below still relies on.
 			_process_gtao(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform);
+		} else if (rb->has_texture(RB_SCOPE_GTAO, RB_GTAO_FINAL)) {
+			// Nothing writes these buffers while GTAO is switched off, so keeping them around just keeps a
+			// stale frame alive. The lighting pass doesn't mind (it gates on SCREEN_SPACE_EFFECTS_FLAGS_USE_GTAO
+			// and never samples the texture it still has bound), but the GTAO debug view keys off has_texture()
+			// alone: it would keep blitting the last frame GTAO actually ran over every frame after it, so the
+			// viewport looks frozen even though the scene behind it is still rendering and still handling input.
+			// Dropping the context also hands the memory back for as long as the effect stays off.
+			rb->clear_context(RB_SCOPE_GTAO);
+
+			// The cached working size now describes textures that no longer exist, and the ones allocate_buffers()
+			// recreates on re-enable start out undefined, so last frame's history must not survive the round trip.
+			rb_data->gtao_data.buffer_width = 0;
+			rb_data->gtao_data.buffer_height = 0;
+			for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
+				rb_data->gtao_data.history_valid[v] = false;
+			}
 		}
 
 		if (p_use_ssil) {
