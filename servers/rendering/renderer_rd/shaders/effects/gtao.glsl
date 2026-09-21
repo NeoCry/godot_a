@@ -165,9 +165,17 @@ void main() {
 				float step_dist = t * t * pixel_radius;
 
 				vec2 sample_uv = uv + (dir_screen * side_sign * step_dist) * params.depth_texture_pixel_size;
-				// mip N covers 2^N base-level texels, so a sample step_dist texels away is reasonably
-				// represented by that same mip level.
-				float sample_mip = clamp(floor(log2(max(step_dist, 1.0))), 0.0, float(params.mip_count - 1));
+				// Deliberately conservative, step-POSITION-based mip schedule (t*t*step_count is independent
+				// of pixel_radius, unlike step_dist itself) that only reaches the coarser mips for the last
+				// one or two farthest steps, regardless of how large pixel_radius is: the depth mip chain is
+				// built with min-reduction (gtao_downsample.glsl biases every level toward whichever nearby
+				// depth is closest, to keep thin occluders from disappearing), so sampling a coarse mip near
+				// a real silhouette smears its occlusion well past the actual edge. Selecting by raw
+				// step_dist instead reaches the coarsest available mip after only a small fraction of the
+				// search at realistic radius/distance combinations (e.g. a 1m radius a few meters from the
+				// camera is already hundreds of texels), which is what caused that smearing to dominate over
+				// genuine concave detail.
+				float sample_mip = clamp(floor(log2(max(t * t * float(step_count) * 0.5, 1.0))), 0.0, float(params.mip_count - 1));
 
 				float sample_z = textureLod(source_depth_mipmaps, sample_uv, sample_mip).x;
 				vec3 sample_pos = NDC_to_view_space(sample_uv, sample_z);
