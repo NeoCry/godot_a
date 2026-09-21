@@ -136,6 +136,22 @@ void main() {
 	// load_normal()'s own z flip).
 	vec3 V = params.is_orthogonal ? vec3(0.0, 0.0, -1.0) : normalize(-view_pos);
 
+	// Orthonormal basis of the plane perpendicular to V. Slices are swept around the VIEW VECTOR in this
+	// basis rather than around the screen's own axis: the two coincide only at the exact centre of the
+	// screen, and anywhere else a screen-uniform sweep covers the azimuth around V non-uniformly. That
+	// biases the estimate by several percent in a pattern that drifts smoothly across the viewport (a flat,
+	// unoccluded floor reads ~0.96 low-centre but ~1.09 toward the side edges), which survives both slice
+	// jitter and temporal accumulation because it is systematic rather than noise.
+	// V never approaches +/-X (that would need V.z == 0, i.e. a ray perpendicular to the view axis), so this
+	// reference axis never degenerates.
+	vec3 slice_basis_u = normalize(vec3(1.0, 0.0, 0.0) - V * V.x);
+	vec3 slice_basis_v = cross(V, slice_basis_u);
+
+	// This pixel's ray direction normalized to z = 1, used to map a view-space slice direction back to the
+	// screen-space direction its samples have to step along. Orthogonal projections don't scale x/y with
+	// depth, so there is no such term for them.
+	vec2 ray_xy = params.is_orthogonal ? vec2(0.0) : view_pos.xy / max(view_pos.z, 0.0001);
+
 	int quality = clamp(params.quality, 0, 4);
 	int slice_count = gtao_slice_count[quality];
 	int step_count = gtao_step_count[quality];
@@ -151,14 +167,16 @@ void main() {
 
 	for (int slice = 0; slice < slice_count; slice++) {
 		float phi = (GTAO_PI / float(slice_count)) * (float(slice) + jitter);
-		vec2 dir_screen = vec2(cos(phi), sin(phi));
+		vec3 slice_tangent = slice_basis_u * cos(phi) + slice_basis_v * sin(phi);
 
-		// dir_screen is a UV-space direction, and view-space Y runs OPPOSITE to UV Y here (NDC_to_view_mul_y
-		// is negative). The samples below step along +dir_screen in UV space, so the view-space tangent that
-		// gamma's sign convention is built from has to carry that flip, or gamma ends up mirrored against the
-		// side the samples actually came from for every slice with a Y component — which silently swaps the
-		// two horizons in the integral below.
-		vec3 slice_tangent = vec3(dir_screen.x, -dir_screen.y, 0.0);
+		// The screen-space direction whose samples stay inside this slice's plane. Dividing by the
+		// NDC_to_view muls also carries their (negative for Y) sign, so the UV/view-space Y flip falls out
+		// of the mapping instead of having to be applied by hand. Never degenerate: it could only vanish if
+		// slice_tangent were parallel to this pixel's ray, and it is perpendicular to V by construction.
+		vec2 dir_screen = normalize(vec2(
+				(slice_tangent.x - ray_xy.x * slice_tangent.z) / params.NDC_to_view_mul_x,
+				(slice_tangent.y - ray_xy.y * slice_tangent.z) / params.NDC_to_view_mul_y));
+
 		vec3 slice_normal = normalize(cross(slice_tangent, V));
 		vec3 normal_in_slice = N - slice_normal * dot(N, slice_normal);
 		float normal_in_slice_len = length(normal_in_slice);
@@ -168,10 +186,11 @@ void main() {
 		}
 
 		vec3 normal_in_slice_n = normal_in_slice / normal_in_slice_len;
-		vec3 slice_tangent_perp = normalize(slice_tangent - V * dot(slice_tangent, V));
-		// Clamped to the visible hemisphere: a normal-mapped (or near-grazing) pixel can report a shading
-		// normal tipped slightly away from V, which would otherwise push the tangent-plane bounds below zero.
-		float gamma = clamp(atan(dot(normal_in_slice_n, slice_tangent_perp), dot(normal_in_slice_n, V)),
+		// slice_tangent is perpendicular to V by construction, so it is already the in-slice reference axis
+		// gamma is measured against. Clamped to the visible hemisphere: a normal-mapped (or near-grazing)
+		// pixel can report a shading normal tipped slightly away from V, which would otherwise push the
+		// tangent-plane bounds below zero.
+		float gamma = clamp(atan(dot(normal_in_slice_n, slice_tangent), dot(normal_in_slice_n, V)),
 				-GTAO_PI * 0.5, GTAO_PI * 0.5);
 
 		// -1 (horizon angle = pi, nothing found yet) rather than 0 (horizon sitting at V's own tangent
@@ -237,7 +256,12 @@ void main() {
 		used_slices++;
 	}
 
-	float visibility = (used_slices > 0) ? clamp(visibility_sum / float(used_slices), 0.0, 1.0) : 1.0;
+	// Deliberately not clamped to 1 here, only to a sane upper bound. With a handful of slices per frame the
+	// per-frame estimate overshoots and undershoots around the true value; clipping the overshoots while
+	// letting the undershoots through biases the temporal average downward, as a faint view-dependent
+	// darkening of surfaces that are in fact completely unoccluded. gtao_upscale.glsl already clamps once
+	// where intensity/power are applied, which is the right place for it.
+	float visibility = (used_slices > 0) ? clamp(visibility_sum / float(used_slices), 0.0, 2.0) : 1.0;
 
 	imageStore(dest_image, pos, vec4(visibility));
 }
