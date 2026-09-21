@@ -206,7 +206,14 @@ void main() {
 
 			for (int s = 0; s < step_count; s++) {
 				float t = (float(s) + 0.5) / float(step_count);
-				float step_dist = t * t * pixel_radius;
+				// At least one texel of separation per step. pixel_radius is the search radius expressed in
+				// texels and shrinks with distance (a 1 m radius is only a handful of texels across at
+				// 50 m), so without this the quadratic ramp puts the first samples less than a texel out.
+				// The depth sampler is NEAREST, so those land back on the centre texel and contribute a
+				// delta of ~0: a wasted tap that carries no occlusion information, and more of them are
+				// wasted the more steps the quality level asks for (step 0 sits at 1/(2*step_count) of the
+				// ramp, so it lands closer in the more steps there are).
+				float step_dist = max(t * t * pixel_radius, float(s) + 1.0);
 
 				vec2 sample_uv = uv + (dir_screen * side_sign * step_dist) * params.depth_texture_pixel_size;
 				// Deliberately conservative, step-POSITION-based mip schedule (t*t*step_count is independent
