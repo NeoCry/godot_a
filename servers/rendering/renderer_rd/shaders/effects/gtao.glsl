@@ -189,6 +189,16 @@ void main() {
 		float theta0 = acos(clamp(horizon_cos[0], -1.0, 1.0));
 		float theta1 = acos(clamp(horizon_cos[1], -1.0, 1.0));
 
+		// Clamp each horizon angle to the surface's own tangent plane (gamma +/- pi/2): a raw acos result
+		// beyond that would count contributions from behind the surface, which the search has no way to
+		// exclude on its own. Without this, a perfectly flat, unoccluded surface only integrates to full
+		// visibility when V happens to be near-parallel to N (gamma near 0, where the tangent-plane bound
+		// coincides with the search's own default range); as gamma grows toward grazing angles the two
+		// diverge and the unclamped formula reports spurious self-occlusion that gets worse the more
+		// glancing the view angle is — exactly the reported symptom.
+		theta0 = min(theta0, GTAO_PI * 0.5 + gamma);
+		theta1 = min(theta1, GTAO_PI * 0.5 - gamma);
+
 		float a0 = -cos(2.0 * theta0 - gamma) + cos(gamma) + 2.0 * theta0 * sin(gamma);
 		float a1 = -cos(2.0 * theta1 - gamma) + cos(gamma) + 2.0 * theta1 * sin(gamma);
 
