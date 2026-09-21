@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="TerrainData" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		The heightmap and per-layer texture weight maps for a [Landscape3D].
+	</brief_description>
+	<description>
+		[TerrainData] is the actual "world" a [Landscape3D] renders and collides with: a square grid of [member resolution] × [member resolution] height samples spaced [member vertex_spacing] meters apart, plus one continuous weight per [TerrainLayer] at every sample, and a hole flag (see [method get_layer_weight] and [Landscape3D]'s description for how layer weights combine into a final blend).
+		This resource holds and serializes the data; it does not render anything or know about any particular [Landscape3D] node (several nodes could even share one [TerrainData], though editing it from one would then affect all of them). Assign it to a [Landscape3D]'s [member Landscape3D.terrain_data] to render and sculpt it.
+		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. A [Landscape3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Landscape3D] sharing it), but prefer going through [Landscape3D]'s own [method Landscape3D.sculpt], [method Landscape3D.set_height_region], and [method Landscape3D.paint_layer] instead of this resource's methods directly when a [Landscape3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Landscape3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="fill_height">
+			<return type="void" />
+			<param index="0" name="height" type="float" />
+			<description>
+				Sets every height sample to [param height], for example to reset the terrain to a flat plane.
+			</description>
+		</method>
+		<method name="get_height" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns the height at sample [param x], [param z], in world units. Out-of-range coordinates are clamped to the valid range, which is a convenient way to sample one step past the edge (e.g. for computing normals) without special-casing the border.
+			</description>
+		</method>
+		<method name="get_height_at_position" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="local_xz" type="Vector2" />
+			<description>
+				Returns the terrain height at the arbitrary local-space position [param local_xz] (X and Z; local to whatever [Landscape3D] this data is assigned to), bilinearly interpolated between the surrounding height samples. Useful for gameplay queries like snapping an object to the ground.
+			</description>
+		</method>
+		<method name="get_height_region" qualifiers="const">
+			<return type="PackedFloat32Array" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns the heights covering [param region] (in height sample coordinates: [member Rect2i.position] is the starting [code](x, z)[/code] sample and [member Rect2i.size] is how many samples to read in each direction), row-major with X varying fastest, the same layout [method set_height_region] expects back. Useful for snapshotting a region before an edit (e.g. to implement undo).
+			</description>
+		</method>
+		<method name="get_hole_region" qualifiers="const">
+			<return type="PackedByteArray" />
+			<param index="0" name="region" type="Rect2i" />
+			<description>
+				Returns the hole flags (each [code]0[/code] or [code]1[/code]; see [method is_hole]) covering [param region] (in height sample coordinates), row-major with X varying fastest, the same layout [method set_hole_region] expects back.
+			</description>
+		</method>
+		<method name="get_layer_weight" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="layer_index" type="int" />
+			<description>
+				Returns how much of the [TerrainLayer] at [param layer_index] (its index into [member Landscape3D.layers]) shows at height sample [param x], [param z] (out-of-range coordinates are clamped to the valid range), from [code]0.0[/code] to [code]1.0[/code]. This is one independent weight per layer, not a shared pair like an older-style 2-layer control map: see the class description for how every layer's weight at a point combines into what's actually rendered there.
+			</description>
+		</method>
+		<method name="get_layer_weight_region" qualifiers="const">
+			<return type="PackedFloat32Array" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="layer_index" type="int" />
+			<description>
+				Returns layer [param layer_index]'s weights covering [param region] (in height sample coordinates), row-major with X varying fastest, the same layout [method set_layer_weight_region] expects back.
+			</description>
+		</method>
+		<method name="get_normal" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns the surface normal at height sample [param x], [param z], estimated from the heights of its four neighboring samples.
+			</description>
+		</method>
+		<method name="get_normal_at_position" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="local_xz" type="Vector2" />
+			<description>
+				Returns the terrain surface normal at the arbitrary local-space position [param local_xz], bilinearly interpolated between the surrounding samples' normals. See [method get_height_at_position].
+			</description>
+		</method>
+		<method name="get_size" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the terrain's world-space size along one edge: [code](resolution - 1) * vertex_spacing[/code]. The terrain is always square.
+			</description>
+		</method>
+		<method name="import_heightmap">
+			<return type="void" />
+			<param index="0" name="image" type="Image" />
+			<param index="1" name="height_min" type="float" />
+			<param index="2" name="height_max" type="float" />
+			<description>
+				Replaces the heightmap by importing [param image], which must be square and uncompressed. [member resolution] is set to the image's size, and each pixel's red channel (expected to be in the [code]0.0[/code] to [code]1.0[/code] range, as with a normal grayscale heightmap image) is linearly mapped from [param height_min] to [param height_max] to produce that sample's height.
+				[b]Prefer an EXR or HDR source image over PNG or any lossy format (e.g. JPEG):[/b] Godot always decodes a loaded PNG (even a 16-bit one) to 8 bits per channel, i.e. only 256 distinct heights across the whole [param height_min]-[param height_max] range, and a lossy format's compression artifacts become actual bumps in the terrain surface on top of that. EXR and HDR decode to real floating-point precision instead. Check [member Image.format] after loading if you need to detect this in a script; [constant Image.FORMAT_RF], [constant Image.FORMAT_RH], and their multi-channel/[constant Image.FORMAT_RGBE9995] variants are the high-precision ones.
+			</description>
+		</method>
+		<method name="is_hole" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<description>
+				Returns [code]true[/code] if height sample [param x], [param z] is flagged as a hole (see [method Landscape3D.set_hole]). A [Landscape3D] omits the geometry around a hole entirely, rather than just hiding it, so holes can be used for cave entrances and similar openings that the camera and physics bodies can pass through.
+			</description>
+		</method>
+		<method name="set_height">
+			<return type="void" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="height" type="float" />
+			<description>
+				Sets the height at sample [param x], [param z] (out-of-range coordinates are ignored) to [param height], in world units. Does not emit [signal Resource.changed]; callers making many edits (e.g. procedural generation) should call [method Resource.emit_changed] once afterwards, or use [method set_height_region] instead.
+			</description>
+		</method>
+		<method name="set_height_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="heights" type="PackedFloat32Array" />
+			<description>
+				Writes [param heights] (in the same row-major layout [method get_height_region] returns) into [param region] (in height sample coordinates) and emits [signal Resource.changed] once.
+			</description>
+		</method>
+		<method name="set_hole">
+			<return type="void" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="hole" type="bool" />
+			<description>
+				Sets the hole flag at height sample [param x], [param z] (out-of-range coordinates are ignored). Does not emit [signal Resource.changed]; callers making many edits should call [method Resource.emit_changed] once afterwards, or use [method set_hole_region] instead.
+			</description>
+		</method>
+		<method name="set_hole_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="holes" type="PackedByteArray" />
+			<description>
+				Writes [param holes] (each [code]0[/code] or [code]1[/code], in the same row-major layout [method get_hole_region] returns) into [param region] (in height sample coordinates) and emits [signal Resource.changed] once.
+			</description>
+		</method>
+		<method name="set_layer_weight">
+			<return type="void" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="layer_index" type="int" />
+			<param index="3" name="weight" type="float" />
+			<description>
+				Sets how much of the [TerrainLayer] at [param layer_index] shows at height sample [param x], [param z] (out-of-range coordinates are ignored) to [param weight] (clamped to [code]0.0[/code]-[code]1.0[/code]). Unlike [method Landscape3D.paint_layer], this does not touch any other layer's weight at that point, so painting with it directly won't automatically keep the total weight normalized (see the class description) - prefer [method Landscape3D.paint_layer] unless you're deliberately managing every layer's weights yourself. Does not emit [signal Resource.changed]; callers making many edits should call [method Resource.emit_changed] once afterwards, or use [method set_layer_weight_region] instead.
+			</description>
+		</method>
+		<method name="set_layer_weight_region">
+			<return type="void" />
+			<param index="0" name="region" type="Rect2i" />
+			<param index="1" name="layer_index" type="int" />
+			<param index="2" name="weights" type="PackedFloat32Array" />
+			<description>
+				Writes [param weights] (in the same row-major layout [method get_layer_weight_region] returns) into layer [param layer_index] at [param region] (in height sample coordinates) and emits [signal Resource.changed] once. See [method set_layer_weight] for how this compares to [method Landscape3D.paint_layer].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="resolution" type="int" setter="set_resolution" getter="get_resolution" default="513">
+			The number of height samples along each edge of the terrain (it is always square). Changing this resets the heightmap, every layer's weights, and the hole map to their default (flat, layer-less) state, so it should generally be set once before authoring a terrain rather than changed afterwards. See [method get_size] for the resulting world-space size.
+		</member>
+		<member name="vertex_spacing" type="float" setter="set_vertex_spacing" getter="get_vertex_spacing" default="1.0">
+			The distance, in meters, between two adjacent height samples. Lower values pack more geometric detail into the same world-space area at the cost of a much larger [member resolution] being needed to cover it.
+		</member>
+	</members>
+	<constants>
+		<constant name="MAX_LAYERS" value="32">
+			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Landscape3D.layers]); [param layer_index] must be less than this in every method above.
+		</constant>
+	</constants>
+</class>

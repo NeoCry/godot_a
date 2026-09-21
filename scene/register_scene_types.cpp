@@ -279,6 +279,9 @@
 #include "scene/3d/spring_bone_collision_sphere_3d.h"
 #include "scene/3d/spring_bone_simulator_3d.h"
 #include "scene/3d/sprite_3d.h"
+#include "scene/3d/landscape_3d.h"
+#include "scene/3d/terrain_data.h"
+#include "scene/3d/terrain_layer.h"
 #include "scene/3d/trail_3d.h"
 #include "scene/3d/two_bone_ik_3d.h"
 #include "scene/3d/visible_on_screen_notifier_3d.h"
@@ -774,6 +777,10 @@ void register_scene_types() {
 	GDREGISTER_CLASS(FoliageSpawner3D);
 	GDREGISTER_CLASS(FoliageLayer);
 	GDREGISTER_CLASS(FoliagePainter3D);
+
+	GDREGISTER_CLASS(TerrainLayer);
+	GDREGISTER_CLASS(TerrainData);
+	GDREGISTER_CLASS(Landscape3D);
 
 	GDREGISTER_CLASS(Curve3D);
 	GDREGISTER_CLASS(Path3D);
@@ -1347,6 +1354,7 @@ void register_scene_types() {
 		GraphEdit::init_shaders();
 #ifndef _3D_DISABLED
 		Trail3D::init_shaders();
+		Landscape3D::init_shaders();
 #endif //_3D_DISABLED
 	}
 
@@ -1410,6 +1418,7 @@ void unregister_scene_types() {
 	ProceduralSkyMaterial::cleanup_shader();
 	FogMaterial::cleanup_shader();
 	Trail3D::finish_shaders();
+	Landscape3D::finish_shaders();
 #endif // _3D_DISABLED
 
 	ParticleProcessMaterial::finish_shaders();

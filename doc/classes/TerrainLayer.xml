@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="TerrainLayer" inherits="Resource" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A single paintable ground material inside a [Landscape3D].
+	</brief_description>
+	<description>
+		[TerrainLayer] describes one ground material a [Landscape3D]'s Paint brush can blend in: an albedo texture and tint, an optional normal map (with a strength control), an optional packed occlusion/roughness/metallic ([member orm_texture]) map with scalar tweaks on top of it, a specular value, an optional heightmap for per-layer Parallax Occlusion Mapping (see [member pom_enabled]), an optional per-layer Triplanar Mapping mode (see [member triplanar_enabled]) for surfaces like cliffs where ordinary top-down UVs would stretch, and how large one texture tile is in world space ([member uv_scale]).
+		This resource is pure configuration; it does not store where it is painted (see [TerrainData]'s per-layer weight maps and [method Landscape3D.paint_layer]). [Landscape3D] combines every layer's textures into shared [Texture2DArray]s and blends any number of layers together smoothly at each point of the terrain, weighted by how much of each layer is painted there. Layer textures are resampled to a common size when built into those arrays, so very high-resolution source textures do not need to match each other exactly.
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="albedo_color" type="Color" setter="set_albedo_color" getter="get_albedo_color" default="Color(1, 1, 1, 1)">
+			Multiplies [member albedo_texture] (or, with none assigned, is the layer's flat color), the same convention as [member BaseMaterial3D.albedo_color].
+		</member>
+		<member name="albedo_texture" type="Texture2D" setter="set_albedo_texture" getter="get_albedo_texture">
+			The base color texture for this layer. Until this is set, the layer renders as a flat color (see [member albedo_color]).
+		</member>
+		<member name="ao_strength" type="float" setter="set_ao_strength" getter="get_ao_strength" default="1.0">
+			Blends [member orm_texture]'s occlusion (red) channel with "no occlusion" (fully lit): [code]0[/code] ignores the occlusion channel entirely, [code]1[/code] uses it exactly as authored. This fades the effect out at low values rather than multiplying it (which would send low values towards full occlusion - black - instead of none).
+		</member>
+		<member name="height_texture" type="Texture2D" setter="set_height_texture" getter="get_height_texture">
+			An optional grayscale heightmap for this layer, used only when [member pom_enabled] is also [code]true[/code] (and, on top of that, [member Landscape3D.pom_enabled] on the [Landscape3D] this layer is painted on - see its description). Brighter areas sit higher (less depth); if unset, this layer reads as flat even with [member pom_enabled] on.
+		</member>
+		<member name="height_max" type="float" setter="set_height_max" getter="get_height_max" default="1.0">
+			The high end of [member height_texture]'s value range; see [member height_min].
+		</member>
+		<member name="height_min" type="float" setter="set_height_min" getter="get_height_min" default="0.0">
+			Remaps [member height_texture]'s sampled value from [code][height_min, height_max][/code] to [code][0, 1][/code] before use, for a source texture that doesn't already use its full range (e.g. one whose useful detail only spans 0.2-0.8).
+		</member>
+		<member name="heightmap_scale" type="float" setter="set_heightmap_scale" getter="get_heightmap_scale" default="5.0">
+			Scales how much apparent depth [member height_texture] produces under Parallax Occlusion Mapping. Matches [member BaseMaterial3D.heightmap_scale]'s range and usable values (internally scaled down for convenience, so typical values are small double-digit numbers, not fractions).
+		</member>
+		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
+			A display name for this layer, shown in [Landscape3D]'s Paint brush layer list.
+		</member>
+		<member name="normal_strength" type="float" setter="set_normal_strength" getter="get_normal_strength" default="1.0">
+			How strongly [member normal_texture] perturbs the surface normal; [code]0[/code] ignores it entirely (a flat normal), values above [code]1[/code] exaggerate it. Matches [member BaseMaterial3D.normal_scale] exactly (same range and default), applied the same way (Godot's own [code]NORMAL_MAP_DEPTH[/code]).
+		</member>
+		<member name="normal_texture" type="Texture2D" setter="set_normal_texture" getter="get_normal_texture">
+			An optional tangent-space normal map for this layer. If unset, the layer uses a flat normal (no extra surface detail beyond the terrain's own geometry).
+		</member>
+		<member name="orm_texture" type="Texture2D" setter="set_orm_texture" getter="get_orm_texture">
+			An optional packed occlusion (red channel), roughness (green channel), and metallic (blue channel) texture for this layer, matching the convention used elsewhere in Godot (see [member BaseMaterial3D.orm_texture]). If unset, the layer uses no occlusion, medium roughness, and no metallic before [member ao_strength]/[member roughness] are applied.
+		</member>
+		<member name="pom_enabled" type="bool" setter="set_pom_enabled" getter="is_pom_enabled" default="false">
+			If [code]true[/code] (and [member Landscape3D.pom_enabled] is also [code]true[/code] on the terrain this layer is painted on), this layer uses [member height_texture] for Parallax Occlusion Mapping. Per-layer rather than terrain-wide, since a layer with no real height detail shouldn't pay for the ray-marching this adds to every fragment it covers. Mutually exclusive with [member triplanar_enabled] on the same layer (if both are set, this layer is rendered as triplanar, without POM - matching [member BaseMaterial3D]'s own heightmapping/triplanar exclusivity).
+		</member>
+		<member name="roughness" type="float" setter="set_roughness" getter="get_roughness" default="1.0">
+			Multiplies [member orm_texture]'s roughness (green) channel, the same convention as [member BaseMaterial3D.roughness].
+		</member>
+		<member name="specular" type="float" setter="set_specular" getter="get_specular" default="0.5">
+			Specular reflectance for this layer at normal incidence, for non-metallic (dielectric) surfaces; unrelated to [member orm_texture], which has no specular channel. Matches [member BaseMaterial3D.metallic_specular] - the default of [code]0.5[/code] is a reasonable value for most materials.
+		</member>
+		<member name="triplanar_enabled" type="bool" setter="set_triplanar_enabled" getter="is_triplanar_enabled" default="false">
+			If [code]true[/code], this layer's albedo/normal/ORM textures are projected from the world-space X, Y, and Z planes and blended by surface normal instead of using a single top-down UV, avoiding the stretching that UV would otherwise show on a steep slope (e.g. a cliff face). Mutually exclusive with [member pom_enabled] on the same layer; see there for how the two interact when both are set.
+		</member>
+		<member name="triplanar_sharpness" type="float" setter="set_triplanar_sharpness" getter="get_triplanar_sharpness" default="1.0">
+			How sharply [member triplanar_enabled] transitions between its three projections; higher values narrow the blend region around each edge. Matches [member BaseMaterial3D.uv1_triplanar_sharpness]'s range and default.
+		</member>
+		<member name="uv_scale" type="float" setter="set_uv_scale" getter="get_uv_scale" default="4.0">
+			The size, in meters, that one tile of this layer's textures covers on the terrain. Smaller values tile the texture more densely (a smaller, more repeated pattern); larger values stretch it further. Also used as the tile size for [member triplanar_enabled]'s three projections.
+		</member>
+	</members>
+</class>
