@@ -1181,7 +1181,7 @@ void Environment::_validate_property(PropertyInfo &p_property) const {
 	}
 
 	if (p_property.name == "tonemap_white") {
-		if (tone_mapper == TONE_MAPPER_LINEAR || tone_mapper == TONE_MAPPER_AGX) {
+		if (tone_mapper == TONE_MAPPER_LINEAR || tone_mapper == TONE_MAPPER_AGX || tone_mapper == TONE_MAPPER_PBR_NEUTRAL) {
 			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 		}
 		return;
@@ -1348,7 +1348,7 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_tonemap_agx_contrast"), &Environment::get_tonemap_agx_contrast);
 
 	ADD_GROUP("Tonemap", "tonemap_");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "tonemap_mode", PROPERTY_HINT_ENUM, "Linear,Reinhard,Filmic,ACES,AgX"), "set_tonemapper", "get_tonemapper");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "tonemap_mode", PROPERTY_HINT_ENUM, "Linear,Reinhard,Filmic,ACES,AgX,PBR Neutral"), "set_tonemapper", "get_tonemapper");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tonemap_exposure", PROPERTY_HINT_RANGE, "0,4,0.01,or_greater"), "set_tonemap_exposure", "get_tonemap_exposure");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tonemap_white", PROPERTY_HINT_RANGE, "1,16,0.01,or_greater"), "set_tonemap_white", "get_tonemap_white");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "tonemap_agx_white", PROPERTY_HINT_RANGE, "2,16.5,0.01,or_greater"), "set_tonemap_agx_white", "get_tonemap_agx_white");
@@ -1669,6 +1669,7 @@ void Environment::_bind_methods() {
 	BIND_ENUM_CONSTANT(TONE_MAPPER_FILMIC);
 	BIND_ENUM_CONSTANT(TONE_MAPPER_ACES);
 	BIND_ENUM_CONSTANT(TONE_MAPPER_AGX);
+	BIND_ENUM_CONSTANT(TONE_MAPPER_PBR_NEUTRAL);
 
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_ADDITIVE);
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_SCREEN);

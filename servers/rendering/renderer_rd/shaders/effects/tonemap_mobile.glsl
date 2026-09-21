@@ -73,11 +73,12 @@ layout(constant_id = 9) const bool tonemapper_reinhard = false;
 layout(constant_id = 10) const bool tonemapper_filmic = false;
 layout(constant_id = 11) const bool tonemapper_aces = false;
 layout(constant_id = 12) const bool tonemapper_agx = false;
-layout(constant_id = 13) const bool glow_mode_add = false;
-layout(constant_id = 14) const bool glow_mode_screen = false;
-layout(constant_id = 15) const bool glow_mode_softlight = false;
-layout(constant_id = 16) const bool glow_mode_replace = false;
-layout(constant_id = 17) const bool glow_mode_mix = false;
+layout(constant_id = 13) const bool tonemapper_pbr_neutral = false;
+layout(constant_id = 14) const bool glow_mode_add = false;
+layout(constant_id = 15) const bool glow_mode_screen = false;
+layout(constant_id = 16) const bool glow_mode_softlight = false;
+layout(constant_id = 17) const bool glow_mode_replace = false;
+layout(constant_id = 18) const bool glow_mode_mix = false;
 
 layout(push_constant, std430) uniform Params {
 	vec3 bcs;
@@ -238,6 +239,40 @@ vec3 tonemap_agx(vec3 color) {
 	return color;
 }
 
+// Khronos PBR Neutral tonemapper. Reproduces material base colors as accurately
+// as possible while gracefully desaturating bright highlights, which makes it a
+// good match for PBR (glTF) content.
+// Source: https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
+// (Apache-2.0 License).
+// Input must be a non-negative linear Rec. 709 value.
+vec3 tonemap_pbr_neutral(vec3 color) {
+	// These constants must match those of the reference implementation. The 0.04
+	// offset accounts for the achromatic light that the ~4% specular reflection
+	// of a dielectric adds on top of its base color, which is what lets base
+	// colors between 0.08 and 0.8 be reproduced accurately.
+	const float start_compression = 0.8 - 0.04;
+	const float desaturation = 0.15;
+
+	float x = min(color.r, min(color.g, color.b));
+	float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+	color -= offset;
+
+	float peak = max(color.r, max(color.g, color.b));
+	if (peak < start_compression) {
+		return color;
+	}
+
+	// The reference implementation hardcodes an output max value of 1.0. Deriving
+	// the shoulder from output_max_value instead keeps the curve identical in SDR
+	// while letting highlights use the extra range of an HDR output.
+	float d = params.output_max_value - start_compression;
+	float new_peak = params.output_max_value - d * d / (peak + d - start_compression);
+	color *= new_peak / peak;
+
+	float g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+	return mix(color, vec3(new_peak), g);
+}
+
 vec3 linear_to_srgb(vec3 color) {
 	const vec3 a = vec3(0.055f);
 	return mix((vec3(1.0f) + a) * pow(color.rgb, vec3(1.0f / 2.4f)) - a, 12.92f * color.rgb, lessThan(color.rgb, vec3(0.0031308f)));
@@ -263,8 +298,10 @@ vec3 apply_tonemapping(vec3 color) { // inputs are LINEAR
 		return tonemap_filmic(color);
 	} else if (tonemapper_aces) {
 		return tonemap_aces(color);
-	} else { // tonemapper_agx
+	} else if (tonemapper_agx) {
 		return tonemap_agx(color);
+	} else { // tonemapper_pbr_neutral
+		return tonemap_pbr_neutral(color);
 	}
 }
 

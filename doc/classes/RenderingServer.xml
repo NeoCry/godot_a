@@ -5871,6 +5871,10 @@
 		<constant name="ENV_TONE_MAPPER_AGX" value="4" enum="EnvironmentToneMapper">
 			Uses an adjustable film-like tonemapping curve and desaturates bright values for a more realistic appearance. Better than other tonemappers at maintaining the hue of colors as they become brighter. The slowest tonemapping option.
 		</constant>
+		<constant name="ENV_TONE_MAPPER_PBR_NEUTRAL" value="5" enum="EnvironmentToneMapper">
+			Uses the Khronos PBR Neutral tonemapping curve, which is designed to reproduce material base colors as accurately as possible while smoothly desaturating only the brightest highlights. This makes it a good match for displaying PBR (glTF) content faithfully, at the cost of less highlight contrast than [constant ENV_TONE_MAPPER_AGX]. Slower than [constant ENV_TONE_MAPPER_REINHARD], but faster than [constant ENV_TONE_MAPPER_AGX]. See [url=https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral]Khronos PBR Neutral Tone Mapper[/url] for details.
+			[b]Note:[/b] This tonemapper uses a fixed curve, so [member Environment.tonemap_white] has no effect on it.
+		</constant>
 		<constant name="ENV_SSR_ROUGHNESS_QUALITY_DISABLED" value="0" enum="EnvironmentSSRRoughnessQuality">
 			Lowest quality of roughness filter for screen-space reflections. Rough materials will not have blurrier screen-space reflections compared to smooth (non-rough) materials. This is the fastest option.
 		</constant>

@@ -235,6 +235,10 @@ float RendererEnvironmentStorage::environment_get_white(RID p_env, bool p_limit_
 	// it is at least 1.0 for all tonemappers:
 	if (env->tone_mapper == RSE::ENV_TONE_MAPPER_LINEAR) {
 		return p_output_max_value;
+	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_PBR_NEUTRAL) {
+		// PBR Neutral has a fixed curve with no white parameter; its highlights
+		// asymptotically approach the maximum output value.
+		return p_output_max_value;
 	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_FILMIC || env->tone_mapper == RSE::ENV_TONE_MAPPER_ACES) {
 		// Filmic and ACES only support SDR; their white is stable regardless
 		// of output_max_value.
@@ -280,8 +284,8 @@ RendererEnvironmentStorage::TonemapParameters RendererEnvironmentStorage::enviro
 	float white = environment_get_white(p_env, p_limit_agx_white, p_output_max_value);
 	TonemapParameters tonemap_parameters = TonemapParameters();
 
-	if (env->tone_mapper == RSE::ENV_TONE_MAPPER_LINEAR) {
-		// Linear has no tonemapping parameters
+	if (env->tone_mapper == RSE::ENV_TONE_MAPPER_LINEAR || env->tone_mapper == RSE::ENV_TONE_MAPPER_PBR_NEUTRAL) {
+		// Linear and PBR Neutral have no tonemapping parameters
 	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_REINHARD) {
 		tonemap_parameters.white_squared = (white * white) / p_output_max_value;
 	} else if (env->tone_mapper == RSE::ENV_TONE_MAPPER_FILMIC) {
