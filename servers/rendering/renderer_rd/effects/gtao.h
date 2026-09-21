@@ -168,13 +168,13 @@ private:
 		int32_t screen_size[2];
 		float pixel_size[2];
 
-		float z_near;
-		float z_far;
+		uint32_t is_orthogonal;
+		float depth_linearize_mul;
+		float depth_linearize_add;
 		float history_weight;
-		uint32_t history_is_valid;
 
+		uint32_t history_is_valid;
 		float sharpness;
-		float pad[3];
 	};
 
 	struct {

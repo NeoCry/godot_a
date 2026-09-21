@@ -35,10 +35,14 @@
 // wasn't visible last frame, or wasn't there at all) falls back to the spatial-only result instead of
 // blending in stale/wrong history.
 //
-// The reprojection math (NDC round-trip through the `reprojection` matrix, depth re-normalized against
-// z_near/z_far rather than carried as raw hardware depth) mirrors the proven pattern already used by SSIL's
-// last-frame-color sampling (servers/rendering/renderer_rd/shaders/effects/ssil.glsl) for the same codebase
-// and camera conventions, so it doesn't have to re-derive NDC/Y-flip conventions from scratch.
+// The reprojection math (NDC round-trip through the `reprojection` matrix) mirrors the proven pattern
+// already used by SSIL's last-frame-color sampling (servers/rendering/renderer_rd/shaders/effects/ssil.glsl)
+// for the same codebase and camera conventions, so it doesn't have to re-derive NDC/Y-flip conventions from
+// scratch. The matrix itself expects a genuine NDC-Z input/output matching the projection's actual hardware
+// convention (reverse-Z, Vulkan-remapped to [0,1]) at both ends, not a linear stand-in built from z_near/
+// z_far -- the two are related hyperbolically, not linearly, for a perspective projection, and since the
+// matrix mixes all four components together, feeding or reading the wrong one corrupts the reprojected UV
+// itself, not just the depth-based disocclusion check that reads it back afterwards.
 
 #[compute]
 
@@ -63,17 +67,22 @@ layout(push_constant, std430) uniform Params {
 	ivec2 screen_size;
 	vec2 pixel_size;
 
-	float z_near;
-	float z_far;
+	bool is_orthogonal;
+	float depth_linearize_mul;
+	float depth_linearize_add;
 	float history_weight;
-	bool history_is_valid;
 
+	bool history_is_valid;
 	float sharpness;
-	// float[3], not vec3: a bare vec3 in std430 still gets 16-byte base alignment (only arrays/structs lose
-	// the std140 rounding), which would silently pad this block out to 64 bytes against the C++ side's 48.
-	float pad[3];
 }
 params;
+
+float linearize_depth(float p_ndc_z) {
+	if (params.is_orthogonal) {
+		return mix(params.depth_linearize_mul, params.depth_linearize_add, p_ndc_z);
+	}
+	return params.depth_linearize_mul / max(params.depth_linearize_add - p_ndc_z, 0.0001);
+}
 
 // Small cross-shaped bilateral gather: cheap, and only meant to take the edge off this frame's raw
 // per-pixel noise before it meets the temporal accumulator (which does the heavy lifting over time).
@@ -112,8 +121,12 @@ void main() {
 	vec2 uv = (vec2(pos) + 0.5) * params.pixel_size;
 
 	// Round-trip this pixel's position through the accumulated view/projection change since last frame to
-	// find where it was on screen then (see file header for why this specific formulation is used).
-	float ndc_z = clamp((depth - params.z_near) / max(params.z_far - params.z_near, 0.0001) * 2.0 - 1.0, -1.0, 1.0);
+	// find where it was on screen then (see file header for why this specific formulation is used). This is
+	// the inverse of linearize_depth() above: recovers the hardware-depth-equivalent NDC-Z that would have
+	// produced this frame's already-linear `depth`, since that's what the reprojection matrix expects.
+	float ndc_z = params.is_orthogonal
+			? clamp((depth - params.depth_linearize_mul) / max(params.depth_linearize_add - params.depth_linearize_mul, 0.0001), 0.0, 1.0)
+			: clamp(params.depth_linearize_add - params.depth_linearize_mul / max(depth, 0.0001), 0.0, 1.0);
 	vec4 clip_prev = reprojection_constants.reprojection * vec4(uv * 2.0 - 1.0, ndc_z, 1.0);
 
 	float result_ao = spatial_ao;
@@ -127,7 +140,10 @@ void main() {
 			float history_ao = history.x;
 			float history_depth = history.y;
 
-			float expected_prev_depth = ((clip_prev.z / clip_prev.w) * 0.5 + 0.5) * (params.z_far - params.z_near) + params.z_near;
+			// Same linearize_depth() as above, applied to the reprojected point's own NDC-Z instead of a
+			// fresh hardware depth sample (assumes last frame's projection had the same near/far/FOV as this
+			// frame's, which only briefly doesn't hold on the rare frame those settings actually change).
+			float expected_prev_depth = linearize_depth(clip_prev.z / clip_prev.w);
 			float depth_error = abs(history_depth - expected_prev_depth) / max(expected_prev_depth, 0.001);
 
 			// A moving/disoccluded surface won't match the depth the history was recorded at; reject it

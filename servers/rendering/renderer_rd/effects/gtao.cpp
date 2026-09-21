@@ -317,8 +317,9 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		temporal.push_constant.screen_size[1] = working_size.y;
 		temporal.push_constant.pixel_size[0] = 1.0 / working_size.x;
 		temporal.push_constant.pixel_size[1] = 1.0 / working_size.y;
-		temporal.push_constant.z_near = p_projection.get_z_near();
-		temporal.push_constant.z_far = p_projection.get_z_far();
+		temporal.push_constant.is_orthogonal = is_orthogonal;
+		temporal.push_constant.depth_linearize_mul = depth_linearize_mul;
+		temporal.push_constant.depth_linearize_add = depth_linearize_add;
 		temporal.push_constant.history_weight = 0.9;
 		temporal.push_constant.history_is_valid = p_gtao_buffers.history_valid[p_view];
 		temporal.push_constant.sharpness = p_settings.sharpness;
