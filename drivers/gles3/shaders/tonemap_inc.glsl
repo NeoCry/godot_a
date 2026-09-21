@@ -169,11 +169,45 @@ vec3 tonemap_agx(vec3 color) {
 	return color;
 }
 
+// Khronos PBR Neutral tonemapper. Reproduces material base colors as accurately
+// as possible while gracefully desaturating bright highlights, which makes it a
+// good match for PBR (glTF) content.
+// Source: https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral
+// (Apache-2.0 License).
+// Input must be a non-negative linear Rec. 709 value.
+vec3 tonemap_pbr_neutral(vec3 color) {
+	// These constants must match those of the reference implementation. The 0.04
+	// offset accounts for the achromatic light that the ~4% specular reflection
+	// of a dielectric adds on top of its base color, which is what lets base
+	// colors between 0.08 and 0.8 be reproduced accurately.
+	const float start_compression = 0.8 - 0.04;
+	const float desaturation = 0.15;
+
+	float x = min(color.r, min(color.g, color.b));
+	float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+	color -= offset;
+
+	float peak = max(color.r, max(color.g, color.b));
+	if (peak < start_compression) {
+		return color;
+	}
+
+	const float output_max_value = 1.0; // SDR always has an output_max_value of 1.0
+
+	const float d = output_max_value - start_compression;
+	float new_peak = output_max_value - d * d / (peak + d - start_compression);
+	color *= new_peak / peak;
+
+	float g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+	return mix(color, vec3(new_peak), g);
+}
+
 #define TONEMAPPER_LINEAR 0
 #define TONEMAPPER_REINHARD 1
 #define TONEMAPPER_FILMIC 2
 #define TONEMAPPER_ACES 3
 #define TONEMAPPER_AGX 4
+#define TONEMAPPER_PBR_NEUTRAL 5
 
 vec3 apply_tonemapping(vec3 color) { // inputs are LINEAR
 	if (tonemapper == TONEMAPPER_LINEAR) {
@@ -190,8 +224,10 @@ vec3 apply_tonemapping(vec3 color) { // inputs are LINEAR
 		return tonemap_filmic(color);
 	} else if (tonemapper == TONEMAPPER_ACES) {
 		return tonemap_aces(color);
-	} else { // TONEMAPPER_AGX
+	} else if (tonemapper == TONEMAPPER_AGX) {
 		return tonemap_agx(color);
+	} else { // TONEMAPPER_PBR_NEUTRAL
+		return tonemap_pbr_neutral(color);
 	}
 }
 

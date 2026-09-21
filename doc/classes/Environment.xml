@@ -340,7 +340,7 @@
 		<member name="tonemap_white" type="float" setter="set_tonemap_white" getter="get_tonemap_white" default="1.0">
 			The white reference value for tonemapping, which indicates where bright white is located in the scale of values provided to the tonemapper. For photorealistic lighting, it is recommended to set [member tonemap_white] to at least [code]6.0[/code]. Higher values result in less blown out highlights, but may make the scene appear lower contrast. [member tonemap_agx_white] will be used instead when using the [constant TONE_MAPPER_AGX] tonemapper. See also [member tonemap_exposure].
 			[b]Note:[/b] [member tonemap_white] must be set to [code]2.0[/code] or lower on the Mobile renderer to produce bright images.
-			[b]Note:[/b] [member tonemap_white] is ignored when using [constant TONE_MAPPER_LINEAR] and will be dynamically adjusted at runtime to never be less than the parent window's [method Window.get_output_max_linear_value] when using [constant TONE_MAPPER_REINHARDT] with [member Viewport.use_hdr_2d].
+			[b]Note:[/b] [member tonemap_white] is ignored when using [constant TONE_MAPPER_LINEAR] or [constant TONE_MAPPER_PBR_NEUTRAL] and will be dynamically adjusted at runtime to never be less than the parent window's [method Window.get_output_max_linear_value] when using [constant TONE_MAPPER_REINHARDT] with [member Viewport.use_hdr_2d].
 		</member>
 		<member name="volumetric_fog_albedo" type="Color" setter="set_volumetric_fog_albedo" getter="get_volumetric_fog_albedo" default="Color(1, 1, 1, 1)">
 			The [Color] of the volumetric fog when interacting with lights. Mist and fog have an albedo close to [code]Color(1, 1, 1, 1)[/code] while smoke has a darker albedo.
@@ -450,6 +450,10 @@
 		</constant>
 		<constant name="TONE_MAPPER_AGX" value="4" enum="ToneMapper">
 			Uses an adjustable film-like tonemapping curve and desaturates bright values for a more realistic appearance. Better than other tonemappers at maintaining the hue of colors as they become brighter. The slowest tonemapping option.
+		</constant>
+		<constant name="TONE_MAPPER_PBR_NEUTRAL" value="5" enum="ToneMapper">
+			Uses the Khronos PBR Neutral tonemapping curve, which is designed to reproduce material base colors as accurately as possible while smoothly desaturating only the brightest highlights. This makes it a good match for displaying PBR (glTF) content faithfully, at the cost of less highlight contrast than [constant TONE_MAPPER_AGX]. Slower than [constant TONE_MAPPER_REINHARDT], but faster than [constant TONE_MAPPER_AGX]. See [url=https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral]Khronos PBR Neutral Tone Mapper[/url] for details.
+			[b]Note:[/b] This tonemapper uses a fixed curve, so [member tonemap_white] has no effect on it.
 		</constant>
 		<constant name="GLOW_BLEND_MODE_ADDITIVE" value="0" enum="GlowBlendMode">
 			Adds the glow effect to the scene.
