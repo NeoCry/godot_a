@@ -109,13 +109,13 @@ void PostEffects::post_copy(
 		flags |= PostShaderGLES3::USE_GLOW;
 	}
 	if (p_ssao_enabled) {
-		if (p_ssao_quality_level == RSE::ENV_SSAO_QUALITY_VERY_LOW) {
+		if (p_ssao_quality_level == RSE::ENV_GTAO_QUALITY_VERY_LOW) {
 			flags |= PostShaderGLES3::USE_SSAO_ABYSS;
-		} else if (p_ssao_quality_level == RSE::ENV_SSAO_QUALITY_LOW) {
+		} else if (p_ssao_quality_level == RSE::ENV_GTAO_QUALITY_LOW) {
 			flags |= PostShaderGLES3::USE_SSAO_LOW;
-		} else if (p_ssao_quality_level == RSE::ENV_SSAO_QUALITY_HIGH) {
+		} else if (p_ssao_quality_level == RSE::ENV_GTAO_QUALITY_HIGH) {
 			flags |= PostShaderGLES3::USE_SSAO_HIGH;
-		} else if (p_ssao_quality_level == RSE::ENV_SSAO_QUALITY_ULTRA) {
+		} else if (p_ssao_quality_level == RSE::ENV_GTAO_QUALITY_ULTRA) {
 			flags |= PostShaderGLES3::USE_SSAO_MEGA;
 		} else {
 			flags |= PostShaderGLES3::USE_SSAO_MED;
