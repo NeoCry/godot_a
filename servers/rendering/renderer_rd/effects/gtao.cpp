@@ -200,6 +200,19 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 	RID history_read = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, read_a ? RB_GTAO_HISTORY_A : RB_GTAO_HISTORY_B, p_view, 0);
 	RID history_write = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, read_a ? RB_GTAO_HISTORY_B : RB_GTAO_HISTORY_A, p_view, 0);
 
+	// buffer_update() isn't allowed once a compute list is active, so the reprojection UBO has to be filled
+	// before compute_list_begin() below, not inline with the temporal pass that consumes it.
+	Projection correction;
+	correction.set_depth_correction(true);
+	Projection projection = correction * p_projection;
+	Projection reprojection = p_gtao_buffers.last_frame_projections[p_view] * Projection(p_gtao_buffers.last_frame_transform.affine_inverse()) * Projection(p_cam_transform) * projection.inverse();
+
+	p_gtao_buffers.last_frame_projections[p_view] = projection;
+
+	GTAOReprojectionUniforms reprojection_uniforms;
+	store_projection(reprojection, reprojection_uniforms.reprojection);
+	RD::get_singleton()->buffer_update(temporal.reprojection_uniform_buffer, 0, sizeof(GTAOReprojectionUniforms), &reprojection_uniforms);
+
 	RD::get_singleton()->draw_command_begin_label("Process Ground-Truth Ambient Occlusion");
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 
@@ -298,17 +311,6 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 	/* PASS 3: spatial pre-filter + temporal reprojection/accumulation */
 	{
 		RD::get_singleton()->draw_command_begin_label("Temporal Accumulation");
-
-		Projection correction;
-		correction.set_depth_correction(true);
-		Projection projection = correction * p_projection;
-		Projection reprojection = p_gtao_buffers.last_frame_projections[p_view] * Projection(p_gtao_buffers.last_frame_transform.affine_inverse()) * Projection(p_cam_transform) * projection.inverse();
-
-		p_gtao_buffers.last_frame_projections[p_view] = projection;
-
-		GTAOReprojectionUniforms reprojection_uniforms;
-		store_projection(reprojection, reprojection_uniforms.reprojection);
-		RD::get_singleton()->buffer_update(temporal.reprojection_uniform_buffer, 0, sizeof(GTAOReprojectionUniforms), &reprojection_uniforms);
 
 		memset(&temporal.push_constant, 0, sizeof(TemporalPushConstant));
 		temporal.push_constant.screen_size[0] = working_size.x;
