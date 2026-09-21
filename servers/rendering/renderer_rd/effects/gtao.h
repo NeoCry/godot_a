@@ -114,7 +114,9 @@ private:
 	struct DownsamplePushConstant {
 		float pixel_size[2];
 		uint32_t is_orthogonal;
-		float pad;
+		// Only meaningful for DOWNSAMPLE_BASE: whether dest is a genuine half-res reduction of source_depth
+		// (half_size enabled) or a same-size copy of it (half_size disabled, working_size == full_size).
+		uint32_t half_size;
 
 		float depth_linearize_mul;
 		float depth_linearize_add;
@@ -149,6 +151,7 @@ private:
 		uint32_t frame_index;
 		uint32_t mip_count;
 
+		int32_t full_screen_size[2];
 		float depth_texture_pixel_size[2];
 		float thin_occluder_compensation;
 		float pad;

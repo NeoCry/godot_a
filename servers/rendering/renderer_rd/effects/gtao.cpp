@@ -212,6 +212,7 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		downsample.push_constant.pixel_size[0] = 1.0 / full_size.x;
 		downsample.push_constant.pixel_size[1] = 1.0 / full_size.y;
 		downsample.push_constant.is_orthogonal = is_orthogonal;
+		downsample.push_constant.half_size = p_gtao_buffers.half_size;
 		downsample.push_constant.depth_linearize_mul = depth_linearize_mul;
 		downsample.push_constant.depth_linearize_add = depth_linearize_add;
 
@@ -273,6 +274,8 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		gather.push_constant.horizon_bias = p_settings.horizon;
 		gather.push_constant.frame_index = p_gtao_buffers.frame_index[p_view];
 		gather.push_constant.mip_count = p_gtao_buffers.mip_count;
+		gather.push_constant.full_screen_size[0] = full_size.x;
+		gather.push_constant.full_screen_size[1] = full_size.y;
 		gather.push_constant.depth_texture_pixel_size[0] = 1.0 / working_size.x;
 		gather.push_constant.depth_texture_pixel_size[1] = 1.0 / working_size.y;
 		gather.push_constant.thin_occluder_compensation = 0.15;

@@ -46,7 +46,9 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(push_constant, std430) uniform Params {
 	vec2 pixel_size;
 	uint is_orthogonal;
-	float pad;
+	// Only meaningful for MODE_BASE: whether dest is a genuine half-res reduction of source_depth (half_size
+	// enabled) or a same-size copy of it (half_size disabled, working_size == full_size).
+	uint half_size;
 
 	float depth_linearize_mul;
 	float depth_linearize_add;
@@ -70,22 +72,34 @@ float linearize_depth(float p_depth) {
 }
 
 void main() {
+	ivec2 dest_pos = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 dest_size = imageSize(dest_image);
-	if (any(greaterThanEqual(ivec2(gl_GlobalInvocationID.xy), dest_size))) {
+	if (any(greaterThanEqual(dest_pos, dest_size))) {
 		return;
 	}
 
 #ifdef MODE_BASE
-	vec2 uv = (vec2(gl_GlobalInvocationID.xy) * 2.0 + 1.0) * params.pixel_size;
-	vec4 depths = textureGather(source_depth, uv);
-	float closest = min(min(depths.x, depths.y), min(depths.z, depths.w));
+	float closest;
+	if (params.half_size != 0u) {
+		// dest is half the resolution of source_depth: gather the 2x2 source block this dest texel reduces.
+		vec2 uv = (vec2(dest_pos) * 2.0 + 1.0) * params.pixel_size;
+		vec4 depths = textureGather(source_depth, uv);
+		closest = min(min(depths.x, depths.y), min(depths.z, depths.w));
+	} else {
+		// dest is the same resolution as source_depth (half_size disabled): a straight per-texel copy, not a
+		// reduction. textureGather at a texel center (rather than a shared 2x2 corner) has no well-defined
+		// "which 4 texels" answer, so this reads the matching texel directly instead.
+		closest = texelFetch(source_depth, dest_pos, 0).x;
+	}
 	float result = linearize_depth(closest);
 #else
-	// source_mip is a view of the previous (twice as large) mip level; params.pixel_size is that level's texel size.
-	vec2 uv = (vec2(gl_GlobalInvocationID.xy) * 2.0 + 1.0) * params.pixel_size;
+	// source_mip is a view of the previous (twice as large) mip level; params.pixel_size is that level's texel
+	// size. This step is always a genuine 2x reduction within the already-fixed working-resolution mip chain,
+	// regardless of half_size, so it doesn't need the same branch as MODE_BASE above.
+	vec2 uv = (vec2(dest_pos) * 2.0 + 1.0) * params.pixel_size;
 	vec4 depths = textureGather(source_mip, uv);
 	float result = min(min(depths.x, depths.y), min(depths.z, depths.w));
 #endif
 
-	imageStore(dest_image, ivec2(gl_GlobalInvocationID.xy), vec4(result));
+	imageStore(dest_image, dest_pos, vec4(result));
 }

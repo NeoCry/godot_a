@@ -65,6 +65,7 @@ layout(push_constant, std430) uniform Params {
 	uint frame_index;
 	uint mip_count;
 
+	ivec2 full_screen_size; // native resolution of source_normal, independent of screen_size above
 	vec2 depth_texture_pixel_size; // 1 / half-resolution size, in the *depth* texture's own space
 	float thin_occluder_compensation;
 	float pad;
@@ -112,7 +113,11 @@ void main() {
 	float depth = textureLod(source_depth_mipmaps, uv, 0.0).x;
 	vec3 view_pos = NDC_to_view_space(uv, depth);
 
-	ivec2 full_res_pos = pos * 2;
+	// source_normal is always at native (full) resolution, independent of whether this gather itself runs at
+	// half resolution (screen_size == full_screen_size / 2) or full resolution (screen_size ==
+	// full_screen_size, half_size disabled) — derive the matching texel from the resolution-independent uv
+	// rather than assuming a fixed 2x ratio.
+	ivec2 full_res_pos = clamp(ivec2(uv * vec2(params.full_screen_size)), ivec2(0), params.full_screen_size - ivec2(1));
 	vec3 N = load_normal(full_res_pos);
 
 	vec2 pixel_size_at_center = NDC_to_view_space(uv + params.depth_texture_pixel_size, view_pos.z).xy - view_pos.xy;
