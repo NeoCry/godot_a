@@ -98,6 +98,14 @@ vec3 load_normal(ivec2 p_full_res_pos) {
 	return n;
 }
 
+// Closed form of the paper's per-slice inner integral (eq. 7): the cosine-weighted visible arc from the view
+// direction out to a horizon at signed angle p_horizon, for a slice whose projected normal sits at signed
+// angle p_gamma. Both angles are measured from V in the same signed frame, so the two horizons of a slice
+// come in with opposite signs.
+float integrate_arc(float p_horizon, float p_gamma) {
+	return -cos(2.0 * p_horizon - p_gamma) + cos(p_gamma) + 2.0 * p_horizon * sin(p_gamma);
+}
+
 // Jimenez et al. 2014, "Next Generation Post Processing in Call of Duty: Advanced Warfare".
 float interleaved_gradient_noise(vec2 p_pixel) {
 	return fract(52.9829189 * fract(dot(p_pixel, vec2(0.06711056, 0.00583715))));
@@ -123,7 +131,10 @@ void main() {
 	vec2 pixel_size_at_center = NDC_to_view_space(uv + params.depth_texture_pixel_size, view_pos.z).xy - view_pos.xy;
 	float pixel_radius = params.radius / max(pixel_size_at_center.x, 0.00001);
 
-	vec3 V = params.is_orthogonal ? vec3(0.0, 0.0, 1.0) : normalize(-view_pos);
+	// NDC_to_view_space returns z as POSITIVE distance from the eye, so the camera looks toward +z here and
+	// the direction back toward it is -z (matching normalize(-view_pos) in the perspective case, and
+	// load_normal()'s own z flip).
+	vec3 V = params.is_orthogonal ? vec3(0.0, 0.0, -1.0) : normalize(-view_pos);
 
 	int quality = clamp(params.quality, 0, 4);
 	int slice_count = gtao_slice_count[quality];
@@ -142,7 +153,12 @@ void main() {
 		float phi = (GTAO_PI / float(slice_count)) * (float(slice) + jitter);
 		vec2 dir_screen = vec2(cos(phi), sin(phi));
 
-		vec3 slice_tangent = vec3(dir_screen, 0.0);
+		// dir_screen is a UV-space direction, and view-space Y runs OPPOSITE to UV Y here (NDC_to_view_mul_y
+		// is negative). The samples below step along +dir_screen in UV space, so the view-space tangent that
+		// gamma's sign convention is built from has to carry that flip, or gamma ends up mirrored against the
+		// side the samples actually came from for every slice with a Y component — which silently swaps the
+		// two horizons in the integral below.
+		vec3 slice_tangent = vec3(dir_screen.x, -dir_screen.y, 0.0);
 		vec3 slice_normal = normalize(cross(slice_tangent, V));
 		vec3 normal_in_slice = N - slice_normal * dot(N, slice_normal);
 		float normal_in_slice_len = length(normal_in_slice);
@@ -153,9 +169,18 @@ void main() {
 
 		vec3 normal_in_slice_n = normal_in_slice / normal_in_slice_len;
 		vec3 slice_tangent_perp = normalize(slice_tangent - V * dot(slice_tangent, V));
-		float gamma = atan(dot(normal_in_slice_n, slice_tangent_perp), dot(normal_in_slice_n, V));
+		// Clamped to the visible hemisphere: a normal-mapped (or near-grazing) pixel can report a shading
+		// normal tipped slightly away from V, which would otherwise push the tangent-plane bounds below zero.
+		float gamma = clamp(atan(dot(normal_in_slice_n, slice_tangent_perp), dot(normal_in_slice_n, V)),
+				-GTAO_PI * 0.5, GTAO_PI * 0.5);
 
-		float horizon_cos[2] = float[2](0.0, 0.0);
+		// -1 (horizon angle = pi, nothing found yet) rather than 0 (horizon sitting at V's own tangent
+		// plane): the tangent-plane clamp below is what establishes the real "no occluder" limit, and it can
+		// only do so by lowering an already-open horizon. Starting from 0 pins the side of the slice tipped
+		// away from the camera at pi/2 even when the true unoccluded limit is wider than that, so a flat,
+		// completely unoccluded surface still integrates to less than full visibility — by more and more as
+		// the view angle grows.
+		float horizon_cos[2] = float[2](-1.0, -1.0);
 
 		for (int side = 0; side < 2; side++) {
 			float side_sign = (side == 0) ? 1.0 : -1.0;
@@ -197,20 +222,18 @@ void main() {
 		float theta0 = acos(clamp(horizon_cos[0], -1.0, 1.0));
 		float theta1 = acos(clamp(horizon_cos[1], -1.0, 1.0));
 
-		// Clamp each horizon angle to the surface's own tangent plane (gamma +/- pi/2): a raw acos result
-		// beyond that would count contributions from behind the surface, which the search has no way to
-		// exclude on its own. Without this, a perfectly flat, unoccluded surface only integrates to full
-		// visibility when V happens to be near-parallel to N (gamma near 0, where the tangent-plane bound
-		// coincides with the search's own default range); as gamma grows toward grazing angles the two
-		// diverge and the unclamped formula reports spurious self-occlusion that gets worse the more
-		// glancing the view angle is — exactly the reported symptom.
+		// Clamp each horizon to the surface's own tangent plane (gamma +/- pi/2): anything past that would
+		// count contributions from behind the surface, which the search itself has no way to exclude.
 		theta0 = min(theta0, GTAO_PI * 0.5 + gamma);
 		theta1 = min(theta1, GTAO_PI * 0.5 - gamma);
 
-		float a0 = -cos(2.0 * theta0 - gamma) + cos(gamma) + 2.0 * theta0 * sin(gamma);
-		float a1 = -cos(2.0 * theta1 - gamma) + cos(gamma) + 2.0 * theta1 * sin(gamma);
-
-		visibility_sum += normal_in_slice_len * 0.25 * (a0 + a1);
+		// Both horizons are unsigned magnitudes out of acos(), but they lie on OPPOSITE sides of the slice
+		// and the integral is parametrized by a single signed angle measured from V in the same frame gamma
+		// uses. Side 1 searched along -slice_tangent, so it enters as a negative angle; feeding it in
+		// positive instead integrates the wrong arc entirely and is what turns flat, unoccluded surfaces
+		// dark as soon as gamma moves away from 0 (at gamma = 0 the two happen to coincide, which is why
+		// head-on surfaces looked correct while everything else did not).
+		visibility_sum += normal_in_slice_len * 0.25 * (integrate_arc(theta0, gamma) + integrate_arc(-theta1, gamma));
 		used_slices++;
 	}
 
