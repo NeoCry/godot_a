@@ -1384,13 +1384,13 @@ void main() {
 #ifdef ALPHA_HASH_USED
 	vec3 object_pos = (inverse(read_model_matrix) * inv_view_matrix * vec4(vertex, 1.0)).xyz;
 #ifdef MODE_RENDER_MATERIAL
-	if (alpha < compute_alpha_hash_threshold(object_pos, alpha_hash_scale)) {
+	if (alpha < compute_alpha_hash_threshold(object_pos, alpha_hash_scale, scene_data.taa_frame_count * 1.6180339887)) {
 		alpha = half(0.0);
 	} else {
 		alpha = half(1.0);
 	}
 #else
-	if (alpha < compute_alpha_hash_threshold(object_pos, alpha_hash_scale)) {
+	if (alpha < compute_alpha_hash_threshold(object_pos, alpha_hash_scale, scene_data.taa_frame_count * 1.6180339887)) {
 		discard;
 	}
 #endif // MODE_RENDER_MATERIAL

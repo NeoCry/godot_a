@@ -47,7 +47,17 @@ private:
 		float resolution_width;
 		float resolution_height;
 		float disocclusion_threshold;
-		float variance_dynamic;
+		float disocclusion_scale;
+
+		float clamp_scale;
+		float clamp_scale_chroma;
+		float motion_clamp_scale;
+		float rejection_sensitivity;
+
+		float max_accumulated_frames;
+		float pad0;
+		float pad1;
+		float pad2;
 	};
 
 	TaaResolveShaderRD taa_shader;

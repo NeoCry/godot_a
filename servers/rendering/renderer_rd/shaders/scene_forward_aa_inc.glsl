@@ -9,7 +9,14 @@ float hash_3d(vec3 p) {
 	return hash_2d(vec2(hash_2d(p.xy), p.z));
 }
 
-half compute_alpha_hash_threshold(vec3 pos, float hash_scale) {
+// Hashed alpha testing, Wyman & McGuire 2017. temporal_offset decorrelates the threshold
+// across frames: a binary alpha test carries no sub-pixel coverage at one sample per pixel, so
+// a fixed threshold leaves foliage aliased no matter how the resolve is tuned. Varying it per
+// TAA phase turns the test into an unbiased coverage estimator that temporal accumulation can
+// average back into real partial coverage. It is zero when no temporal AA is active, which
+// keeps the threshold exactly as it was, and it must be identical between the depth pre-pass
+// and the colour pass of one frame or they disagree about which fragments exist.
+half compute_alpha_hash_threshold(vec3 pos, float hash_scale, float temporal_offset) {
 	vec3 dx = dFdx(pos);
 	vec3 dy = dFdy(pos);
 
@@ -19,8 +26,11 @@ half compute_alpha_hash_threshold(vec3 pos, float hash_scale) {
 	vec2 pix_scales =
 			vec2(exp2(floor(log2(pix_scale))), exp2(ceil(log2(pix_scale))));
 
-	vec2 a_thresh = vec2(hash_3d(floor(pix_scales.x * pos.xyz)),
-			hash_3d(floor(pix_scales.y * pos.xyz)));
+	// Offset after the floor, so the hash grid stays pinned to the surface and only the values
+	// it holds change. Offsetting before it would slide the pattern across the surface instead,
+	// which reads as crawling noise.
+	vec2 a_thresh = vec2(hash_3d(floor(pix_scales.x * pos.xyz) + temporal_offset),
+			hash_3d(floor(pix_scales.y * pos.xyz) + temporal_offset));
 
 	float lerp_factor = fract(log2(pix_scale));
 

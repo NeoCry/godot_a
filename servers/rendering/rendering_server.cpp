@@ -3784,6 +3784,15 @@ void RenderingServer::init() {
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/smaa_edge_detection_threshold", PROPERTY_HINT_RANGE, "0.01,0.2,0.01"), 0.05);
 
+	// TAA tunables. The history clamp trades ghosting against flicker, and thin geometry
+	// (grass, foliage, wires) sits where both are costly, so the right balance is
+	// scene dependent. Read live, so they can be tuned with the game running.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_history_clamp_luma", PROPERTY_HINT_RANGE, "0.25,4.0,0.05"), 2.5);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_history_clamp_chroma", PROPERTY_HINT_RANGE, "0.1,2.0,0.05"), 0.75);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_motion_clamp_scale", PROPERTY_HINT_RANGE, "0.1,1.0,0.05"), 0.6);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_history_rejection_sensitivity", PROPERTY_HINT_RANGE, "0.5,12.0,0.1"), 3.0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/anti_aliasing/quality/taa_max_accumulated_frames", PROPERTY_HINT_RANGE, "2,64,1"), 32);
+
 	GLOBAL_DEF("rendering/anti_aliasing/quality/use_debanding", false);
 
 	{

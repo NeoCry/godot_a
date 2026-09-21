@@ -19,6 +19,9 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ///////////////////////////////////////////////////////////////////////////////////
 // File changes (yyyy-mm-dd)
+// 2026-09-21: Confidence-driven accumulation, tonemapped YCoCg history clamping and
+//             thin-feature detection, replacing the fixed 1/16 blend and the two
+//             luminance/velocity heuristics that surrounded it.
 // 2025-11-05: Jakub Brzyski: Added dynamic variance, base variance value adjusted to reduce ghosting
 // 2022-05-06: Panos Karabelas: first commit
 // 2020-12-05: Joan Fons: convert to Vulkan and Godot
@@ -37,9 +40,6 @@
 #define FLT_MIN 0.00000001
 #define FLT_MAX 32767.0
 #define RPC_9 0.11111111111
-#define RPC_16 0.0625
-
-#define DISOCCLUSION_SCALE 0.01 // Scale the weight of this pixel calculated as (change in velocity - threshold) * scale.
 
 layout(local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE, local_size_z = 1) in;
 
@@ -52,8 +52,18 @@ layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D output_
 
 layout(push_constant, std430) uniform Params {
 	vec2 resolution;
-	float disocclusion_threshold; // 0.1 / max(params.resolution.x, params.resolution.y)
-	float variance_dynamic;
+	float disocclusion_threshold; // Velocity change, in texels, that is still considered the same surface.
+	float disocclusion_scale; // How quickly a larger velocity change converges to "this is a new surface".
+
+	float clamp_scale; // Half-width of the history box along luma, in standard deviations.
+	float clamp_scale_chroma; // Same along chroma, where ghosting is most visible.
+	float motion_clamp_scale; // How far the box narrows at high velocities.
+	float rejection_sensitivity; // How sharply clamped history loses its accumulated samples.
+
+	float max_accumulated_frames; // Upper bound of the per-pixel sample counter.
+	float pad0;
+	float pad1;
+	float pad2;
 }
 params;
 
@@ -78,11 +88,43 @@ const int kGroupSize = GROUP_SIZE;
 const int kTileDimension = kGroupSize + kBorderSize * 2;
 const int kTileDimension2 = kTileDimension * kTileDimension;
 
-vec3 reinhard(vec3 hdr) {
-	return hdr / (hdr + 1.0);
+const vec3 lumCoeff = vec3(0.299f, 0.587f, 0.114f);
+
+float luminance(vec3 color) {
+	return max(dot(color, lumCoeff), 0.0001f);
 }
-vec3 reinhard_inverse(vec3 sdr) {
-	return sdr / (1.0 - sdr);
+
+// Luminance-weighted tonemap (Karis). Blending here rather than in linear HDR is what
+// keeps a bright sub-pixel sample from dragging the average around: it is an exact
+// inverse pair, because luminance is linear, so 1 - luminance(tonemap(c)) == 1/(1 + luminance(c)).
+vec3 tonemap(vec3 hdr) {
+	return hdr / (1.0f + luminance(hdr));
+}
+
+vec3 tonemap_inverse(vec3 sdr) {
+	return sdr / max(1.0f - luminance(sdr), 0.0001f);
+}
+
+// YCoCg separates luma from chroma, so the history box can be wide along luma - where
+// thin geometry lives - while staying tight along chroma, where ghosting shows up.
+vec3 rgb_to_ycocg(vec3 c) {
+	return vec3(
+			0.25f * c.r + 0.5f * c.g + 0.25f * c.b,
+			0.5f * c.r - 0.5f * c.b,
+			-0.25f * c.r + 0.5f * c.g - 0.25f * c.b);
+}
+
+vec3 ycocg_to_rgb(vec3 c) {
+	float t = c.x - c.z;
+	return vec3(t + c.y, c.x + c.z, t - c.y);
+}
+
+vec3 to_working_space(vec3 hdr) {
+	return rgb_to_ycocg(tonemap(hdr));
+}
+
+vec3 from_working_space(vec3 c) {
+	return tonemap_inverse(ycocg_to_rgb(c));
 }
 
 float get_depth(ivec2 thread_id) {
@@ -114,7 +156,9 @@ void store_color_depth(uvec2 group_thread_id, ivec2 thread_id) {
 	// out of bounds clamp
 	thread_id = clamp(thread_id, ivec2(0, 0), ivec2(params.resolution) - ivec2(1, 1));
 
-	store_color(group_thread_id, imageLoad(color_buffer, thread_id).rgb);
+	// Converted once on the way in: the statistics, the clamp and the blend all run in
+	// tonemapped YCoCg, so the tile never holds linear HDR.
+	store_color(group_thread_id, to_working_space(max(imageLoad(color_buffer, thread_id).rgb, vec3(0.0f))));
 	store_depth(group_thread_id, get_depth(thread_id));
 }
 
@@ -232,86 +276,84 @@ vec3 sample_catmull_rom_9(sampler2D stex, vec2 uv, vec2 resolution) {
 ------------------------------------------------------------------------------*/
 
 // Based on "Temporal Reprojection Anti-Aliasing" - https://github.com/playdeadgames/temporal
-vec3 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec3 p, vec3 q) {
-	vec3 r = q - p;
-	vec3 rmax = (aabb_max - p.xyz);
-	vec3 rmin = (aabb_min - p.xyz);
+//
+// Centre/extent form rather than the per-axis clip-and-rescale one. The latter divides by a
+// component of the offset that an earlier axis may already have driven to zero, and a flat
+// region of the frame - a clear sky, an unlit wall - makes the box degenerate on every axis at
+// once, so that division is 0/0 and the whole resolve turns to NaN. Here the only division is
+// guarded, and a zero extent simply pulls the history all the way onto the neighbourhood.
+vec3 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec3 q) {
+	vec3 center = 0.5f * (aabb_max + aabb_min);
+	vec3 extents = 0.5f * (aabb_max - aabb_min);
+	vec3 offset = q - center;
 
-	if (r.x > rmax.x + FLT_MIN) {
-		r *= (rmax.x / r.x);
-	}
-	if (r.y > rmax.y + FLT_MIN) {
-		r *= (rmax.y / r.y);
-	}
-	if (r.z > rmax.z + FLT_MIN) {
-		r *= (rmax.z / r.z);
-	}
+	vec3 units = extents / max(abs(offset), vec3(FLT_MIN));
+	float t = min(units.x, min(units.y, units.z));
 
-	if (r.x < rmin.x - FLT_MIN) {
-		r *= (rmin.x / r.x);
-	}
-	if (r.y < rmin.y - FLT_MIN) {
-		r *= (rmin.y / r.y);
-	}
-	if (r.z < rmin.z - FLT_MIN) {
-		r *= (rmin.z / r.z);
-	}
-
-	return p + r;
+	return center + offset * clamp(t, 0.0f, 1.0f);
 }
 
-// Clip history to the neighbourhood of the current sample
-vec3 clip_history_3x3(uvec2 group_pos, vec3 color_history, vec2 velocity_closest) {
-	// Sample a 3x3 neighbourhood
-	vec3 s1 = load_color(group_pos + kOffsets3x3[0]);
-	vec3 s2 = load_color(group_pos + kOffsets3x3[1]);
-	vec3 s3 = load_color(group_pos + kOffsets3x3[2]);
-	vec3 s4 = load_color(group_pos + kOffsets3x3[3]);
-	vec3 s5 = load_color(group_pos + kOffsets3x3[4]);
-	vec3 s6 = load_color(group_pos + kOffsets3x3[5]);
-	vec3 s7 = load_color(group_pos + kOffsets3x3[6]);
-	vec3 s8 = load_color(group_pos + kOffsets3x3[7]);
-	vec3 s9 = load_color(group_pos + kOffsets3x3[8]);
+struct Neighbourhood {
+	vec3 mean;
+	vec3 deviation;
+};
 
-	// Compute min and max (with an adaptive box size, which greatly reduces ghosting)
-	vec3 color_avg = (s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9) * RPC_9;
-	vec3 color_avg2 = ((s1 * s1) + (s2 * s2) + (s3 * s3) + (s4 * s4) + (s5 * s5) + (s6 * s6) + (s7 * s7) + (s8 * s8) + (s9 * s9)) * RPC_9;
-	// Use variance clipping as described in https://developer.download.nvidia.com/gameworks/events/GDC2016/msalvi_temporal_supersampling.pdf
-	float box_size = mix(0.0f, params.variance_dynamic, smoothstep(0.02f, 0.0f, length(velocity_closest)));
-	vec3 dev = sqrt(abs(color_avg2 - (color_avg * color_avg))) * box_size;
-	vec3 color_min = color_avg - dev;
-	vec3 color_max = color_avg + dev;
+// Statistics of the 3x3 neighbourhood, in tonemapped YCoCg.
+Neighbourhood gather_neighbourhood_3x3(uvec2 group_pos) {
+	vec3 sum = vec3(0.0f);
+	vec3 sum_squared = vec3(0.0f);
 
-	// Variance clipping
-	vec3 color = clip_aabb(color_min, color_max, clamp(color_avg, color_min, color_max), color_history);
+	for (int i = 0; i < 9; i++) {
+		vec3 s = load_color(group_pos + kOffsets3x3[i]);
+		sum += s;
+		sum_squared += s * s;
+	}
 
-	// Clamp to prevent NaNs
-	color = clamp(color, FLT_MIN, FLT_MAX);
+	Neighbourhood n;
+	n.mean = sum * RPC_9;
+	n.deviation = sqrt(max(sum_squared * RPC_9 - n.mean * n.mean, vec3(0.0f)));
 
-	return color;
+	return n;
+}
+
+// Clip history to the neighbourhood of the current sample.
+vec3 clip_history_3x3(Neighbourhood n, vec3 color_history, float velocity_texels) {
+	// Reprojection error grows with motion, so the box narrows - but never to zero. Collapsing
+	// it, as a velocity-gated box does, forces the history onto the neighbourhood mean, which
+	// is nothing but a 3x3 blur of the current frame.
+	float motion = mix(1.0f, params.motion_clamp_scale, clamp(velocity_texels * 0.0625f, 0.0f, 1.0f));
+
+	vec3 gamma = params.clamp_scale * motion * vec3(1.0f, params.clamp_scale_chroma, params.clamp_scale_chroma);
+
+	// Deliberately NOT intersected with the neighbourhood's own min/max. The frame where the
+	// jitter misses a thin feature is the frame where no sample around it carries that feature,
+	// so clipping to the samples present would discard precisely the history worth keeping -
+	// and would make the widening above a no-op. The box is bounded in tonemapped luma instead,
+	// which is all the inverse tonemap needs to stay well conditioned.
+	vec3 color_min = n.mean - gamma * n.deviation;
+	vec3 color_max = n.mean + gamma * n.deviation;
+	color_min.x = max(color_min.x, 0.0f);
+	color_max.x = min(color_max.x, 0.999f);
+
+	return clip_aabb(color_min, color_max, color_history);
 }
 
 /*------------------------------------------------------------------------------
 									TAA
 ------------------------------------------------------------------------------*/
 
-const vec3 lumCoeff = vec3(0.299f, 0.587f, 0.114f);
-
-float luminance(vec3 color) {
-	return max(dot(color, lumCoeff), 0.0001f);
-}
-
 // This is "velocity disocclusion" as described by https://www.elopezr.com/temporal-aa-and-the-quest-for-the-holy-trail/.
 // We use texel space, so our scale and threshold differ.
 float get_factor_disocclusion(vec2 uv_reprojected, vec2 velocity) {
-	vec2 velocity_previous = imageLoad(last_velocity_buffer, ivec2(uv_reprojected * params.resolution)).xy;
+	ivec2 pos_previous = clamp(ivec2(uv_reprojected * params.resolution), ivec2(0, 0), ivec2(params.resolution) - ivec2(1, 1));
+	vec2 velocity_previous = imageLoad(last_velocity_buffer, pos_previous).xy;
 	vec2 velocity_texels = velocity * params.resolution;
 	vec2 prev_velocity_texels = velocity_previous * params.resolution;
 	float disocclusion = length(prev_velocity_texels - velocity_texels) - params.disocclusion_threshold;
-	return clamp(disocclusion * DISOCCLUSION_SCALE, 0.0, 1.0);
+	return clamp(disocclusion * params.disocclusion_scale, 0.0, 1.0);
 }
 
-vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_screen, vec2 uv, sampler2D tex_history) {
+vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_screen, vec2 uv, sampler2D tex_history, out float accumulated_frames) {
 	// Get the velocity of the current pixel
 	vec2 velocity = imageLoad(velocity_buffer, ivec2(pos_screen)).xy;
 
@@ -321,50 +363,61 @@ vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_
 	// Get input color
 	vec3 color_input = load_color(pos_group);
 
-	// Get history color (catmull-rom reduces a lot of the blurring that you get under motion)
-	vec3 color_history = sample_catmull_rom_9(tex_history, uv_reprojected, params.resolution).rgb;
-
-	// Clip history to the neighbourhood of the current sample (fixes a lot of the ghosting).
-	vec2 velocity_closest = vec2(0.0); // This is best done by using the velocity with the closest depth.
+	// Velocity of the closest depth in the neighbourhood. It measures how trustworthy the
+	// reprojection is around here; the reprojection itself stays on this texel's own velocity,
+	// which is the more accurate one for a thin feature.
+	vec2 velocity_closest = vec2(0.0);
 	get_closest_pixel_velocity_3x3(pos_group, pos_group_top_left, velocity_closest);
-	color_history = clip_history_3x3(pos_group, color_history, velocity_closest);
 
-	// Compute blend factor
-	float blend_factor = RPC_16; // We want to be able to accumulate as many jitter samples as we generated, that is, 16.
-	{
-		// If re-projected UV is out of screen, converge to current color immediately.
-		float factor_screen = any(lessThan(uv_reprojected, vec2(0.0))) || any(greaterThan(uv_reprojected, vec2(1.0))) ? 1.0 : 0.0;
+	Neighbourhood neighbourhood = gather_neighbourhood_3x3(pos_group);
 
-		// Increase blend factor when there is disocclusion (fixes a lot of the remaining ghosting).
-		float factor_disocclusion = get_factor_disocclusion(uv_reprojected, velocity);
+	// Get history color (catmull-rom reduces a lot of the blurring that you get under motion).
+	// Sanitised on the way in: the history feeds itself, so a single non-finite sample - from the
+	// scene buffer, or from a Catmull-Rom overshoot - would otherwise persist indefinitely.
+	vec3 history_linear = sample_catmull_rom_9(tex_history, uv_reprojected, params.resolution);
+	if (any(isnan(history_linear)) || any(isinf(history_linear))) {
+		history_linear = vec3(0.0f);
+	}
+	vec3 color_history = to_working_space(history_linear);
 
-		// Add to the blend factor
-		blend_factor = clamp(blend_factor + factor_screen + factor_disocclusion, 0.0, 1.0);
+	float velocity_texels = length(velocity_closest * params.resolution);
+	vec3 color_clipped = clip_history_3x3(neighbourhood, color_history, velocity_texels);
+
+	// How far the clamp had to move the history, in local standard deviations. Near zero means
+	// the history agreed with this frame; large means it describes something no longer here.
+	// This is the measurement that separates "history is wrong" from "signal is high frequency":
+	// a grass blade is high variance but its history still lands inside the box.
+	// The floor matters: on a near-flat neighbourhood the deviation approaches zero, and without
+	// it any trivial disagreement would divide out to a huge rejection and throw away history
+	// that was perfectly good. 0.01 is one percent of the tonemapped range.
+	float rejection = length(color_clipped - color_history) / max(length(neighbourhood.deviation), 0.01f);
+
+	// Rejection alone must not stop the accumulation, or thin geometry never resolves: a grass
+	// blade the jitter catches one frame and misses the next disagrees with its own history
+	// every frame, which is exactly the signal that needs averaging rather than discarding. So
+	// the loss of trust is gated on evidence that the history may describe different geometry -
+	// screen motion, or a velocity discontinuity across the reprojection. On a still pixel there
+	// is no such evidence, and the clamp above has already bounded how far the history can be
+	// off, so continuing to accumulate cannot drift.
+	float reprojection_risk = max(clamp(velocity_texels * 0.125f, 0.0f, 1.0f),
+			get_factor_disocclusion(uv_reprojected, velocity));
+
+	float trust = 1.0f - reprojection_risk * (1.0f - exp2(-params.rejection_sensitivity * rejection));
+
+	// If the re-projected UV is off screen there is no history to trust at all.
+	if (any(lessThan(uv_reprojected, vec2(0.0f))) || any(greaterThan(uv_reprojected, vec2(1.0f)))) {
+		trust = 0.0f;
 	}
 
-	// Resolve
-	vec3 color_resolved = vec3(0.0);
-	{
-		// Tonemap
-		color_history = reinhard(color_history);
-		color_input = reinhard(color_input);
+	// The sample counter rides in the history's alpha. It grows by one per frame where the
+	// history held up and falls back towards one where it did not, so blend = 1/n converges in
+	// a single frame after a disocclusion yet keeps averaging far longer than a fixed 1/16 once
+	// a pixel is stable - which is what sub-pixel geometry needs to resolve at all.
+	float frames_previous = textureLod(tex_history, uv_reprojected, 0.0f).a * params.max_accumulated_frames;
+	accumulated_frames = clamp(1.0f + frames_previous * trust, 1.0f, params.max_accumulated_frames);
+	float blend_factor = 1.0f / accumulated_frames;
 
-		// Reduce flickering
-		float lum_color = luminance(color_input);
-		float lum_history = luminance(color_history);
-		float diff = abs(lum_color - lum_history) / max(lum_color, max(lum_history, 1.001));
-		diff = 1.0 - diff;
-		diff = diff * diff;
-		blend_factor = mix(0.0, blend_factor, diff);
-
-		// Lerp/blend
-		color_resolved = mix(color_history, color_input, blend_factor);
-
-		// Inverse tonemap
-		color_resolved = reinhard_inverse(color_resolved);
-	}
-
-	return color_resolved;
+	return from_working_space(mix(color_clipped, color_input, blend_factor));
 }
 
 void main() {
@@ -380,6 +433,13 @@ void main() {
 	const uvec2 pos_screen = gl_GlobalInvocationID.xy;
 	const vec2 uv = (gl_GlobalInvocationID.xy + 0.5f) / params.resolution;
 
-	vec3 result = temporal_antialiasing(pos_group_top_left, pos_group, pos_screen, uv, history_buffer);
-	imageStore(output_buffer, ivec2(gl_GlobalInvocationID.xy), vec4(result, 1.0));
+	float accumulated_frames = 1.0f;
+	vec3 result = temporal_antialiasing(pos_group_top_left, pos_group, pos_screen, uv, history_buffer, accumulated_frames);
+
+	// Clamp to prevent NaNs
+	result = clamp(result, vec3(0.0f), vec3(FLT_MAX));
+
+	// Alpha carries the sample counter into the next frame: TAA::process() copies this texture
+	// to the history buffer as-is, and to the colour buffer with alpha forced to one.
+	imageStore(output_buffer, ivec2(gl_GlobalInvocationID.xy), vec4(result, accumulated_frames / params.max_accumulated_frames));
 }

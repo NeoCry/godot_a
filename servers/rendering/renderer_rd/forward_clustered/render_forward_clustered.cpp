@@ -3147,6 +3147,10 @@ void RenderForwardClustered::_render_sscs_exclusion_depth(RenderDataRD *p_render
 	// screen_space_contact_shadows.glsl relies on right at silhouette edges - most visible on
 	// thin, detailed geometry like foliage, especially once it's also animated.
 	scene_data.taa_jitter = p_render_data->scene_data->taa_jitter;
+	// Same reason, for the same reader: hashed alpha varies its threshold per TAA phase, so a
+	// zero phase here would keep or discard a different set of fragments than the depth pre-pass
+	// did - on exactly the alpha-tested foliage the jitter match above is there to protect.
+	scene_data.taa_frame_count = p_render_data->scene_data->taa_frame_count;
 	scene_data.z_near = 0.0;
 	scene_data.z_far = p_render_data->scene_data->cam_projection.get_z_far();
 	scene_data.dual_paraboloid_side = 0;
