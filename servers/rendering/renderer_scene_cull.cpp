@@ -4340,7 +4340,11 @@ void RendererSceneCull::render_probes() {
 
 		scene_render->voxel_gi_update(probe->probe_instance, update_lights, probe->light_instances, scene_cull_result.geometry_instances);
 
-		voxel_gi_update_list.remove(voxel_gi);
+		// A relight can be spread over several frames to bound its cost, in which case the
+		// probe has to stay on the list so it keeps getting update() calls until it finishes.
+		if (!scene_render->voxel_gi_has_pending_update(probe->probe_instance)) {
+			voxel_gi_update_list.remove(voxel_gi);
+		}
 
 		voxel_gi = next;
 	}

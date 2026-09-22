@@ -104,8 +104,12 @@ layout(set = 0, binding = 4, std430) buffer Outputs {
 }
 outputs;
 
+#ifdef USE_ANISO
+
 // Anisotropic (directional) copy of `outputs`, 6 vec4 per cell (+X,-X,+Y,-Y,+Z,-Z),
 // used to build anisotropic voxel mipmaps that reduce light leaking through thin geometry.
+// Only declared in the USE_ANISO variants: a probe with anisotropic_strength == 0 never
+// allocates this buffer, so the non-anisotropic variants must not bind it either.
 layout(set = 0, binding = 6, std430) buffer AnisoOutputs {
 	vec4 data[];
 }
@@ -119,6 +123,8 @@ const vec3 ANISO_DIR[6] = vec3[](
 		vec3(0.0, 0.0, 1.0),
 		vec3(0.0, 0.0, -1.0));
 
+#endif // USE_ANISO
+
 #endif // MODE DYNAMIC
 
 layout(set = 0, binding = 9) uniform texture3D texture_sdf;
@@ -127,7 +133,9 @@ layout(set = 0, binding = 10) uniform sampler texture_sampler;
 #ifdef MODE_WRITE_TEXTURE
 
 layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image3D color_tex;
+#ifdef USE_ANISO
 layout(rgba8, set = 0, binding = 11) uniform restrict writeonly image3D color_tex_aniso[6];
+#endif
 
 #endif
 
@@ -474,6 +482,7 @@ void main() {
 
 	outputs.data[cell_index] = vec4(accum + emission, 0.0);
 
+#ifdef USE_ANISO
 	{
 		// Leaf-level anisotropic init: radiance is view-independent (Lambertian), but a
 		// thin surface has little cross-section when viewed edge-on or from behind, so
@@ -485,6 +494,7 @@ void main() {
 			aniso_outputs.data[cell_index * 6 + d] = vec4(leaf_light, albedo.a * w);
 		}
 	}
+#endif // USE_ANISO
 
 #endif //MODE_COMPUTE_LIGHT
 
@@ -547,6 +557,7 @@ void main() {
 
 	outputs.data[cell_index] = vec4(accum, 0.0);
 
+#ifdef USE_ANISO
 	{
 		bool has_normal = length(normal.xyz) > 0.2;
 		for (uint d = 0; d < 6; d++) {
@@ -554,6 +565,7 @@ void main() {
 			aniso_outputs.data[cell_index * 6 + d] = vec4(accum, albedo.a * w);
 		}
 	}
+#endif // USE_ANISO
 
 #endif // MODE_SECOND_BOUNCE
 
@@ -578,6 +590,7 @@ void main() {
 		outputs.data[cell_index] = vec4(light_accum / divisor, 0.0);
 	}
 
+#ifdef USE_ANISO
 	{
 		// Anisotropic mipmap generation: for each of the 6 axis directions, composite
 		// this cell's 8 children front-to-back along that axis (as if ray marching one
@@ -626,6 +639,7 @@ void main() {
 			aniso_outputs.data[cell_index * 6 + d] = result[d];
 		}
 	}
+#endif // USE_ANISO
 #endif
 
 	///////////////////WRITE TEXTURE/////////////////////////////
@@ -633,10 +647,12 @@ void main() {
 #ifdef MODE_WRITE_TEXTURE
 	{
 		imageStore(color_tex, ivec3(posu), vec4(outputs.data[cell_index].rgb / params.dynamic_range, albedo.a));
+#ifdef USE_ANISO
 		for (uint d = 0; d < 6; d++) {
 			vec4 av = aniso_outputs.data[cell_index * 6 + d];
 			imageStore(color_tex_aniso[d], ivec3(posu), vec4(av.rgb / params.dynamic_range, av.a));
 		}
+#endif // USE_ANISO
 	}
 #endif
 

@@ -55,6 +55,31 @@
 #define RB_TEX_AMBIENT SNAME("ambient")
 #define RB_TEX_REFLECTION SNAME("reflection")
 
+// Ping-ponged copies of the two buffers above plus the linear depth they were traced
+// at, so a frame can reproject the previous frame's result. Two of each: the pass
+// samples one set at reprojected coordinates while writing the other at the current
+// pixel, which cannot be the same texture.
+#define RB_TEX_GI_HISTORY_AMBIENT_0 SNAME("gi_history_ambient_0")
+#define RB_TEX_GI_HISTORY_AMBIENT_1 SNAME("gi_history_ambient_1")
+#define RB_TEX_GI_HISTORY_REFLECTION_0 SNAME("gi_history_reflection_0")
+#define RB_TEX_GI_HISTORY_REFLECTION_1 SNAME("gi_history_reflection_1")
+#define RB_TEX_GI_HISTORY_DEPTH_0 SNAME("gi_history_depth_0")
+#define RB_TEX_GI_HISTORY_DEPTH_1 SNAME("gi_history_depth_1")
+
+// SNAME caches per call site, so the pair cannot live in an array; these pick between the
+// two names for a ping-pong index instead.
+static _FORCE_INLINE_ StringName gi_history_ambient_name(uint32_t p_index) {
+	return p_index ? RB_TEX_GI_HISTORY_AMBIENT_1 : RB_TEX_GI_HISTORY_AMBIENT_0;
+}
+
+static _FORCE_INLINE_ StringName gi_history_reflection_name(uint32_t p_index) {
+	return p_index ? RB_TEX_GI_HISTORY_REFLECTION_1 : RB_TEX_GI_HISTORY_REFLECTION_0;
+}
+
+static _FORCE_INLINE_ StringName gi_history_depth_name(uint32_t p_index) {
+	return p_index ? RB_TEX_GI_HISTORY_DEPTH_1 : RB_TEX_GI_HISTORY_DEPTH_0;
+}
+
 // Forward declare RenderDataRD and RendererSceneRenderRD so we can pass it into some of our methods, these classes are pretty tightly bound
 class RenderDataRD;
 class RendererSceneRenderRD;
@@ -148,6 +173,36 @@ public:
 		uint32_t last_probe_version = 0;
 		uint32_t last_probe_data_version = 0;
 
+		// Whether this instance allocated the anisotropic mipmap chains. Mirrors
+		// anisotropic_strength > 0 at the time the resources were created; the probe bumps
+		// its data version when that crosses zero so the resources are rebuilt.
+		bool uses_aniso = false;
+
+		// Progress through a relight that is being spread over several frames. The passes
+		// form a strict chain -- level 0 lights the leaves, each coarser level averages the
+		// one below it, then the whole chain is blitted into the 3D texture, and a second
+		// bounce repeats all of that reading the texture the first bounce produced -- so the
+		// cursor walks it in order and only ever splits *within* a level, where cells are
+		// independent of each other.
+		struct Relight {
+			bool active = false;
+			int pass = 0; // 0 = first bounce, 1 = second bounce.
+			int total_passes = 1;
+			int level = 0; // Index into `mipmaps`; 0 is the finest (leaf) level.
+			uint32_t cell_cursor = 0; // Cells of `level` already dispatched this pass.
+			bool writing = false; // false = lighting/mipmap phase, true = texture blit phase.
+		};
+		Relight relight;
+
+		// True while a relight still has work queued for a later frame, which keeps the
+		// probe on the scene's update list so update() is called again.
+		_FORCE_INLINE_ bool has_pending_relight() const { return relight.active; }
+
+		// Picks the USE_ANISO counterpart of a static pass version when the anisotropic
+		// chains exist, so the pipeline matches the uniform set that was actually built.
+		// Defined in gi.cpp: the version enum is declared further down in GI.
+		int aniso_variant(int p_version) const;
+
 		//uint64_t last_pass = 0;
 		uint32_t render_index = 0;
 
@@ -232,17 +287,32 @@ private:
 	uint32_t voxel_gi_max_lights = 32;
 	RID voxel_gi_lights_uniform;
 
+	// Octree cells a single probe may relight per frame, from
+	// rendering/global_illumination/voxel_gi/relight_cells_per_frame. 0 means no limit.
+	int voxel_gi_relight_cells_per_frame = 0;
+
 	enum {
 		VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT,
 		VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE,
 		VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP,
 		VOXEL_GI_SHADER_VERSION_WRITE_TEXTURE,
+		// The same four static passes compiled with USE_ANISO, which additionally builds the
+		// 6 directional mipmap chains. A probe with anisotropic_strength == 0 uses the
+		// versions above and never allocates the anisotropic buffer/textures at all, so the
+		// two sets differ in their bindings and cannot be one pipeline with a branch.
+		VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT_ANISO,
+		VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE_ANISO,
+		VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP_ANISO,
+		VOXEL_GI_SHADER_VERSION_WRITE_TEXTURE_ANISO,
 		VOXEL_GI_SHADER_VERSION_DYNAMIC_OBJECT_LIGHTING,
 		VOXEL_GI_SHADER_VERSION_DYNAMIC_SHRINK_WRITE,
 		VOXEL_GI_SHADER_VERSION_DYNAMIC_SHRINK_PLOT,
 		VOXEL_GI_SHADER_VERSION_DYNAMIC_SHRINK_WRITE_PLOT,
 		VOXEL_GI_SHADER_VERSION_MAX
 	};
+
+	// Added to a static pass version to reach its USE_ANISO counterpart.
+	static const int VOXEL_GI_SHADER_VERSION_ANISO_OFFSET = VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT_ANISO - VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT;
 
 	VoxelGiShaderRD voxel_gi_shader;
 	RID voxel_gi_lighting_shader_version;
@@ -476,8 +546,16 @@ public:
 
 		/* GI buffers */
 		bool using_half_size_gi = false;
+		bool using_temporal_gi = false;
 
-		RID uniform_set[RendererSceneRender::MAX_RENDER_VIEWS];
+		// Alternates every frame: index 0 of the pair is sampled and index 1 written, or the
+		// other way round. The uniform sets bind those textures, so there is one set per
+		// parity per view rather than one per view.
+		uint32_t history_frame = 0;
+		Transform3D prev_cam_transform;
+		Projection prev_projection;
+
+		RID uniform_set[2][RendererSceneRender::MAX_RENDER_VIEWS];
 		RID scene_data_ubo;
 
 		RID get_voxel_gi_buffer();
@@ -797,6 +875,13 @@ public:
 		float cam_transform[16];
 		float eye_offset[2][4];
 
+		// Maps a point from this frame's view space into the previous frame's clip space, to
+		// find where it was on screen, and into the previous frame's view space, to compare
+		// its depth against what was stored there. Only filled for single-view rendering,
+		// which is the only case temporal accumulation runs in.
+		float reprojection[16];
+		float prev_view_from_view[16];
+
 		int32_t screen_size[2];
 		float pad1;
 		float pad2;
@@ -812,6 +897,11 @@ public:
 
 		float z_near;
 		float z_far;
+		uint32_t temporal_enabled;
+		uint32_t trace_slot; // Which of the TEMPORAL_SLOT_COUNT checkerboard slots traces.
+
+		float temporal_blend; // Weight of a fresh trace against valid history.
+		float pad1;
 		float pad2;
 		float pad3;
 	};
@@ -842,6 +932,15 @@ public:
 	RID default_voxel_gi_buffer;
 
 	bool half_resolution = false;
+
+	// Temporal accumulation: each frame only traces the pixels of one checkerboard slot and
+	// reprojects the previous frame's result for the rest, so the cone tracing cost is spread
+	// over TEMPORAL_SLOT_COUNT frames. Pixels whose history is missing or rejected are always
+	// traced, so the result is correct on disocclusion, just more expensive there.
+	enum { TEMPORAL_SLOT_COUNT = 4 };
+	bool temporal_accumulation = true;
+	float temporal_blend = 0.5;
+
 	GiShaderRD shader;
 	RID shader_version;
 	PipelineDeferredRD pipelines[SHADER_SPECIALIZATION_VARIATIONS][MODE_MAX];
@@ -860,6 +959,7 @@ public:
 	RID voxel_gi_instance_create(RID p_base);
 	void voxel_gi_instance_set_transform_to_data(RID p_probe, const Transform3D &p_xform);
 	bool voxel_gi_needs_update(RID p_probe) const;
+	bool voxel_gi_has_pending_update(RID p_probe) const;
 	void voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects);
 	void debug_voxel_gi(RID p_voxel_gi, RD::DrawListID p_draw_list, RID p_framebuffer, const Projection &p_camera_with_transform, bool p_lighting, bool p_emission, float p_alpha);
 

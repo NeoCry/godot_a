@@ -312,20 +312,42 @@ Ref<VoxelGIData> VoxelGI::get_probe_data() const {
 	return probe_data;
 }
 
-void VoxelGI::set_subdiv(Subdiv p_subdiv) {
-	ERR_FAIL_INDEX(p_subdiv, SUBDIV_MAX);
-	subdiv = p_subdiv;
+void VoxelGI::set_voxel_size(float p_voxel_size) {
+	ERR_FAIL_COND_MSG(p_voxel_size <= 0.0, "VoxelGI voxel size must be greater than zero.");
+	voxel_size = p_voxel_size;
 	update_gizmos();
+	update_configuration_warnings();
 }
 
-VoxelGI::Subdiv VoxelGI::get_subdiv() const {
-	return subdiv;
+float VoxelGI::get_voxel_size() const {
+	return voxel_size;
+}
+
+int VoxelGI::get_octree_depth() const {
+	float longest_axis = AABB(-size / 2, size).get_longest_axis_size();
+	if (longest_axis <= 0.0 || voxel_size <= 0.0) {
+		return MIN_OCTREE_DEPTH;
+	}
+
+	// Round the cell count up to the next power of two so the baked voxel is never coarser
+	// than what was asked for. The clamp can still make it coarser on a probe large enough
+	// to exceed the format's addressable depth; get_configuration_warnings() reports that.
+	int depth = Math::ceil(Math::log2(longest_axis / voxel_size));
+	return CLAMP(depth, (int)MIN_OCTREE_DEPTH, (int)MAX_OCTREE_DEPTH);
+}
+
+float VoxelGI::get_effective_voxel_size() const {
+	float longest_axis = AABB(-size / 2, size).get_longest_axis_size();
+	return longest_axis / float(1 << get_octree_depth());
 }
 
 void VoxelGI::set_size(const Vector3 &p_size) {
 	// Prevent very small size dimensions as these breaks baking if other size dimensions are set very high.
 	size = p_size.maxf(1.0);
 	update_gizmos();
+	// The octree depth is derived from the size, so growing the probe can push it past
+	// MAX_OCTREE_DEPTH and coarsen the voxels.
+	update_configuration_warnings();
 }
 
 Vector3 VoxelGI::get_size() const {
@@ -432,8 +454,7 @@ static bool voxelizer_sdf_bake_step_function(int current, int total) {
 }
 
 Vector3i VoxelGI::get_estimated_cell_size() const {
-	static const int subdiv_value[SUBDIV_MAX] = { 6, 7, 8, 9 };
-	int cell_subdiv = subdiv_value[subdiv];
+	int cell_subdiv = get_octree_depth();
 	int axis_cell_size[3];
 	AABB bounds = AABB(-size / 2, size);
 	int longest_axis = bounds.get_longest_axis_index();
@@ -457,9 +478,27 @@ Vector3i VoxelGI::get_estimated_cell_size() const {
 	return Vector3i(axis_cell_size[0], axis_cell_size[1], axis_cell_size[2]);
 }
 
-void VoxelGI::bake(Node *p_from_node, bool p_create_visual_debug) {
-	static const int subdiv_value[SUBDIV_MAX] = { 6, 7, 8, 9 };
+uint64_t VoxelGI::get_estimated_video_memory() const {
+	const Vector3i cell_size = get_estimated_cell_size();
 
+	// VoxelGIInstance allocates a full mip chain over the grid, not just its finest level.
+	const int mip_count = get_octree_depth() + 1;
+	uint64_t texels = 0;
+	for (int i = 0; i < mip_count; i++) {
+		texels += (uint64_t)MAX(1, cell_size.x >> i) * MAX(1, cell_size.y >> i) * MAX(1, cell_size.z >> i);
+	}
+
+	// One chain for the isotropic result, plus 6 directional ones when the baked data asks
+	// for them. They are not allocated at anisotropic_strength 0.
+	uint64_t chain_count = 1;
+	if (probe_data.is_valid() && probe_data->get_anisotropic_strength() > 0.0) {
+		chain_count += 6;
+	}
+
+	return texels * 4 * chain_count;
+}
+
+void VoxelGI::bake(Node *p_from_node, bool p_create_visual_debug) {
 	p_from_node = p_from_node ? p_from_node : get_parent();
 	ERR_FAIL_NULL(p_from_node);
 
@@ -467,7 +506,7 @@ void VoxelGI::bake(Node *p_from_node, bool p_create_visual_debug) {
 
 	Voxelizer baker;
 
-	baker.begin_bake(subdiv_value[subdiv], AABB(-size / 2, size), exposure_normalization);
+	baker.begin_bake(get_octree_depth(), AABB(-size / 2, size), exposure_normalization);
 
 	List<PlotMesh> mesh_list;
 
@@ -577,6 +616,25 @@ PackedStringArray VoxelGI::get_configuration_warnings() const {
 	} else if (probe_data.is_null()) {
 		warnings.push_back(RTR("No VoxelGI data set, so this node is disabled. Bake static objects to enable GI."));
 	}
+
+	// A probe this large cannot reach the requested voxel size: the octree depth needed to
+	// do so exceeds what the baked cell format can address, so the bake will use coarser
+	// voxels than asked for. Splitting the volume across several probes keeps the detail.
+	if (get_octree_depth() >= MAX_OCTREE_DEPTH) {
+		float effective = get_effective_voxel_size();
+		if (effective > voxel_size * 1.01) {
+			warnings.push_back(vformat(RTR("This VoxelGI is too large for its voxel size: baking will use %.3f m voxels instead of %.3f m, because the octree depth is capped at %d (%d cells along the longest axis). Use a larger voxel size, a smaller size, or several VoxelGI nodes."), effective, voxel_size, (int)MAX_OCTREE_DEPTH, 1 << MAX_OCTREE_DEPTH));
+		}
+	}
+
+	// Voxel size is set in world units, so a large probe with a small voxel size can ask for
+	// far more video memory than it is worth: the runtime probe allocates a dense mip chain
+	// over the whole grid, which grows with the cube of the detail.
+	const uint64_t estimated_memory = get_estimated_video_memory();
+	if (estimated_memory > 512 * 1024 * 1024) {
+		warnings.push_back(vformat(RTR("This VoxelGI will use about %d MB of video memory at %.3f m voxels. Indirect light is low frequency, so a larger voxel size usually looks the same for a fraction of the memory."), estimated_memory / (1024 * 1024), get_effective_voxel_size()));
+	}
+
 	return warnings;
 }
 
@@ -584,8 +642,12 @@ void VoxelGI::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_probe_data", "data"), &VoxelGI::set_probe_data);
 	ClassDB::bind_method(D_METHOD("get_probe_data"), &VoxelGI::get_probe_data);
 
-	ClassDB::bind_method(D_METHOD("set_subdiv", "subdiv"), &VoxelGI::set_subdiv);
-	ClassDB::bind_method(D_METHOD("get_subdiv"), &VoxelGI::get_subdiv);
+	ClassDB::bind_method(D_METHOD("set_voxel_size", "voxel_size"), &VoxelGI::set_voxel_size);
+	ClassDB::bind_method(D_METHOD("get_voxel_size"), &VoxelGI::get_voxel_size);
+
+	ClassDB::bind_method(D_METHOD("get_octree_depth"), &VoxelGI::get_octree_depth);
+	ClassDB::bind_method(D_METHOD("get_effective_voxel_size"), &VoxelGI::get_effective_voxel_size);
+	ClassDB::bind_method(D_METHOD("get_estimated_video_memory"), &VoxelGI::get_estimated_video_memory);
 
 	ClassDB::bind_method(D_METHOD("set_size", "size"), &VoxelGI::set_size);
 	ClassDB::bind_method(D_METHOD("get_size"), &VoxelGI::get_size);
@@ -597,16 +659,13 @@ void VoxelGI::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("debug_bake"), &VoxelGI::_debug_bake);
 	ClassDB::set_method_flags(get_class_static(), StringName("debug_bake"), METHOD_FLAGS_DEFAULT | METHOD_FLAG_EDITOR);
 
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "subdiv", PROPERTY_HINT_ENUM, "64,128,256,512"), "set_subdiv", "get_subdiv");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "voxel_size", PROPERTY_HINT_RANGE, "0.01,4,0.01,or_greater,suffix:m"), "set_voxel_size", "get_voxel_size");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "size", PROPERTY_HINT_NONE, "suffix:m"), "set_size", "get_size");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "camera_attributes", PROPERTY_HINT_RESOURCE_TYPE, "CameraAttributesPractical,CameraAttributesPhysical"), "set_camera_attributes", "get_camera_attributes");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "data", PROPERTY_HINT_RESOURCE_TYPE, VoxelGIData::get_class_static(), PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_ALWAYS_DUPLICATE), "set_probe_data", "get_probe_data");
 
-	BIND_ENUM_CONSTANT(SUBDIV_64);
-	BIND_ENUM_CONSTANT(SUBDIV_128);
-	BIND_ENUM_CONSTANT(SUBDIV_256);
-	BIND_ENUM_CONSTANT(SUBDIV_512);
-	BIND_ENUM_CONSTANT(SUBDIV_MAX);
+	BIND_CONSTANT(MAX_OCTREE_DEPTH);
+	BIND_CONSTANT(MIN_OCTREE_DEPTH);
 }
 
 VoxelGI::VoxelGI() {

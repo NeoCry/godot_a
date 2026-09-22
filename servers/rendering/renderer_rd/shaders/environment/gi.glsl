@@ -117,6 +117,11 @@ layout(set = 0, binding = 18, std140) uniform SceneData {
 	mat4x4 cam_transform;
 	vec4 eye_offset[2];
 
+	// This frame's view space -> the previous frame's clip space, and -> the previous
+	// frame's view space. Used by the temporal reprojection below.
+	mat4x4 reprojection;
+	mat4x4 prev_view_from_view;
+
 	ivec2 screen_size;
 	float pad1;
 	float pad2;
@@ -126,6 +131,18 @@ scene_data;
 #ifdef USE_VRS
 layout(r8ui, set = 0, binding = 19) uniform restrict readonly uimage2D vrs_buffer;
 #endif
+
+// Temporal history: the `_prev` textures hold what the previous frame wrote and are
+// sampled at reprojected coordinates; the images are this frame's half of the ping-pong and
+// are written at the current pixel. `depth` is the linear view-space depth each stored
+// sample was traced at, which is what rejects history across a disocclusion.
+layout(set = 0, binding = 26) uniform texture2D gi_history_ambient_prev;
+layout(set = 0, binding = 27) uniform texture2D gi_history_reflection_prev;
+layout(set = 0, binding = 28) uniform texture2D gi_history_depth_prev;
+
+layout(rgba16f, set = 0, binding = 29) uniform restrict writeonly image2D gi_history_ambient;
+layout(rgba16f, set = 0, binding = 30) uniform restrict writeonly image2D gi_history_reflection;
+layout(r32f, set = 0, binding = 31) uniform restrict writeonly image2D gi_history_depth;
 
 layout(push_constant, std430) uniform Params {
 	uint max_voxel_gi_instances;
@@ -137,6 +154,11 @@ layout(push_constant, std430) uniform Params {
 
 	float z_near;
 	float z_far;
+	bool temporal_enabled;
+	uint trace_slot;
+
+	float temporal_blend;
+	float pad1;
 	float pad2;
 	float pad3;
 }
@@ -771,14 +793,69 @@ void main() {
 
 	vec3 vertex = reconstruct_position(pos);
 
-	process_gi(pos, vertex, ambient_light, reflection_light);
+	// `pos` is in screen pixels, which is what reconstruct_position() and process_gi() want;
+	// the GI buffers are half that when sc_half_res is set.
+	ivec2 out_pos = sc_half_res ? (pos >> 1) : pos;
 
-	if (sc_half_res) {
-		pos >>= 1;
+	// TEMPORAL REPROJECTION
+	//
+	// reconstruct_position() returns view space with -z pointing away from the camera, so
+	// the linear depth to compare on is -z.
+	float linear_depth = -vertex.z;
+	bool history_valid = false;
+	vec4 history_ambient = vec4(0.0);
+	vec4 history_reflection = vec4(0.0);
+
+	if (params.temporal_enabled) {
+		vec4 prev_clip = scene_data.reprojection * vec4(vertex, 1.0);
+		if (prev_clip.w > 1e-6) { // Behind the previous frame's camera otherwise.
+			vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
+			if (all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThanEqual(prev_uv, vec2(1.0)))) {
+				// The depth this point had in the previous frame's view, against the depth the
+				// previous frame actually stored there. They disagree when something else was
+				// in front of this point back then, which is what a disocclusion looks like.
+				float expected_depth = -(scene_data.prev_view_from_view * vec4(vertex, 1.0)).z;
+				float stored_depth = textureLod(sampler2D(gi_history_depth_prev, linear_sampler), prev_uv, 0.0).r;
+				if (stored_depth > 0.0 && abs(stored_depth - expected_depth) < expected_depth * 0.05) {
+					history_valid = true;
+					history_ambient = textureLod(sampler2D(gi_history_ambient_prev, linear_sampler), prev_uv, 0.0);
+					history_reflection = textureLod(sampler2D(gi_history_reflection_prev, linear_sampler), prev_uv, 0.0);
+				}
+			}
+		}
 	}
+
+	// Trace only this frame's slot of the 2x2 checkerboard, spreading the cone tracing over
+	// 4 frames. A pixel whose history is missing or was rejected is always traced, so the
+	// first frame and every disocclusion are correct rather than merely cheap.
+	uint slot = uint((out_pos.y & 1) * 2 + (out_pos.x & 1));
+	bool trace = !params.temporal_enabled || !history_valid || slot == params.trace_slot;
+
+	if (trace) {
+		process_gi(pos, vertex, ambient_light, reflection_light);
+
+		// Cone tracing is deterministic, so a fresh trace is exact rather than a noisy
+		// sample; the blend exists only to keep a lighting change from popping in on the
+		// quarter of the pixels that happen to be traced first.
+		if (history_valid) {
+			ambient_light = mix(history_ambient, ambient_light, params.temporal_blend);
+			reflection_light = mix(history_reflection, reflection_light, params.temporal_blend);
+		}
+	} else {
+		ambient_light = history_ambient;
+		reflection_light = history_reflection;
+	}
+
+	pos = out_pos;
 
 	imageStore(ambient_buffer, pos, ambient_light);
 	imageStore(reflection_buffer, pos, reflection_light);
+
+	if (params.temporal_enabled) {
+		imageStore(gi_history_ambient, pos, ambient_light);
+		imageStore(gi_history_reflection, pos, reflection_light);
+		imageStore(gi_history_depth, pos, vec4(linear_depth));
+	}
 
 #ifdef USE_VRS
 	if (sc_use_vrs) {

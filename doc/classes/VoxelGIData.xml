@@ -52,7 +52,7 @@
 		<method name="get_octree_size" qualifiers="const">
 			<return type="Vector3" />
 			<description>
-				Returns the baked octree size for this [VoxelGIData], which corresponds to the number of subdivisions per axis. This can be viewed in the editor by hovering the [b]Bake VoxelGI[/b] button at the top of the 3D editor viewport when a [VoxelGI] node is selected and looking at the [b]Subdivisions[/b] field in the tooltip.
+				Returns the baked octree size for this [VoxelGIData], which corresponds to the number of subdivisions per axis. This can be viewed in the editor by hovering the [b]Bake VoxelGI[/b] button at the top of the 3D editor viewport when a [VoxelGI] node is selected and looking at the [b]Voxel grid[/b] field in the tooltip.
 			</description>
 		</method>
 		<method name="get_to_cell_xform" qualifiers="const">
@@ -64,7 +64,9 @@
 	</methods>
 	<members>
 		<member name="anisotropic_strength" type="float" setter="set_anisotropic_strength" getter="get_anisotropic_strength" default="0.0">
-			Blends in 6 additional directional (anisotropic) copies of the voxel mipmap chain when tracing diffuse light and reflections, picking whichever directions best match the light or reflection being computed. This reduces light leaking through thin geometry (such as walls and floors), at the cost of increased VRAM usage. At [code]0.0[/code] (the default), only the regular isotropic mipmap chain is used. Higher values blend in more of the anisotropic result; because this blend happens when tracing rather than when baking, it can be tuned freely without re-baking the [VoxelGI] node, but the anisotropic mipmap chain itself is still generated during baking, so this property has no effect until the node has been baked at least once.
+			Blends in 6 additional directional (anisotropic) copies of the voxel mipmap chain when tracing diffuse light and reflections, picking whichever directions best match the light or reflection being computed. This reduces light leaking through thin geometry (such as walls and floors), at the cost of increased VRAM usage.
+			At [code]0.0[/code] (the default), the anisotropic mipmap chains are not allocated at all, which makes the probe use 7 times less VRAM and take 7 times fewer texture samples per traced cone than at any non-zero value. Raising this above [code]0.0[/code] allocates them; lowering it back to [code]0.0[/code] frees them again.
+			While non-zero, higher values blend in more of the anisotropic result. That blend happens when tracing rather than when baking, so it can be tuned freely without re-baking the [VoxelGI] node.
 		</member>
 		<member name="bias" type="float" setter="set_bias" getter="get_bias" default="1.5">
 			The normal bias to use for indirect lighting. Higher values reduce self-lighting artifacts visible in non-rough materials, at the cost of more visible light leaking and flatter-looking indirect lighting. See also [member reflection_bias]. To prioritize hiding self-reflections over lighting quality, set [member bias] to [code]0.0[/code] and [member normal_bias] to a value between [code]1.0[/code] and [code]2.0[/code].

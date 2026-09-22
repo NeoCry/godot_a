@@ -1292,6 +1292,10 @@ bool RasterizerSceneGLES3::voxel_gi_needs_update(RID p_probe) const {
 	return false;
 }
 
+bool RasterizerSceneGLES3::voxel_gi_has_pending_update(RID p_probe) const {
+	return false;
+}
+
 void RasterizerSceneGLES3::voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects) {
 }
 

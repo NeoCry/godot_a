@@ -236,6 +236,7 @@ public:
 	virtual RID voxel_gi_instance_create(RID p_base) override;
 	virtual void voxel_gi_instance_set_transform_to_data(RID p_probe, const Transform3D &p_xform) override;
 	virtual bool voxel_gi_needs_update(RID p_probe) const override;
+	virtual bool voxel_gi_has_pending_update(RID p_probe) const override;
 	virtual void voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects) override;
 	virtual void voxel_gi_set_quality(RSE::VoxelGIQuality p_quality) override { gi.voxel_gi_quality = p_quality; }
 
