@@ -4199,20 +4199,26 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		// so through the push constant and never touches them.
 		{
 			const Size2i history_size = use_temporal ? size : Size2i(1, 1);
+			// texture_clear() below is a copy as far as RenderingDevice is concerned, so these
+			// need CAN_COPY_TO on top of what the buffers above use.
+			const uint32_t history_usage_bits = usage_bits | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 
 			for (uint32_t i = 0; i < 2; i++) {
-				p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_ambient_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
-				p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_reflection_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
-				RID depth = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_depth_name(i), RD::DATA_FORMAT_R32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
-				// A fresh texture holds undefined data. The shader reads a stored depth of 0 as
-				// "nothing here yet" and traces instead, so clearing the depth is what makes the
-				// first frame after an allocation correct.
+				RID ambient = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_ambient_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				RID reflection = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_reflection_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				RID depth = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_depth_name(i), RD::DATA_FORMAT_R32_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				// A fresh texture holds whatever was in that memory. The pass never reads
+				// history until it has written some, so this is belt and braces, but it keeps a
+				// stray read from turning into stray colour.
+				RD::get_singleton()->texture_clear(ambient, Color(0, 0, 0, 0), 0, 1, 0, p_view_count);
+				RD::get_singleton()->texture_clear(reflection, Color(0, 0, 0, 0), 0, 1, 0, p_view_count);
 				RD::get_singleton()->texture_clear(depth, Color(0, 0, 0, 0), 0, 1, 0, p_view_count);
 			}
 		}
 
 		rbgi->using_half_size_gi = half_resolution;
 		rbgi->using_temporal_gi = use_temporal;
+		rbgi->history_valid = false;
 	}
 
 	// Setup our scene data
@@ -4253,10 +4259,11 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		RD::get_singleton()->buffer_update(rbgi->scene_data_ubo, 0, sizeof(SceneData), &scene_data);
 	}
 
-	// Remember this frame's camera so the next frame can reproject into it. On the first
-	// frame after an allocation the history depth is still cleared to 0, which the shader
-	// reads as "nothing stored here" and traces instead, so no separate warm-up flag is
-	// needed: the pass writes history from frame one and starts reusing it from frame two.
+	// Remember this frame's camera so the next frame can reproject into it. The pass writes
+	// history from the first frame after an allocation but only starts reading it on the
+	// second, when there is a real previous frame to reproject and prev_cam_transform below
+	// describes it.
+	const bool history_valid = use_temporal && rbgi->history_valid;
 	rbgi->prev_cam_transform = p_cam_transform;
 	rbgi->prev_projection = p_projections[0];
 
@@ -4278,7 +4285,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	static const uint32_t slot_order[TEMPORAL_SLOT_COUNT] = { 0, 3, 1, 2 };
 	push_constant.trace_slot = slot_order[rbgi->history_frame % TEMPORAL_SLOT_COUNT];
 	push_constant.temporal_blend = temporal_blend;
-	push_constant.pad1 = 0;
+	push_constant.history_valid = history_valid;
 	push_constant.pad2 = 0;
 	push_constant.pad3 = 0;
 
@@ -4551,6 +4558,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	// Swap the ping-pong for the next frame. Done once per frame rather than per view, so
 	// both eyes of a multiview pass agree on which half they wrote.
 	rbgi->history_frame++;
+	rbgi->history_valid = use_temporal;
 }
 
 RID GI::voxel_gi_instance_create(RID p_base) {

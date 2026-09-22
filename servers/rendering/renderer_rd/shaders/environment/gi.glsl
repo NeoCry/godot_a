@@ -158,7 +158,7 @@ layout(push_constant, std430) uniform Params {
 	uint trace_slot;
 
 	float temporal_blend;
-	float pad1;
+	bool history_valid;
 	float pad2;
 	float pad3;
 }
@@ -806,7 +806,9 @@ void main() {
 	vec4 history_ambient = vec4(0.0);
 	vec4 history_reflection = vec4(0.0);
 
-	if (params.temporal_enabled) {
+	// The write below happens from the first frame after an allocation, but there is nothing
+	// worth reading back until a frame has actually written it.
+	if (params.temporal_enabled && params.history_valid) {
 		vec4 prev_clip = scene_data.reprojection * vec4(vertex, 1.0);
 		if (prev_clip.w > 1e-6) { // Behind the previous frame's camera otherwise.
 			vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
@@ -815,7 +817,16 @@ void main() {
 				// previous frame actually stored there. They disagree when something else was
 				// in front of this point back then, which is what a disocclusion looks like.
 				float expected_depth = -(scene_data.prev_view_from_view * vec4(vertex, 1.0)).z;
-				float stored_depth = textureLod(sampler2D(gi_history_depth_prev, linear_sampler), prev_uv, 0.0).r;
+				// Point sampled on purpose: filtering depth across a silhouette returns a
+				// value somewhere between the near and far surface, which can land close
+				// enough to `expected_depth` to pass this test and let a pixel reuse colour
+				// from the wrong surface. The colour fetches below stay filtered, since
+				// reprojecting them to a fractional offset is the point.
+				ivec2 history_size = textureSize(sampler2D(gi_history_depth_prev, linear_sampler), 0);
+				// prev_uv is accepted up to and including 1.0, which lands one texel past the
+				// edge once scaled, so clamp rather than fetch out of bounds.
+				ivec2 prev_texel = clamp(ivec2(prev_uv * vec2(history_size)), ivec2(0), history_size - 1);
+				float stored_depth = texelFetch(sampler2D(gi_history_depth_prev, linear_sampler), prev_texel, 0).r;
 				if (stored_depth > 0.0 && abs(stored_depth - expected_depth) < expected_depth * 0.05) {
 					history_valid = true;
 					history_ambient = textureLod(sampler2D(gi_history_ambient_prev, linear_sampler), prev_uv, 0.0);

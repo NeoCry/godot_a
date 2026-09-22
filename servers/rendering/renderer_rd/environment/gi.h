@@ -552,6 +552,10 @@ public:
 		// other way round. The uniform sets bind those textures, so there is one set per
 		// parity per view rather than one per view.
 		uint32_t history_frame = 0;
+		// False until a frame has actually written history. Reset on every (re)allocation, so
+		// a fresh texture is never read back: relying on a clear alone would make correctness
+		// depend on the clear succeeding, and a failed one is silent at render time.
+		bool history_valid = false;
 		Transform3D prev_cam_transform;
 		Projection prev_projection;
 
@@ -901,7 +905,7 @@ public:
 		uint32_t trace_slot; // Which of the TEMPORAL_SLOT_COUNT checkerboard slots traces.
 
 		float temporal_blend; // Weight of a fresh trace against valid history.
-		float pad1;
+		uint32_t history_valid; // Whether the textures hold a previous frame worth reading.
 		float pad2;
 		float pad3;
 	};
