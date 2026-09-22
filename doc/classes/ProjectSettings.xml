@@ -2904,6 +2904,26 @@
 			Sets the sensitivity to edges when using SMAA for antialiasing. Lower values will catch more edges, at a potentially higher performance cost.
 			[b]Note:[/b] This property is only read when the project starts. There is currently no way to change this setting at run-time.
 		</member>
+		<member name="rendering/anti_aliasing/quality/taa_history_clamp_chroma" type="float" setter="" getter="" default="0.75">
+			Multiplier applied to [member rendering/anti_aliasing/quality/taa_history_clamp_luma] to obtain the width of the color range TAA allows its history to keep along chroma. Chroma is where ghosting is most visible, so values below [code]1.0[/code] keep it tighter than luminance. Raising it lets more colored history through, which smooths color transitions but can leave colored trails behind moving objects.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
+		<member name="rendering/anti_aliasing/quality/taa_history_clamp_luma" type="float" setter="" getter="" default="2.5">
+			Half-width, in standard deviations, of the color range TAA allows its history to keep along luminance, relative to the 3×3 neighborhood of the current frame. This is the main tradeoff of temporal antialiasing: lower values reject more history, which removes ghosting but leaves high-frequency detail such as grass and foliage flickering, while higher values accumulate longer and resolve that detail better, at the cost of trails behind moving objects.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
+		<member name="rendering/anti_aliasing/quality/taa_history_rejection_sensitivity" type="float" setter="" getter="" default="3.0">
+			How sharply a pixel loses its accumulated samples when TAA has to clamp its history. Higher values converge to the current frame faster after a disocclusion or a lighting change, at the cost of temporal stability; lower values keep accumulating through larger disagreements, which is more stable but ghosts for longer.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
+		<member name="rendering/anti_aliasing/quality/taa_max_accumulated_frames" type="int" setter="" getter="" default="32">
+			Upper bound on how many frames TAA averages over a pixel that stays stable. Higher values resolve sub-pixel detail better, because more distinct jittered samples contribute to the result, but make the image slower to respond to changes that the history clamp does not catch. Values above the viewport's jitter phase count bring no additional sample positions.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
+		<member name="rendering/anti_aliasing/quality/taa_motion_clamp_scale" type="float" setter="" getter="" default="0.6">
+			Multiplier applied to TAA's history color range on pixels moving fast across the screen, where reprojection is least reliable. Lower values suppress ghosting behind fast motion at the cost of blurring it; [code]1.0[/code] disables the narrowing entirely. The range never collapses to zero, which would force the history onto the average of the current frame and reduce moving pixels to a blur.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
 		<member name="rendering/anti_aliasing/quality/use_debanding" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], uses a fast dithering filter just before transforming floating point color values to integer color values to make banding significantly less visible. Debanding is applied at different steps of the rendering process depending on the rendering method and [member rendering/viewport/hdr_2d] setting.
 			In some cases, debanding may introduce a slightly noticeable dithering pattern. It's recommended to enable debanding only when actually needed since the dithering pattern will make lossless-compressed screenshots larger.

@@ -30,6 +30,7 @@
 
 #include "taa.h"
 
+#include "core/config/project_settings.h"
 #include "servers/rendering/renderer_rd/effects/copy_effects.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
@@ -59,17 +60,24 @@ void TAA::resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_pr
 
 	RID default_sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
-	float base_variance = 1.1f;
-	float base_variance_min = 0.75f;
-	float base_variance_max = 1.00f;
-	float variance_scale = 1080.0f / p_resolution.height; // 1080p taken as baseline for calculation, as this is most commonly used resolution
-
 	TAAResolvePushConstant push_constant;
 	memset(&push_constant, 0, sizeof(TAAResolvePushConstant));
 	push_constant.resolution_width = p_resolution.width;
 	push_constant.resolution_height = p_resolution.height;
 	push_constant.disocclusion_threshold = 2.5f; // If velocity changes by less than this amount of texels we can retain the accumulation buffer.
-	push_constant.variance_dynamic = CLAMP(base_variance * variance_scale, base_variance_min, base_variance_max); // Variance dynamically scales based on resolution
+	// A velocity change this large in one frame is a different surface, not the same one seen
+	// from a slightly different place. Kept mild on purpose: the history clamp is the primary
+	// signal, and an aggressive ramp here resets the whole screen on sharp camera acceleration.
+	push_constant.disocclusion_scale = 1.0f / 32.0f;
+	push_constant.clamp_scale = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_history_clamp_luma");
+	push_constant.clamp_scale_chroma = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_history_clamp_chroma");
+	// Reprojection is less reliable under motion, so the box narrows - but never collapses.
+	push_constant.motion_clamp_scale = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_motion_clamp_scale");
+	push_constant.rejection_sensitivity = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_history_rejection_sensitivity");
+	// Bound through a local: MAX() expands its arguments twice, and GLOBAL_GET_CACHED expands
+	// to a lambda with its own static cache each time it appears.
+	int max_accumulated_frames = GLOBAL_GET_CACHED(int, "rendering/anti_aliasing/quality/taa_max_accumulated_frames");
+	push_constant.max_accumulated_frames = float(MAX(1, max_accumulated_frames));
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
@@ -98,10 +106,16 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 	if (!p_render_buffers->has_texture(SNAME("taa"), SNAME("history"))) {
 		uint32_t usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
 
-		p_render_buffers->create_texture(SNAME("taa"), SNAME("history"), p_format, usage_bits);
+		// The history's alpha carries the per-pixel sample counter, so it has to start from a
+		// known zero (meaning "no samples yet") rather than from whatever the colour buffer's
+		// alpha happens to be - which is the viewport's own alpha, and is 0 on a transparent
+		// background. A zeroed counter makes the first resolve fall back to the current frame.
+		RID history = p_render_buffers->create_texture(SNAME("taa"), SNAME("history"), p_format, usage_bits | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT);
 		p_render_buffers->create_texture(SNAME("taa"), SNAME("temp"), p_format, usage_bits);
 
 		p_render_buffers->create_texture(SNAME("taa"), SNAME("prev_velocity"), RD::DATA_FORMAT_R16G16_SFLOAT, usage_bits);
+
+		RD::get_singleton()->texture_clear(history, Color(0, 0, 0, 0), 0, 1, 0, view_count);
 
 		just_allocated = true;
 	}
@@ -119,10 +133,14 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 			RID depth_texture = p_render_buffers->get_depth_texture(v);
 			RID taa_temp = p_render_buffers->get_texture_slice(SNAME("taa"), SNAME("temp"), v, 0);
 			resolve(internal_texture, taa_temp, depth_texture, velocity_buffer, taa_prev_velocity, taa_history, Size2(internal_size.x, internal_size.y), p_z_near, p_z_far);
-			copy_effects->copy_to_rect(taa_temp, internal_texture, Rect2(0, 0, internal_size.x, internal_size.y));
+
+			// The resolve writes the sample counter to alpha. It goes to the history as-is, since
+			// that is where the next frame reads it from, but the colour buffer gets alpha forced
+			// to one: its alpha belongs to the viewport and is passed through to the render target.
+			copy_effects->copy_to_rect(taa_temp, internal_texture, Rect2(0, 0, internal_size.x, internal_size.y), false, false, false, false, true);
+			copy_effects->copy_to_rect(taa_temp, taa_history, Rect2(0, 0, internal_size.x, internal_size.y));
 		}
 
-		copy_effects->copy_to_rect(internal_texture, taa_history, Rect2(0, 0, internal_size.x, internal_size.y));
 		copy_effects->copy_to_rect(velocity_buffer, taa_prev_velocity, Rect2(0, 0, target_size.x, target_size.y));
 	}
 
