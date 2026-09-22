@@ -115,20 +115,47 @@ layout(set = 0, binding = 6, std430) buffer AnisoOutputs {
 }
 aniso_outputs;
 
-const vec3 ANISO_DIR[6] = vec3[](
-		vec3(1.0, 0.0, 0.0),
-		vec3(-1.0, 0.0, 0.0),
-		vec3(0.0, 1.0, 0.0),
-		vec3(0.0, -1.0, 0.0),
-		vec3(0.0, 0.0, 1.0),
-		vec3(0.0, 0.0, -1.0));
-
 #endif // USE_ANISO
 
 #endif // MODE DYNAMIC
 
 layout(set = 0, binding = 9) uniform texture3D texture_sdf;
 layout(set = 0, binding = 10) uniform sampler texture_sampler;
+
+#if defined(MODE_SECOND_BOUNCE) && defined(USE_ANISO)
+
+// The anisotropic chains the first bounce just wrote. The second bounce gathers through
+// them rather than through `color_texture`, whose isotropic mipmaps halve a thin wall's
+// opacity at every level and would let it collect light from behind walls no matter what
+// anisotropic_strength is set to at trace time.
+layout(set = 0, binding = 12) uniform texture3D color_texture_aniso[6];
+
+// Combines the 6 chains, weighting each axis by how much of the cone's direction lies
+// along it, and taking the face the cone travels towards. Mirrors sample_aniso_voxel() in
+// gi.glsl; selecting between texture handles with a ternary is not reliably supported
+// across GLSL compilers, so this branches on which one to sample.
+vec4 sample_aniso_color(vec3 uvw_pos, vec3 direction, float lod) {
+	vec3 dir2 = direction * direction;
+	vec4 result = vec4(0.0);
+	if (direction.x > 0.0) {
+		result += dir2.x * textureLod(sampler3D(color_texture_aniso[0], texture_sampler), uvw_pos, lod);
+	} else {
+		result += dir2.x * textureLod(sampler3D(color_texture_aniso[1], texture_sampler), uvw_pos, lod);
+	}
+	if (direction.y > 0.0) {
+		result += dir2.y * textureLod(sampler3D(color_texture_aniso[2], texture_sampler), uvw_pos, lod);
+	} else {
+		result += dir2.y * textureLod(sampler3D(color_texture_aniso[3], texture_sampler), uvw_pos, lod);
+	}
+	if (direction.z > 0.0) {
+		result += dir2.z * textureLod(sampler3D(color_texture_aniso[4], texture_sampler), uvw_pos, lod);
+	} else {
+		result += dir2.z * textureLod(sampler3D(color_texture_aniso[5], texture_sampler), uvw_pos, lod);
+	}
+	return result;
+}
+
+#endif // MODE_SECOND_BOUNCE && USE_ANISO
 
 #ifdef MODE_WRITE_TEXTURE
 
@@ -484,14 +511,18 @@ void main() {
 
 #ifdef USE_ANISO
 	{
-		// Leaf-level anisotropic init: radiance is view-independent (Lambertian), but a
-		// thin surface has little cross-section when viewed edge-on or from behind, so
-		// scale the opacity of each of the 6 axis directions by how much it faces the normal.
+		// Leaf-level anisotropic init: every direction gets the voxel's own opacity. The
+		// directional variation is produced by the front-to-back compositing in
+		// MODE_UPDATE_MIPMAPS, not here -- a leaf holds solid geometry, so a ray through it
+		// is occluded whichever way it travels. Weighting the leaf by dot(normal, axis)
+		// instead would make a surface transparent from behind and along its own plane,
+		// which left an oblique cone seeing only a quarter to a half of a wall's opacity
+		// and is the main reason light still leaked with anisotropy enabled. A cone that
+		// merely grazes a surface is already softened by the trilinear filter between the
+		// solid voxel and the empty one beside it.
 		vec3 leaf_light = accum + emission;
-		bool has_normal = length(normal) > 0.2;
 		for (uint d = 0; d < 6; d++) {
-			float w = has_normal ? clamp(dot(normal, ANISO_DIR[d]), 0.0, 1.0) : 1.0;
-			aniso_outputs.data[cell_index * 6 + d] = vec4(leaf_light, albedo.a * w);
+			aniso_outputs.data[cell_index * 6 + d] = vec4(leaf_light, albedo.a);
 		}
 	}
 #endif // USE_ANISO
@@ -544,7 +575,11 @@ void main() {
 					//}
 
 					float log2_diameter = log2(diameter);
+#ifdef USE_ANISO
+					vec4 scolor = sample_aniso_color(uvw_pos, direction, log2_diameter);
+#else
 					vec4 scolor = textureLod(sampler3D(color_texture, texture_sampler), uvw_pos, log2_diameter);
+#endif
 					float a = (1.0 - color.a);
 					color += a * scolor;
 					dist += half_diameter;
@@ -559,10 +594,10 @@ void main() {
 
 #ifdef USE_ANISO
 	{
-		bool has_normal = length(normal.xyz) > 0.2;
+		// Same as the leaf init in MODE_COMPUTE_LIGHT: opacity is the voxel's own, and the
+		// mipmap compositing derives the per-direction values from it.
 		for (uint d = 0; d < 6; d++) {
-			float w = has_normal ? clamp(dot(normal.xyz, ANISO_DIR[d]), 0.0, 1.0) : 1.0;
-			aniso_outputs.data[cell_index * 6 + d] = vec4(accum, albedo.a * w);
+			aniso_outputs.data[cell_index * 6 + d] = vec4(accum, albedo.a);
 		}
 	}
 #endif // USE_ANISO

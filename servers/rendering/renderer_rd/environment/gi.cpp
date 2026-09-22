@@ -2795,6 +2795,17 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 							u.append_id(texture);
 							copy_uniforms.push_back(u);
 						}
+						if (uses_aniso) {
+							// The whole chains, not per-level slices: the second bounce cone
+							// marches across mip levels the same way the first one does.
+							RD::Uniform u;
+							u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+							u.binding = 12;
+							for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+								u.append_id(aniso_texture[d]);
+							}
+							copy_uniforms.push_back(u);
+						}
 						mipmap.second_bounce_uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE)], 0);
 					} else {
 						mipmap.uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP)], 0);
