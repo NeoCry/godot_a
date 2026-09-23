@@ -35,7 +35,7 @@
 			This can also be used to prevent an object from reflecting upon itself (for instance, a [ReflectionProbe] centered on a vehicle).
 		</member>
 		<member name="enable_shadows" type="bool" setter="set_enable_shadows" getter="are_shadows_enabled" default="false">
-			If [code]true[/code], computes shadows in the reflection probe. This makes the reflection probe slower to render; you may want to disable this if using the [constant UPDATE_ALWAYS] [member update_mode].
+			If [code]true[/code], computes shadows in the reflection probe. This makes the reflection probe slower to render; you may want to disable this if using the [constant UPDATE_ALWAYS] or [constant UPDATE_INTERVAL] [member update_mode].
 		</member>
 		<member name="intensity" type="float" setter="set_intensity" getter="get_intensity" default="1.0">
 			Defines the reflection intensity. Intensity modulates the strength of the reflection.
@@ -61,8 +61,13 @@
 			The size of the reflection probe. The larger the size, the more space covered by the probe, which will lower the perceived resolution. It is best to keep the size only as large as you need it.
 			[b]Note:[/b] To better fit areas that are not aligned to the grid, you can rotate the [ReflectionProbe] node.
 		</member>
+		<member name="update_interval" type="int" setter="set_update_interval" getter="get_update_interval" default="2">
+			The number of frames between two updates when [member update_mode] is [constant UPDATE_INTERVAL]. A value of [code]2[/code] updates the probe every other frame, [code]10[/code] updates it once every ten frames. Higher values cost less performance, at the cost of reflections lagging further behind moving objects. Values are clamped between [code]2[/code] and [code]10[/code].
+			[b]Note:[/b] This property has no effect if [member update_mode] is not [constant UPDATE_INTERVAL].
+			[b]Note:[/b] Probes are given a staggered starting frame, so that several probes sharing an interval tend to refresh on different frames rather than all at once.
+		</member>
 		<member name="update_mode" type="int" setter="set_update_mode" getter="get_update_mode" enum="ReflectionProbe.UpdateMode" default="0">
-			Sets how frequently the [ReflectionProbe] is updated. Can be [constant UPDATE_ONCE] or [constant UPDATE_ALWAYS].
+			Sets how frequently the [ReflectionProbe] is updated. Can be [constant UPDATE_ONCE], [constant UPDATE_ALWAYS] or [constant UPDATE_INTERVAL].
 		</member>
 	</members>
 	<constants>
@@ -71,6 +76,9 @@
 		</constant>
 		<constant name="UPDATE_ALWAYS" value="1" enum="UpdateMode">
 			Update the probe every frame. This provides better results for fast-moving dynamic objects (such as cars). However, it has a significant performance cost. Due to the cost, it's recommended to only use one ReflectionProbe with [constant UPDATE_ALWAYS] at most per scene. For all other use cases, use [constant UPDATE_ONCE].
+		</constant>
+		<constant name="UPDATE_INTERVAL" value="2" enum="UpdateMode">
+			Update the probe once every [member update_interval] frames, as a middle ground between [constant UPDATE_ONCE] and [constant UPDATE_ALWAYS]. Reflections still follow moving objects, but the probe is only re-rendered on the frames it is due, which divides its cost by [member update_interval]. Reflections use the same lower-quality real-time filtering as [constant UPDATE_ALWAYS], and lag up to [member update_interval] frames behind the scene.
 		</constant>
 		<constant name="AMBIENT_DISABLED" value="0" enum="AmbientMode">
 			Do not apply any ambient lighting inside the [ReflectionProbe]'s box defined by its [member size].

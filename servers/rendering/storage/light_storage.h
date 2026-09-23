@@ -122,6 +122,7 @@ public:
 	virtual void reflection_probe_free(RID p_rid) = 0;
 
 	virtual void reflection_probe_set_update_mode(RID p_probe, RSE::ReflectionProbeUpdateMode p_mode) = 0;
+	virtual void reflection_probe_set_update_interval(RID p_probe, int p_frames) = 0;
 	virtual void reflection_probe_set_resolution(RID p_probe, int p_resolution) = 0;
 	virtual void reflection_probe_set_intensity(RID p_probe, float p_intensity) = 0;
 	virtual void reflection_probe_set_blend_distance(RID p_probe, float p_blend_distance) = 0;
@@ -140,6 +141,7 @@ public:
 
 	virtual AABB reflection_probe_get_aabb(RID p_probe) const = 0;
 	virtual RSE::ReflectionProbeUpdateMode reflection_probe_get_update_mode(RID p_probe) const = 0;
+	virtual int reflection_probe_get_update_interval(RID p_probe) const = 0;
 	virtual uint32_t reflection_probe_get_cull_mask(RID p_probe) const = 0;
 	virtual uint32_t reflection_probe_get_reflection_mask(RID p_probe) const = 0;
 	virtual Vector3 reflection_probe_get_size(RID p_probe) const = 0;

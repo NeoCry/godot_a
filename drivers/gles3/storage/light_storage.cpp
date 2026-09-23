@@ -40,6 +40,7 @@
 #include "drivers/gles3/rasterizer_util_gles3.h"
 #include "drivers/gles3/storage/render_scene_buffers_gles3.h"
 #include "drivers/gles3/storage/utilities.h"
+#include "servers/rendering/rendering_server_globals.h"
 
 using namespace GLES3;
 
@@ -527,6 +528,14 @@ void LightStorage::reflection_probe_set_update_mode(RID p_probe, RSE::Reflection
 	reflection_probe->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_REFLECTION_PROBE);
 }
 
+void LightStorage::reflection_probe_set_update_interval(RID p_probe, int p_frames) {
+	ReflectionProbe *reflection_probe = reflection_probe_owner.get_or_null(p_probe);
+	ERR_FAIL_NULL(reflection_probe);
+
+	reflection_probe->update_interval = MAX(RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN, p_frames);
+	reflection_probe->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_REFLECTION_PROBE);
+}
+
 void LightStorage::reflection_probe_set_intensity(RID p_probe, float p_intensity) {
 	ReflectionProbe *reflection_probe = reflection_probe_owner.get_or_null(p_probe);
 	ERR_FAIL_NULL(reflection_probe);
@@ -645,6 +654,13 @@ RSE::ReflectionProbeUpdateMode LightStorage::reflection_probe_get_update_mode(RI
 	ERR_FAIL_NULL_V(reflection_probe, RSE::REFLECTION_PROBE_UPDATE_ONCE);
 
 	return reflection_probe->update_mode;
+}
+
+int LightStorage::reflection_probe_get_update_interval(RID p_probe) const {
+	const ReflectionProbe *reflection_probe = reflection_probe_owner.get_or_null(p_probe);
+	ERR_FAIL_NULL_V(reflection_probe, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN);
+
+	return reflection_probe->update_interval;
 }
 
 uint32_t LightStorage::reflection_probe_get_cull_mask(RID p_probe) const {
@@ -848,8 +864,19 @@ bool LightStorage::reflection_probe_instance_needs_redraw(RID p_instance) {
 		return true;
 	}
 
-	if (reflection_probe_get_update_mode(rpi->probe) == RSE::REFLECTION_PROBE_UPDATE_ALWAYS) {
-		return true;
+	switch (reflection_probe_get_update_mode(rpi->probe)) {
+		case RSE::REFLECTION_PROBE_UPDATE_ALWAYS: {
+			return true;
+		} break;
+		case RSE::REFLECTION_PROBE_UPDATE_INTERVAL: {
+			if (rpi->atlas_index == -1) {
+				// Never rendered, don't wait for the next slot to show something.
+				return true;
+			}
+			return RSE::reflection_probe_update_interval_is_due(rpi->probe.get_id(), reflection_probe_get_update_interval(rpi->probe), RSG::rasterizer->get_frame_number());
+		} break;
+		default: {
+		} break;
 	}
 
 	return rpi->atlas_index == -1;
@@ -881,8 +908,9 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 
 	// First we check if our atlas is initialized.
 
-	// Not making an exception for update_mode = REFLECTION_PROBE_UPDATE_ALWAYS, we are using
-	// the same render techniques regardless of realtime or update once (for now).
+	// Not making an exception for real-time update modes (REFLECTION_PROBE_UPDATE_ALWAYS and
+	// REFLECTION_PROBE_UPDATE_INTERVAL), we are using the same render techniques regardless of
+	// realtime or update once (for now).
 
 	if (atlas->depth == 0) {
 		// We need to create our textures
@@ -1069,7 +1097,7 @@ bool LightStorage::reflection_probe_instance_postprocess_step(RID p_instance) {
 		return false;
 	}
 
-	if (LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe) == RSE::REFLECTION_PROBE_UPDATE_ALWAYS) {
+	if (RSE::reflection_probe_update_mode_is_realtime(LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe))) {
 		// Using real time reflections, all roughness is done in one step
 		for (int m = 0; m < atlas->mipmap_count; m++) {
 			const GLES3::ReflectionAtlas::Reflection &reflection = atlas->reflections[rpi->atlas_index];

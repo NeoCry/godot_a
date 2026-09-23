@@ -136,6 +136,7 @@ public:
 	virtual void reflection_probe_free(RID p_rid) override {}
 
 	virtual void reflection_probe_set_update_mode(RID p_probe, RSE::ReflectionProbeUpdateMode p_mode) override {}
+	virtual void reflection_probe_set_update_interval(RID p_probe, int p_frames) override {}
 	virtual void reflection_probe_set_intensity(RID p_probe, float p_intensity) override {}
 	virtual void reflection_probe_set_blend_distance(RID p_probe, float p_blend_distance) override {}
 	virtual void reflection_probe_set_ambient_mode(RID p_probe, RSE::ReflectionProbeAmbientMode p_mode) override {}
@@ -155,6 +156,7 @@ public:
 
 	virtual AABB reflection_probe_get_aabb(RID p_probe) const override { return AABB(); }
 	virtual RSE::ReflectionProbeUpdateMode reflection_probe_get_update_mode(RID p_probe) const override { return RSE::REFLECTION_PROBE_UPDATE_ONCE; }
+	virtual int reflection_probe_get_update_interval(RID p_probe) const override { return RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN; }
 	virtual uint32_t reflection_probe_get_cull_mask(RID p_probe) const override { return 0; }
 	virtual uint32_t reflection_probe_get_reflection_mask(RID p_probe) const override { return 0; }
 	virtual Vector3 reflection_probe_get_size(RID p_probe) const override { return Vector3(); }

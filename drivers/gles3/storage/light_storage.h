@@ -118,6 +118,7 @@ struct LightInstance {
 
 struct ReflectionProbe {
 	RSE::ReflectionProbeUpdateMode update_mode = RSE::REFLECTION_PROBE_UPDATE_ONCE;
+	int update_interval = RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN;
 	float intensity = 1.0;
 	float blend_distance = 1.0;
 	RSE::ReflectionProbeAmbientMode ambient_mode = RSE::REFLECTION_PROBE_AMBIENT_ENVIRONMENT;
@@ -660,6 +661,7 @@ public:
 	virtual void reflection_probe_free(RID p_rid) override;
 
 	virtual void reflection_probe_set_update_mode(RID p_probe, RSE::ReflectionProbeUpdateMode p_mode) override;
+	virtual void reflection_probe_set_update_interval(RID p_probe, int p_frames) override;
 	virtual void reflection_probe_set_intensity(RID p_probe, float p_intensity) override;
 	virtual void reflection_probe_set_blend_distance(RID p_probe, float p_blend_distance) override;
 	virtual void reflection_probe_set_ambient_mode(RID p_probe, RSE::ReflectionProbeAmbientMode p_mode) override;
@@ -679,6 +681,7 @@ public:
 
 	virtual AABB reflection_probe_get_aabb(RID p_probe) const override;
 	virtual RSE::ReflectionProbeUpdateMode reflection_probe_get_update_mode(RID p_probe) const override;
+	virtual int reflection_probe_get_update_interval(RID p_probe) const override;
 	virtual uint32_t reflection_probe_get_cull_mask(RID p_probe) const override;
 	virtual uint32_t reflection_probe_get_reflection_mask(RID p_probe) const override;
 	virtual Vector3 reflection_probe_get_size(RID p_probe) const override;

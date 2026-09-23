@@ -329,7 +329,24 @@ enum LightProjectorFilter {
 enum ReflectionProbeUpdateMode {
 	REFLECTION_PROBE_UPDATE_ONCE,
 	REFLECTION_PROBE_UPDATE_ALWAYS,
+	REFLECTION_PROBE_UPDATE_INTERVAL,
 };
+
+constexpr int REFLECTION_PROBE_UPDATE_INTERVAL_MIN = 2;
+constexpr int REFLECTION_PROBE_UPDATE_INTERVAL_MAX = 10;
+
+// Probes that keep refreshing themselves (every frame, or once every few frames) share the same
+// real-time rendering path, which is cheaper but lower quality than the one used by update-once probes.
+constexpr bool reflection_probe_update_mode_is_realtime(ReflectionProbeUpdateMode p_mode) {
+	return p_mode == REFLECTION_PROBE_UPDATE_ALWAYS || p_mode == REFLECTION_PROBE_UPDATE_INTERVAL;
+}
+
+// Tells whether an interval probe is due for a refresh on the given frame. Probes sharing an interval
+// are spread over different frames, using a phase derived from the probe so that it stays stable.
+constexpr bool reflection_probe_update_interval_is_due(uint64_t p_probe_id, int p_interval, uint64_t p_frame) {
+	const uint64_t interval = p_interval > REFLECTION_PROBE_UPDATE_INTERVAL_MIN ? uint64_t(p_interval) : uint64_t(REFLECTION_PROBE_UPDATE_INTERVAL_MIN);
+	return ((p_frame + p_probe_id % interval) % interval) == 0;
+}
 
 enum ReflectionProbeAmbientMode {
 	REFLECTION_PROBE_AMBIENT_DISABLED,
