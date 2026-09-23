@@ -443,6 +443,21 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 
 			blend_state = blend_state_color_blend;
 
+			// Attachment 2 is the motion vector target, which the opaque pass has already filled
+			// by the time this one runs. A blended surface has no depth of its own, so the
+			// velocity under it describes whatever is behind it and must be left alone. A surface
+			// that established its own depth in the pre-pass is the opposite case: it is what the
+			// depth buffer, and therefore the reprojection, refers to, so it is the one that has
+			// to write velocity. Without this, alpha to coverage foliage keeps the cleared zero
+			// and reprojects as though it were standing still while the camera moves.
+			if (!uses_depth_in_alpha_pass() && blend_state.attachments.size() > 2) {
+				RD::PipelineColorBlendState::Attachment &motion_vectors = blend_state.attachments.write[2];
+				motion_vectors.write_r = false;
+				motion_vectors.write_g = false;
+				motion_vectors.write_b = false;
+				motion_vectors.write_a = false;
+			}
+
 			if (depth_draw == DEPTH_DRAW_OPAQUE) {
 				depth_stencil_state.enable_depth_write = false; //alpha does not draw depth
 			}
