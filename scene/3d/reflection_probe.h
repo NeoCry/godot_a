@@ -39,6 +39,7 @@ public:
 	enum UpdateMode {
 		UPDATE_ONCE,
 		UPDATE_ALWAYS,
+		UPDATE_INTERVAL,
 	};
 
 	enum AmbientMode {
@@ -64,6 +65,7 @@ private:
 	uint32_t cull_mask = (1 << 20) - 1;
 	uint32_t reflection_mask = (1 << 20) - 1;
 	UpdateMode update_mode = UPDATE_ONCE;
+	int update_interval = RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN;
 
 protected:
 	static void _bind_methods();
@@ -121,6 +123,9 @@ public:
 
 	void set_update_mode(UpdateMode p_mode);
 	UpdateMode get_update_mode() const;
+
+	void set_update_interval(int p_frames);
+	int get_update_interval() const;
 
 	virtual AABB get_aabb() const override;
 

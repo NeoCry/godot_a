@@ -4119,7 +4119,10 @@ void RendererSceneCull::render_probes() {
 
 					busy = true; // Do not render another one of this kind.
 				} break;
-				case RSE::REFLECTION_PROBE_UPDATE_ALWAYS: {
+				case RSE::REFLECTION_PROBE_UPDATE_ALWAYS:
+				case RSE::REFLECTION_PROBE_UPDATE_INTERVAL: {
+					// Real-time probes render the whole cubemap in one go. Interval probes only get
+					// here on the frames they are due, so they skip the work on the frames in between.
 					int step = 0;
 					bool done = false;
 					while (!done) {

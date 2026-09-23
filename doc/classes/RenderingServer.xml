@@ -3577,12 +3577,20 @@
 				Sets the size of the area that the reflection probe will capture. Equivalent to [member ReflectionProbe.size].
 			</description>
 		</method>
+		<method name="reflection_probe_set_update_interval">
+			<return type="void" />
+			<param index="0" name="probe" type="RID" />
+			<param index="1" name="frames" type="int" />
+			<description>
+				Sets the number of frames between two updates of the reflection probe, used when its update mode is [constant REFLECTION_PROBE_UPDATE_INTERVAL]. Values below [code]2[/code] are clamped to [code]2[/code]. Equivalent to [member ReflectionProbe.update_interval].
+			</description>
+		</method>
 		<method name="reflection_probe_set_update_mode">
 			<return type="void" />
 			<param index="0" name="probe" type="RID" />
 			<param index="1" name="mode" type="int" enum="RenderingServer.ReflectionProbeUpdateMode" />
 			<description>
-				Sets how often the reflection probe updates. Can either be once or every frame.
+				Sets how often the reflection probe updates. Can either be once, every frame, or once every [method reflection_probe_set_update_interval] frames.
 			</description>
 		</method>
 		<method name="request_frame_drawn_callback">
@@ -5262,6 +5270,9 @@
 		</constant>
 		<constant name="REFLECTION_PROBE_UPDATE_ALWAYS" value="1" enum="ReflectionProbeUpdateMode">
 			Reflection probe will update each frame. This mode is necessary to capture moving objects.
+		</constant>
+		<constant name="REFLECTION_PROBE_UPDATE_INTERVAL" value="2" enum="ReflectionProbeUpdateMode">
+			Reflection probe will update once every [method reflection_probe_set_update_interval] frames. This still captures moving objects, but costs proportionally less than [constant REFLECTION_PROBE_UPDATE_ALWAYS] as the reflection is only re-rendered on the frames the probe is due.
 		</constant>
 		<constant name="REFLECTION_PROBE_AMBIENT_DISABLED" value="0" enum="ReflectionProbeAmbientMode">
 			Do not apply any ambient lighting inside the reflection probe's box defined by its size.

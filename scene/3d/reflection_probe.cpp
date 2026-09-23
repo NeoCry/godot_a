@@ -191,10 +191,20 @@ uint32_t ReflectionProbe::get_reflection_mask() const {
 void ReflectionProbe::set_update_mode(UpdateMode p_mode) {
 	update_mode = p_mode;
 	RS::get_singleton()->reflection_probe_set_update_mode(get_base(), RSE::ReflectionProbeUpdateMode(p_mode));
+	notify_property_list_changed();
 }
 
 ReflectionProbe::UpdateMode ReflectionProbe::get_update_mode() const {
 	return update_mode;
+}
+
+void ReflectionProbe::set_update_interval(int p_frames) {
+	update_interval = CLAMP(p_frames, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MAX);
+	RS::get_singleton()->reflection_probe_set_update_interval(get_base(), update_interval);
+}
+
+int ReflectionProbe::get_update_interval() const {
+	return update_interval;
 }
 
 AABB ReflectionProbe::get_aabb() const {
@@ -210,6 +220,11 @@ void ReflectionProbe::_validate_property(PropertyInfo &p_property) const {
 	}
 	if (p_property.name == "ambient_color" || p_property.name == "ambient_color_energy") {
 		if (ambient_mode != AMBIENT_COLOR) {
+			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+		}
+	}
+	if (p_property.name == "update_interval") {
+		if (update_mode != UPDATE_INTERVAL) {
 			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 		}
 	}
@@ -261,7 +276,11 @@ void ReflectionProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_update_mode", "mode"), &ReflectionProbe::set_update_mode);
 	ClassDB::bind_method(D_METHOD("get_update_mode"), &ReflectionProbe::get_update_mode);
 
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "update_mode", PROPERTY_HINT_ENUM, "Once (Fast),Always (Slow)"), "set_update_mode", "get_update_mode");
+	ClassDB::bind_method(D_METHOD("set_update_interval", "frames"), &ReflectionProbe::set_update_interval);
+	ClassDB::bind_method(D_METHOD("get_update_interval"), &ReflectionProbe::get_update_interval);
+
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "update_mode", PROPERTY_HINT_ENUM, "Once (Fast),Always (Slow),Interval (Balanced)"), "set_update_mode", "get_update_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "update_interval", PROPERTY_HINT_RANGE, itos(RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN) + "," + itos(RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MAX) + ",1"), "set_update_interval", "get_update_interval");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "intensity", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_intensity", "get_intensity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "blend_distance", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater,suffix:m"), "set_blend_distance", "get_blend_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_distance", PROPERTY_HINT_RANGE, "0,16384,0.1,or_greater,exp,suffix:m"), "set_max_distance", "get_max_distance");
@@ -281,6 +300,7 @@ void ReflectionProbe::_bind_methods() {
 
 	BIND_ENUM_CONSTANT(UPDATE_ONCE);
 	BIND_ENUM_CONSTANT(UPDATE_ALWAYS);
+	BIND_ENUM_CONSTANT(UPDATE_INTERVAL);
 
 	BIND_ENUM_CONSTANT(AMBIENT_DISABLED);
 	BIND_ENUM_CONSTANT(AMBIENT_ENVIRONMENT);
