@@ -40,6 +40,7 @@
 #include "drivers/gles3/rasterizer_util_gles3.h"
 #include "drivers/gles3/storage/render_scene_buffers_gles3.h"
 #include "drivers/gles3/storage/utilities.h"
+#include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/rendering_server_globals.h"
 
 using namespace GLES3;
