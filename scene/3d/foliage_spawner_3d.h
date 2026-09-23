@@ -126,6 +126,7 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	LocalVector<Ref<MultiMesh>> gpu_multimeshes;
 	LocalVector<MultiMeshInstance3D *> gpu_nodes;
 	FoliageGPUCuller gpu_culler;
+	ObjectID gpu_culling_camera;
 
 	// Debug.
 	bool debug_show_cells = false;
@@ -136,6 +137,11 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	void _clear_gpu_instances();
 	void _rebuild_gpu_instances();
 	void _dispatch_gpu_culling();
+	// Both paths store the same instances, just differently: flat for the GPU,
+	// chunked into cells for the renderer. These convert between the two so
+	// that toggling gpu_culling keeps whatever was generated.
+	LocalVector<Transform3D> _gather_cell_transforms() const;
+	void _rebuild_cells_from_transforms(const LocalVector<Transform3D> &p_transforms);
 	PackedFloat32Array _get_gpu_instance_data() const;
 	void _set_gpu_instance_data(const PackedFloat32Array &p_data);
 

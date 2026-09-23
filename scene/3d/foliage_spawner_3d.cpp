@@ -261,8 +261,16 @@ void FoliageSpawner3D::_notification(int p_what) {
 			for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
 				_sync_cell_lods(kv.value);
 			}
-			// Same for the GPU path's nodes, which are not saved either.
-			if (_is_gpu_culling_active() && gpu_nodes.is_empty() && !gpu_transforms.is_empty()) {
+			// Same for the GPU path's nodes, which are not saved either. Done
+			// here rather than as the properties arrive, because which of the
+			// two representations the scene was saved in is only known once
+			// all of them have been set.
+			if (_is_gpu_culling_active() && gpu_nodes.is_empty()) {
+				if (gpu_transforms.is_empty() && !cells.is_empty()) {
+					// Saved by the cell path, opened with GPU culling on.
+					gpu_transforms = _gather_cell_transforms();
+					_clear_cells();
+				}
 				_rebuild_gpu_instances();
 			}
 		} break;
@@ -421,6 +429,43 @@ bool FoliageSpawner3D::_is_gpu_culling_active() const {
 	return gpu_culling && FoliageGPUCuller::is_supported();
 }
 
+LocalVector<Transform3D> FoliageSpawner3D::_gather_cell_transforms() const {
+	LocalVector<Transform3D> result;
+	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
+		if (kv.value.lod_multimeshes.is_empty() || kv.value.lod_multimeshes[0].is_null()) {
+			continue;
+		}
+		// Every LOD level of a cell holds the same transforms, so the first is
+		// as good as any.
+		for (const Transform3D &t : _read_transforms(kv.value.lod_multimeshes[0])) {
+			result.push_back(t);
+		}
+	}
+	return result;
+}
+
+void FoliageSpawner3D::_rebuild_cells_from_transforms(const LocalVector<Transform3D> &p_transforms) {
+	_clear_cells();
+
+	// Group instances by their chunking cell (see class comment) before
+	// building each cell's MultiMesh, instead of one MultiMesh for everything.
+	const float chunk_cell_size = MAX(cell_size, 0.01f);
+	HashMap<Vector2i, LocalVector<Transform3D>> cell_transforms;
+
+	for (uint32_t i = 0; i < p_transforms.size(); i++) {
+		const Vector3 &origin = p_transforms[i].origin;
+		const Vector2i cc(int(Math::floor(origin.x / chunk_cell_size)), int(Math::floor(origin.z / chunk_cell_size)));
+		cell_transforms[cc].push_back(p_transforms[i]);
+	}
+
+	for (KeyValue<Vector2i, LocalVector<Transform3D>> &kv : cell_transforms) {
+		FoliageCell &fc = _get_or_create_cell(kv.key);
+		for (const Ref<MultiMesh> &mm : fc.lod_multimeshes) {
+			_write_transforms(mm, kv.value);
+		}
+	}
+}
+
 void FoliageSpawner3D::_clear_gpu_instances() {
 	// Released first, and so queued first: its uniform sets reference the
 	// MultiMeshes' buffers, which must not be freed before them.
@@ -520,9 +565,11 @@ void FoliageSpawner3D::_dispatch_gpu_culling() {
 		return;
 	}
 
-	Viewport *viewport = get_viewport();
-	Camera3D *camera = viewport != nullptr ? viewport->get_camera_3d() : nullptr;
+	Camera3D *camera = FoliageGPUCuller::resolve_culling_camera(this, gpu_culling_camera);
 	if (camera == nullptr) {
+		// Better to draw everything than to have the foliage vanish because
+		// there is nothing to cull against.
+		gpu_culler.draw_without_culling();
 		return;
 	}
 
@@ -1221,23 +1268,7 @@ void FoliageSpawner3D::regenerate() {
 		gpu_transforms = transforms;
 		_rebuild_gpu_instances();
 	} else {
-		// Group instances by their chunking cell (see class comment) before
-		// building each cell's MultiMesh, instead of one MultiMesh for everything.
-		const float chunk_cell_size = MAX(cell_size, 0.01f);
-		HashMap<Vector2i, LocalVector<Transform3D>> cell_transforms;
-
-		for (uint32_t i = 0; i < transforms.size(); i++) {
-			const Vector3 &origin = transforms[i].origin;
-			const Vector2i cc(int(Math::floor(origin.x / chunk_cell_size)), int(Math::floor(origin.z / chunk_cell_size)));
-			cell_transforms[cc].push_back(transforms[i]);
-		}
-
-		for (KeyValue<Vector2i, LocalVector<Transform3D>> &kv : cell_transforms) {
-			FoliageCell &fc = _get_or_create_cell(kv.key);
-			for (const Ref<MultiMesh> &mm : fc.lod_multimeshes) {
-				_write_transforms(mm, kv.value);
-			}
-		}
+		_rebuild_cells_from_transforms(transforms);
 	}
 
 	update_gizmos();
@@ -1252,15 +1283,22 @@ void FoliageSpawner3D::set_gpu_culling(bool p_enabled) {
 	}
 	gpu_culling = p_enabled;
 
-	// The two paths store their instances differently, so only the one being
-	// left is torn down; repopulating the other one is what Regenerate is for.
-	// The generated data itself is deliberately kept, since this may be called
-	// while a scene is still loading the rest of its properties.
+	// The two paths hold the same instances in different shapes - flat for the
+	// GPU, chunked into cells for the renderer - so toggling converts between
+	// them instead of throwing the generated foliage away and waiting for the
+	// next Regenerate.
 	if (gpu_culling) {
+		if (gpu_transforms.is_empty()) {
+			gpu_transforms = _gather_cell_transforms();
+		}
 		_clear_cells();
 		_rebuild_gpu_instances();
 	} else {
+		if (cells.is_empty() && !gpu_transforms.is_empty()) {
+			_rebuild_cells_from_transforms(gpu_transforms);
+		}
 		_clear_gpu_instances();
+		gpu_transforms.clear();
 	}
 
 	update_gizmos();

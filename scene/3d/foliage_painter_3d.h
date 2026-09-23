@@ -84,6 +84,7 @@ class FoliagePainter3D : public Node3D {
 	};
 	// Held by pointer: FoliageGPUCuller cannot be copied, and this vector grows.
 	LocalVector<GPULayer *> gpu_layers;
+	ObjectID gpu_culling_camera;
 
 	bool _is_gpu_culling_active() const;
 	void _clear_gpu_layers();

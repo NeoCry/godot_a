@@ -30,7 +30,12 @@
 
 #include "foliage_gpu_culler.h"
 
+#include "core/config/engine.h"
 #include "core/object/callable_mp.h"
+#include "scene/3d/camera_3d.h"
+#include "scene/main/scene_tree.h"
+#include "scene/main/viewport.h"
+#include "scene/main/window.h"
 #include "servers/rendering/rendering_server.h"
 
 #ifdef RD_ENABLED
@@ -501,6 +506,62 @@ void FoliageGPUCuller::update_instances(const LocalVector<Transform3D> &p_transf
 
 	RenderingServer::get_singleton()->call_on_render_thread(
 			callable_mp(resources.ptr(), &FoliageCullResources::rt_setup).bind(transform_data, multimeshes, level_params, surface_counts));
+}
+
+namespace {
+
+Camera3D *find_camera_for_world(Node *p_node, const Ref<World3D> &p_world, const Viewport *p_exclude) {
+	Viewport *viewport = Object::cast_to<Viewport>(p_node);
+	if (viewport != nullptr && viewport != p_exclude && viewport->find_world_3d() == p_world) {
+		Camera3D *camera = viewport->get_camera_3d();
+		if (camera != nullptr) {
+			return camera;
+		}
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		Camera3D *camera = find_camera_for_world(p_node->get_child(i), p_world, p_exclude);
+		if (camera != nullptr) {
+			return camera;
+		}
+	}
+	return nullptr;
+}
+
+} // namespace
+
+Camera3D *FoliageGPUCuller::resolve_culling_camera(const Node3D *p_node, ObjectID &r_cached_camera) {
+	ERR_FAIL_NULL_V(p_node, nullptr);
+	if (!p_node->is_inside_tree()) {
+		return nullptr;
+	}
+
+	Viewport *own_viewport = p_node->get_viewport();
+
+	if (!Engine::get_singleton()->is_editor_hint()) {
+		return own_viewport != nullptr ? own_viewport->get_camera_3d() : nullptr;
+	}
+
+	Camera3D *cached = Object::cast_to<Camera3D>(ObjectDB::get_instance(r_cached_camera));
+	if (cached != nullptr && cached->is_inside_tree()) {
+		return cached;
+	}
+
+	// The node's own viewport is skipped so that a game camera sitting in the
+	// edited scene does not win over the editor viewport actually being
+	// looked through. Several editor viewports can match in a split layout;
+	// the first one found is used.
+	Camera3D *found = find_camera_for_world(p_node->get_tree()->get_root(), p_node->get_world_3d(), own_viewport);
+	r_cached_camera = found != nullptr ? found->get_instance_id() : ObjectID();
+	return found;
+}
+
+void FoliageGPUCuller::draw_without_culling() {
+	// Six degenerate planes: dot(0, origin) - 0 > radius is never true, so the
+	// frustum test keeps everything. The LOD bands still apply, measured from
+	// the node's own origin.
+	Vector<Plane> planes;
+	planes.resize(6);
+	cull(planes, Vector3());
 }
 
 void FoliageGPUCuller::cull(const Vector<Plane> &p_frustum_planes, const Vector3 &p_camera_position) {

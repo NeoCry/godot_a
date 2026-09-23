@@ -683,9 +683,15 @@ void FoliagePainter3D::_dispatch_gpu_culling() {
 		}
 	}
 
-	Viewport *viewport = get_viewport();
-	Camera3D *camera = viewport != nullptr ? viewport->get_camera_3d() : nullptr;
+	Camera3D *camera = FoliageGPUCuller::resolve_culling_camera(this, gpu_culling_camera);
 	if (camera == nullptr) {
+		// Better to draw everything than to have the foliage vanish because
+		// there is nothing to cull against.
+		for (GPULayer *gpu_layer : gpu_layers) {
+			if (gpu_layer != nullptr && gpu_layer->culler != nullptr) {
+				gpu_layer->culler->draw_without_culling();
+			}
+		}
 		return;
 	}
 

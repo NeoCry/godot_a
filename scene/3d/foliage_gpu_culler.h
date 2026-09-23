@@ -35,6 +35,9 @@
 #include "core/object/ref_counted.h"
 #include "core/templates/local_vector.h"
 
+class Camera3D;
+class Node3D;
+
 // Every RenderingDevice object the culling passes need. Split out of
 // FoliageGPUCuller so that its fields are only ever touched on the rendering
 // thread: the main thread creates one of these, hands it to queued calls, and
@@ -107,6 +110,23 @@ public:
 	// True if this build can run the GPU path at all (RenderingDevice backends
 	// only; the GL Compatibility renderer cannot draw indirect MultiMeshes).
 	static bool is_supported();
+
+	// The camera this node's foliage should be culled against.
+	//
+	// At runtime that is simply the camera of the viewport the node lives in.
+	// In the editor it is not: the edited scene is drawn by the 3D editor's own
+	// viewports, which belong to the editor's UI rather than to the scene, so
+	// the node's viewport would hand back the scene's game camera (culling
+	// against a view nobody is looking through) or nothing at all (culling
+	// everything away). So the editor case looks for a viewport that draws the
+	// same world instead. r_cached_camera carries the result between frames, to
+	// keep that search off the per-frame path.
+	static Camera3D *resolve_culling_camera(const Node3D *p_node, ObjectID &r_cached_camera);
+
+	// Queues a frame that culls nothing, so that a missing camera leaves the
+	// foliage visible rather than making all of it vanish. Instances still go
+	// through their LOD bands, measured from the node's own origin.
+	void draw_without_culling();
 
 	// Uploads the instance transforms and (re)builds the per-level resources.
 	// Safe to call whenever the instances or the LOD chain change.
