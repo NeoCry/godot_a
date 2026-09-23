@@ -191,6 +191,12 @@ public:
 			int level = 0; // Index into `mipmaps`; 0 is the finest (leaf) level.
 			uint32_t cell_cursor = 0; // Cells of `level` already dispatched this pass.
 			bool writing = false; // false = lighting/mipmap phase, true = texture blit phase.
+			// A light moved while a chain was already running. Abandoning the chain to start
+			// over would mean that a light being dragged -- which reports a change every
+			// frame -- restarts it every frame and it never reaches the blit, so the probe
+			// would keep showing stale lighting for as long as the drag lasts. Queue the
+			// restart for when the chain in flight has finished instead.
+			bool restart_pending = false;
 		};
 		Relight relight;
 

@@ -3067,16 +3067,21 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 	if (!mipmaps.size()) {
 		// Nothing baked to relight; drop any cursor left from a previous set of resources.
 		relight.active = false;
+		relight.restart_pending = false;
 	} else if (p_update_light_instances) {
-		// Lights changed: (re)start the chain at the leaf level of the first bounce. This
-		// also abandons a relight that was still in flight, which is what we want, since its
-		// partial result was computed against the old lights.
-		relight.active = true;
-		relight.pass = 0;
-		relight.total_passes = gi->voxel_gi_is_using_two_bounces(probe) ? 2 : 1;
-		relight.level = 0;
-		relight.cell_cursor = 0;
-		relight.writing = false;
+		if (relight.active) {
+			// Let the chain in flight finish first, then start over from the leaves. See
+			// Relight::restart_pending.
+			relight.restart_pending = true;
+		} else {
+			// Lights changed and nothing is running: start at the leaf level of the first bounce.
+			relight.active = true;
+			relight.pass = 0;
+			relight.total_passes = gi->voxel_gi_is_using_two_bounces(probe) ? 2 : 1;
+			relight.level = 0;
+			relight.cell_cursor = 0;
+			relight.writing = false;
+		}
 	} else if (!relight.active && has_dynamic) {
 		// The lighting in `outputs` is still valid, but the texture was cleared above for the
 		// dynamic objects, so it has to be blitted again. Run the write phase only.
@@ -3257,7 +3262,22 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 			bool first_step = true;
 			bool prev_writing = false;
 
-			while (relight.active && cells_left > 0) {
+			while (relight.active) {
+				// Only the first bounce's lighting and mipmap steps are spread over frames.
+				// From its blit onwards the rest of the chain runs to the end in this frame,
+				// because everything past that point is visible in the texture and only the
+				// end of the chain is a state worth showing: a half-written mip chain has
+				// some levels at the new lighting and the rest at the old, which reads as a
+				// brightness step wherever a cone crosses the split, and with two bounces the
+				// texture between the two blits holds direct light only, which is visibly
+				// dimmer than the finished result. Both showed up as the probe flashing while
+				// a light moved. The blit itself is one store per cell with no tracing, so the
+				// cost that actually lands in this frame is the second bounce.
+				const bool budgeted = relight.pass == 0 && !relight.writing;
+				if (budgeted && cells_left <= 0) {
+					break;
+				}
+
 				const Mipmap &mm = mipmaps[relight.level];
 
 				// Two consecutive blit steps write disjoint mip slices from disjoint cells, so
@@ -3287,11 +3307,14 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mm.uniform_set, 0);
 				}
 
-				const uint32_t chunk = MIN((uint64_t)cells_left, (uint64_t)(mm.cell_count - relight.cell_cursor));
+				const uint32_t remaining = mm.cell_count - relight.cell_cursor;
+				const uint32_t chunk = budgeted ? (uint32_t)MIN((uint64_t)cells_left, (uint64_t)remaining) : remaining;
 				if (chunk) {
 					dispatch_cells(mm.cell_offset + relight.cell_cursor, chunk);
 					relight.cell_cursor += chunk;
-					cells_left -= chunk;
+					if (budgeted) {
+						cells_left -= chunk;
+					}
 				}
 
 				if (relight.cell_cursor < mm.cell_count) {
@@ -3308,7 +3331,15 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 						relight.writing = false;
 						relight.pass++;
 						if (relight.pass >= relight.total_passes) {
-							relight.active = false;
+							if (relight.restart_pending) {
+								// Lights moved while this chain was running; go again from the
+								// leaves, now that the texture holds a complete result.
+								relight.restart_pending = false;
+								relight.pass = 0;
+								relight.total_passes = gi->voxel_gi_is_using_two_bounces(probe) ? 2 : 1;
+							} else {
+								relight.active = false;
+							}
 						}
 					} else {
 						relight.writing = true;

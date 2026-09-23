@@ -3764,7 +3764,7 @@ void RenderingServer::init() {
 	// bounded; the probe's texture keeps the previous lighting until the chain completes, so
 	// the visible effect is that indirect light catches up over a few frames instead of
 	// snapping. 0 relights the whole probe in one frame.
-	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/relight_cells_per_frame", PROPERTY_HINT_RANGE, "0,4194304,1"), 262144);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/relight_cells_per_frame", PROPERTY_HINT_RANGE, "0,4194304,1"), 0);
 
 	GLOBAL_DEF_RST("rendering/shading/overrides/force_vertex_shading", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley", false);
