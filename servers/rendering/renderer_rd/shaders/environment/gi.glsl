@@ -92,7 +92,7 @@ struct VoxelGIData {
 
 	uint mipmaps; // 4 - 100
 	float anisotropic_strength; // 4 - 104
-	float pad; // 4 - 108
+	float reflection_filter; // 4 - 108
 	float exposure_normalization; // 4 - 112
 };
 
@@ -556,8 +556,14 @@ vec4 sample_voxel(texture3D probe, uint index, float p_aniso_strength, vec3 uvw_
 	return mix(iso_color, aniso_color, p_aniso_strength);
 }
 
-//standard voxel cone trace
-vec4 voxel_cone_trace(texture3D probe, uint index, float p_aniso_strength, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float max_distance, float p_bias) {
+// Standard voxel cone trace. `p_step_scale` shortens the march's step as a fraction of the
+// cone radius, which is the step the cone is sampled at. At 1.0 a step equals the radius,
+// so the cone is sampled barely twice per footprint: that is enough for the diffuse cones,
+// which are wide and average many voxels anyway, but on a near-mirror reflection cone the
+// steps keep landing on voxel boundaries at a consistent phase and draw a diagonal
+// herringbone across the reflection. Smaller values sample the same cone more finely, so
+// each sample's contribution is scaled to match and the accumulated result stays put.
+vec4 voxel_cone_trace(texture3D probe, uint index, float p_aniso_strength, vec3 cell_size, vec3 pos, vec3 direction, float tan_half_angle, float p_step_scale, float max_distance, float p_bias) {
 	float dist = p_bias;
 	vec4 color = vec4(0.0);
 
@@ -572,8 +578,8 @@ vec4 voxel_cone_trace(texture3D probe, uint index, float p_aniso_strength, vec3 
 		float lod = log2(diameter);
 		vec4 scolor = sample_voxel(probe, index, p_aniso_strength, uvw_pos, direction, lod);
 		float a = (1.0 - color.a);
-		color += a * scolor;
-		dist += half_diameter;
+		color += a * scolor * p_step_scale;
+		dist += half_diameter * p_step_scale;
 	}
 
 	return color;
@@ -646,7 +652,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 
 		for (uint i = 0; i < cone_dir_count; i++) {
 			vec3 dir = normalize(dir_xform * cone_dirs[i]);
-			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], index, aniso_strength, cell_size, position, dir, cone_angle_tan, max_distance, voxel_gi_instances.data[index].bias);
+			light += cone_weights[i] * voxel_cone_trace(voxel_gi_textures[index], index, aniso_strength, cell_size, position, dir, cone_angle_tan, 1.0, max_distance, voxel_gi_instances.data[index].bias);
 		}
 	} else {
 		const uint cone_dir_count = 4;
@@ -671,7 +677,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_diff += light * blend;
 
 	//radiance
-	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], index, aniso_strength, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), max_distance, voxel_gi_instances.data[index].reflection_bias);
+	vec4 irr_light = voxel_cone_trace(voxel_gi_textures[index], index, aniso_strength, cell_size, position, ref_vec, tan(roughness * 0.5 * M_PI * 0.99), 1.0 / (1.0 + voxel_gi_instances.data[index].reflection_filter), max_distance, voxel_gi_instances.data[index].reflection_bias);
 	irr_light.rgb *= voxel_gi_instances.data[index].dynamic_range * voxel_gi_instances.data[index].exposure_normalization;
 	if (!voxel_gi_instances.data[index].blend_ambient) {
 		irr_light.a = 1.0;

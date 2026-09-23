@@ -90,6 +90,10 @@
 		<member name="reflection_bias" type="float" setter="set_reflection_bias" getter="get_reflection_bias" default="1.5">
 			The normal bias to use for reflections. Higher values reduce self-reflections visible in non-rough materials, at the cost of more visible light leaking and flatter-looking reflections. Since reflections are most noticeable on smooth surfaces, this can usually be set lower than [member bias] to get sharper contact reflections while keeping diffuse lighting free of leaks.
 		</member>
+		<member name="reflection_filter" type="float" setter="set_reflection_filter" getter="get_reflection_filter" default="1.0">
+			How finely the reflection cone is sampled along its length, as the number of extra samples taken per step of the cone's own radius. At [code]0.0[/code] the cone takes one sample per radius. That is enough for the wide cones indirect diffuse light uses, but a reflection cone on a smooth material is barely wider than a voxel, so its steps keep meeting voxel boundaries at the same phase and draw a diagonal herringbone across the reflection. Higher values sample the same cone more finely and remove that pattern: [code]1.0[/code] takes twice as many samples, [code]4.0[/code] five times as many.
+			The cost is paid by the reflection cone alone, not by the diffuse ones, so it is a fraction of what a [member VoxelGI.voxel_size] change would cost. Sampling more finely also settles the reflection at a slightly darker, more accurate value, because a coarse step overshoots on the one that saturates the cone.
+		</member>
 		<member name="use_two_bounces" type="bool" setter="set_use_two_bounces" getter="is_using_two_bounces" default="true">
 			If [code]true[/code], performs two bounces of indirect lighting instead of one. This makes indirect lighting look more natural and brighter at a small performance cost. The second bounce is also visible in reflections. If the scene appears too bright after enabling [member use_two_bounces], adjust [member propagation] and [member energy].
 		</member>

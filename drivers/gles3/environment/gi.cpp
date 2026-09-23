@@ -153,6 +153,13 @@ float GI::voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const {
 	return 0.0;
 }
 
+void GI::voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) {
+}
+
+float GI::voxel_gi_get_reflection_filter(RID p_voxel_gi) const {
+	return 0.0;
+}
+
 uint32_t GI::voxel_gi_get_version(RID p_voxel_gi) const {
 	return 0;
 }

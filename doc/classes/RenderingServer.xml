@@ -4759,6 +4759,14 @@
 				Sets the [member VoxelGIData.reflection_bias] value to use on the specified [param voxel_gi]'s [RID].
 			</description>
 		</method>
+		<method name="voxel_gi_set_reflection_filter">
+			<return type="void" />
+			<param index="0" name="voxel_gi" type="RID" />
+			<param index="1" name="filter" type="float" />
+			<description>
+				Sets the [member VoxelGIData.reflection_filter] value to use on the specified [param voxel_gi]'s [RID].
+			</description>
+		</method>
 		<method name="voxel_gi_set_use_two_bounces">
 			<return type="void" />
 			<param index="0" name="voxel_gi" type="RID" />

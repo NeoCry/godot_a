@@ -173,6 +173,15 @@ float VoxelGIData::get_reflection_bias() const {
 	return reflection_bias;
 }
 
+void VoxelGIData::set_reflection_filter(float p_filter) {
+	RS::get_singleton()->voxel_gi_set_reflection_filter(probe, p_filter);
+	reflection_filter = p_filter;
+}
+
+float VoxelGIData::get_reflection_filter() const {
+	return reflection_filter;
+}
+
 void VoxelGIData::set_normal_bias(float p_normal_bias) {
 	RS::get_singleton()->voxel_gi_set_normal_bias(probe, p_normal_bias);
 	normal_bias = p_normal_bias;
@@ -235,6 +244,9 @@ void VoxelGIData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_reflection_bias", "bias"), &VoxelGIData::set_reflection_bias);
 	ClassDB::bind_method(D_METHOD("get_reflection_bias"), &VoxelGIData::get_reflection_bias);
 
+	ClassDB::bind_method(D_METHOD("set_reflection_filter", "filter"), &VoxelGIData::set_reflection_filter);
+	ClassDB::bind_method(D_METHOD("get_reflection_filter"), &VoxelGIData::get_reflection_filter);
+
 	ClassDB::bind_method(D_METHOD("set_normal_bias", "bias"), &VoxelGIData::set_normal_bias);
 	ClassDB::bind_method(D_METHOD("get_normal_bias"), &VoxelGIData::get_normal_bias);
 
@@ -259,6 +271,7 @@ void VoxelGIData::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "energy", PROPERTY_HINT_RANGE, "0,64,0.01"), "set_energy", "get_energy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bias", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_bias", "get_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reflection_bias", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_reflection_bias", "get_reflection_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reflection_filter", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_reflection_filter", "get_reflection_filter");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "normal_bias", PROPERTY_HINT_RANGE, "0,8,0.01"), "set_normal_bias", "get_normal_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "propagation", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_propagation", "get_propagation");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_two_bounces"), "set_use_two_bounces", "is_using_two_bounces");

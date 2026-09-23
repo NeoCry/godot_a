@@ -114,6 +114,7 @@ public:
 		float normal_bias = 0.0;
 		float propagation = 0.5;
 		float anisotropic_strength = 0.0;
+		float reflection_filter = 1.0;
 		bool interior = false;
 		bool use_two_bounces = true;
 
@@ -622,6 +623,8 @@ public:
 
 	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) override;
 	virtual float voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const override;
+	virtual void voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) override;
+	virtual float voxel_gi_get_reflection_filter(RID p_voxel_gi) const override;
 
 	virtual uint32_t voxel_gi_get_version(RID p_probe) const override;
 	uint32_t voxel_gi_get_data_version(RID p_probe);
@@ -876,7 +879,7 @@ public:
 
 		uint32_t mipmaps; // 4 - 100
 		float anisotropic_strength; // 4 - 104
-		float pad; // 4 - 108
+		float reflection_filter; // 4 - 108
 		float exposure_normalization; // 4 - 112
 	};
 

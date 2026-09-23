@@ -419,6 +419,7 @@ public:
 	virtual void voxel_gi_set_interior(RID p_voxel_gi, bool p_enable) = 0;
 	virtual void voxel_gi_set_use_two_bounces(RID p_voxel_gi, bool p_enable) = 0;
 	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) = 0;
+	virtual void voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) = 0;
 
 	virtual void voxel_gi_set_quality(RSE::VoxelGIQuality) = 0;
 

@@ -2700,6 +2700,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_interior", "voxel_gi", "enable"), &RenderingServer::voxel_gi_set_interior);
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_use_two_bounces", "voxel_gi", "enable"), &RenderingServer::voxel_gi_set_use_two_bounces);
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_anisotropic_strength", "voxel_gi", "strength"), &RenderingServer::voxel_gi_set_anisotropic_strength);
+	ClassDB::bind_method(D_METHOD("voxel_gi_set_reflection_filter", "voxel_gi", "filter"), &RenderingServer::voxel_gi_set_reflection_filter);
 
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_quality", "quality"), &RenderingServer::voxel_gi_set_quality);
 

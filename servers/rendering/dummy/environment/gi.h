@@ -85,6 +85,8 @@ public:
 
 	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) override {}
 	virtual float voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const override { return 0.0; }
+	virtual void voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) override {}
+	virtual float voxel_gi_get_reflection_filter(RID p_voxel_gi) const override { return 0.0; }
 
 	virtual uint32_t voxel_gi_get_version(RID p_voxel_gi) const override { return 0; }
 

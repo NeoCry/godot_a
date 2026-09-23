@@ -51,6 +51,7 @@ class VoxelGIData : public Resource {
 	float energy = 1.0;
 	float bias = 1.5;
 	float reflection_bias = 1.5;
+	float reflection_filter = 1.0;
 	float normal_bias = 0.0;
 	float propagation = 0.5;
 	float anisotropic_strength = 0.0;
@@ -84,6 +85,9 @@ public:
 
 	void set_reflection_bias(float p_bias);
 	float get_reflection_bias() const;
+
+	void set_reflection_filter(float p_filter);
+	float get_reflection_filter() const;
 
 	void set_normal_bias(float p_normal_bias);
 	float get_normal_bias() const;

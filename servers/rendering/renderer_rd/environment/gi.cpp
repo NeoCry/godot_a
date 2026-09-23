@@ -392,6 +392,19 @@ float GI::voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const {
 	return voxel_gi->anisotropic_strength;
 }
 
+void GI::voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL(voxel_gi);
+
+	voxel_gi->reflection_filter = CLAMP(p_filter, 0.0f, 8.0f);
+}
+
+float GI::voxel_gi_get_reflection_filter(RID p_voxel_gi) const {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL_V(voxel_gi, 0);
+	return voxel_gi->reflection_filter;
+}
+
 uint32_t GI::voxel_gi_get_version(RID p_voxel_gi) const {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
 	ERR_FAIL_NULL_V(voxel_gi, 0);
@@ -4099,6 +4112,7 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 				gipd.blend_ambient = !voxel_gi_is_interior(base_probe);
 				gipd.mipmaps = gipi->mipmaps.size();
 				gipd.anisotropic_strength = voxel_gi_get_anisotropic_strength(base_probe);
+				gipd.reflection_filter = voxel_gi_get_reflection_filter(base_probe);
 				gipd.exposure_normalization = 1.0;
 				if (p_render_data->camera_attributes.is_valid()) {
 					float exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);

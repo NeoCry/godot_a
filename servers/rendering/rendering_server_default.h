@@ -615,6 +615,7 @@ public:
 	FUNC2(voxel_gi_set_interior, RID, bool)
 	FUNC2(voxel_gi_set_use_two_bounces, RID, bool)
 	FUNC2(voxel_gi_set_anisotropic_strength, RID, float)
+	FUNC2(voxel_gi_set_reflection_filter, RID, float)
 
 	FUNC0(sdfgi_reset)
 
