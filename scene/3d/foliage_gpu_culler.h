@@ -119,7 +119,14 @@ public:
 	// Drops every GPU resource. Called automatically on destruction.
 	void release();
 
+	FoliageGPUCuller() = default;
 	~FoliageGPUCuller();
+
+	// Two cullers sharing one set of resources would both queue a free of it,
+	// so copying is off: hold them by value or by pointer, never in a container
+	// that reseats its elements.
+	FoliageGPUCuller(const FoliageGPUCuller &) = delete;
+	FoliageGPUCuller &operator=(const FoliageGPUCuller &) = delete;
 
 private:
 	Ref<FoliageCullResources> resources;

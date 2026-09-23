@@ -32,6 +32,7 @@
 
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
+#include "scene/3d/foliage_gpu_culler.h"
 #include "scene/3d/foliage_layer.h"
 #include "scene/3d/node_3d.h"
 
@@ -65,6 +66,30 @@ class FoliagePainter3D : public Node3D {
 
 	// One cell map per layer (indexed the same as `layers`).
 	LocalVector<HashMap<Vector2i, FoliageCell>> layer_cells;
+
+	// GPU-driven culling. Cells stay the source of truth either way - the brush
+	// and undo/redo work on them, and they are what gets saved - but while this
+	// is on they hold a single MultiMesh each and render nothing. Rendering
+	// moves to one indirect MultiMesh per LOD level per layer, fed by a flat
+	// copy of that layer's instances and culled per instance on the GPU.
+	bool gpu_culling = false;
+
+	struct GPULayer {
+		LocalVector<Ref<MultiMesh>> lod_multimeshes;
+		LocalVector<MultiMeshInstance3D *> lod_nodes;
+		FoliageGPUCuller *culler = nullptr;
+		// Set when the layer's instances change, so that a whole brush stroke
+		// costs one buffer rebuild per frame instead of one per stamp.
+		bool dirty = true;
+	};
+	// Held by pointer: FoliageGPUCuller cannot be copied, and this vector grows.
+	LocalVector<GPULayer *> gpu_layers;
+
+	bool _is_gpu_culling_active() const;
+	void _clear_gpu_layers();
+	void _rebuild_gpu_layer(int p_layer);
+	void _mark_gpu_layer_dirty(int p_layer);
+	void _dispatch_gpu_culling();
 
 	void _ensure_layer_cells_size();
 	FoliageCell &_get_or_create_cell(int p_layer, const Vector2i &p_cell);
@@ -106,6 +131,9 @@ public:
 	void set_debug_show_cells(bool p_enabled);
 	bool is_debug_show_cells_enabled() const;
 
+	void set_gpu_culling(bool p_enabled);
+	bool is_gpu_culling_enabled() const;
+
 	int get_layer_count() const;
 	Ref<FoliageLayer> get_layer(int p_index) const;
 
@@ -129,4 +157,5 @@ public:
 	PackedStringArray get_configuration_warnings() const override;
 
 	FoliagePainter3D();
+	~FoliagePainter3D();
 };

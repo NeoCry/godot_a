@@ -33,7 +33,9 @@
 #include "core/core_string_names.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/3d/multimesh_instance_3d.h"
+#include "scene/main/viewport.h"
 #include "scene/resources/multimesh.h"
 
 void FoliagePainter3D::_bind_methods() {
@@ -46,6 +48,9 @@ void FoliagePainter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_debug_show_cells", "enabled"), &FoliagePainter3D::set_debug_show_cells);
 	ClassDB::bind_method(D_METHOD("is_debug_show_cells_enabled"), &FoliagePainter3D::is_debug_show_cells_enabled);
 
+	ClassDB::bind_method(D_METHOD("set_gpu_culling", "enabled"), &FoliagePainter3D::set_gpu_culling);
+	ClassDB::bind_method(D_METHOD("is_gpu_culling_enabled"), &FoliagePainter3D::is_gpu_culling_enabled);
+
 	ClassDB::bind_method(D_METHOD("get_layer_count"), &FoliagePainter3D::get_layer_count);
 	ClassDB::bind_method(D_METHOD("get_layer", "layer_index"), &FoliagePainter3D::get_layer);
 
@@ -57,6 +62,7 @@ void FoliagePainter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_set_cell_data", "data"), &FoliagePainter3D::_set_cell_data);
 
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("FoliageLayer")), "set_layers", "get_layers");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_culling"), "set_gpu_culling", "is_gpu_culling_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_size", PROPERTY_HINT_RANGE, "1,256,0.5,or_greater,suffix:m"), "set_cell_size", "get_cell_size");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "_cell_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_cell_data", "_get_cell_data");
 
@@ -74,6 +80,14 @@ void FoliagePainter3D::_notification(int p_what) {
 					_sync_cell_lods((int)li, kv.value);
 				}
 			}
+			// Same for the GPU path's nodes, which are not saved either.
+			for (int i = 0; i < layers.size(); i++) {
+				_mark_gpu_layer_dirty(i);
+			}
+		} break;
+
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			_dispatch_gpu_culling();
 		} break;
 	}
 }
@@ -130,7 +144,10 @@ void FoliagePainter3D::_sync_cell_lods(int p_layer, FoliageCell &p_cell) {
 	}
 
 	const TypedArray<FoliageLODLevel> lod_levels = layer->get_lod_levels();
-	const int lod_count = lod_levels.size();
+	// Under GPU culling a cell is storage only: one MultiMesh holds the
+	// instances (the same one every other LOD level would have copied anyway)
+	// and nothing here is rendered, so the per-level copies are not needed.
+	const int lod_count = _is_gpu_culling_active() ? MIN(1, lod_levels.size()) : lod_levels.size();
 
 	// Shrink extra LOD multimeshes/nodes if the layer now has fewer LOD
 	// levels than this cell was last synced with.
@@ -156,6 +173,29 @@ void FoliagePainter3D::_sync_cell_lods(int p_layer, FoliageCell &p_cell) {
 		mm->set_transform_format(MultiMesh::TRANSFORM_3D);
 		_write_transforms(mm, existing_transforms);
 		p_cell.lod_multimeshes.push_back(mm);
+	}
+
+	if (_is_gpu_culling_active()) {
+		// Nothing is drawn straight from a cell here; the layer's indirect
+		// MultiMeshes are, so any node left over from the CPU path has to go.
+		while (!p_cell.lod_nodes.is_empty()) {
+			MultiMeshInstance3D *node = p_cell.lod_nodes[p_cell.lod_nodes.size() - 1];
+			if (node != nullptr) {
+				remove_child(node);
+				node->queue_free();
+			}
+			p_cell.lod_nodes.remove_at(p_cell.lod_nodes.size() - 1);
+		}
+
+		for (int i = 0; i < lod_count; i++) {
+			Ref<FoliageLODLevel> level = lod_levels[i];
+			Ref<MultiMesh> mm = p_cell.lod_multimeshes[i];
+			if (level.is_valid() && mm.is_valid()) {
+				// Still assigned so the MultiMesh can work out its own AABB.
+				mm->set_mesh(level->get_mesh());
+			}
+		}
+		return;
 	}
 
 	// Ensure every multimesh has a MultiMeshInstance3D to be rendered through.
@@ -216,11 +256,31 @@ void FoliagePainter3D::_prune_layers_to_size() {
 		}
 		layer_cells.remove_at(layer_cells.size() - 1);
 	}
+
+	while ((int)gpu_layers.size() > layers.size()) {
+		GPULayer *gpu_layer = gpu_layers[gpu_layers.size() - 1];
+		if (gpu_layer != nullptr) {
+			if (gpu_layer->culler != nullptr) {
+				memdelete(gpu_layer->culler);
+			}
+			for (MultiMeshInstance3D *node : gpu_layer->lod_nodes) {
+				if (node != nullptr) {
+					remove_child(node);
+					node->queue_free();
+				}
+			}
+			memdelete(gpu_layer);
+		}
+		gpu_layers.remove_at(gpu_layers.size() - 1);
+	}
 }
 
 void FoliagePainter3D::_on_layer_changed(int p_index) {
 	if (p_index >= 0 && p_index < layers.size()) {
 		_sync_layer_cells(p_index);
+		// A level's mesh or range moves the GPU path's band boundaries and
+		// bounding radii, both of which are baked into the culler's setup.
+		_mark_gpu_layer_dirty(p_index);
 		// A layer's own properties (e.g. its mesh) changing can affect the
 		// warnings shown for this node (e.g. "Layer N has no Mesh assigned"),
 		// which would otherwise stay stale until something else refreshed them.
@@ -273,6 +333,7 @@ void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
 	_prune_layers_to_size();
 	for (int i = 0; i < layers.size(); i++) {
 		_sync_layer_cells(i);
+		_mark_gpu_layer_dirty(i);
 		_refresh_layer_instance_count(i);
 	}
 	update_configuration_warnings();
@@ -325,6 +386,7 @@ void FoliagePainter3D::insert_instance(int p_layer, const Vector2i &p_cell, int 
 		_write_transforms(mm, transforms);
 	}
 
+	_mark_gpu_layer_dirty(p_layer);
 	_refresh_layer_instance_count(p_layer);
 	update_gizmos();
 }
@@ -357,6 +419,7 @@ void FoliagePainter3D::remove_instance(int p_layer, const Vector2i &p_cell, int 
 		layer_cells[p_layer].erase(p_cell);
 	}
 
+	_mark_gpu_layer_dirty(p_layer);
 	_refresh_layer_instance_count(p_layer);
 	update_gizmos();
 }
@@ -436,6 +499,239 @@ AABB FoliagePainter3D::get_cell_aabb(int p_layer, const Vector2i &p_cell) const 
 	return result;
 }
 
+bool FoliagePainter3D::_is_gpu_culling_active() const {
+	return gpu_culling && FoliageGPUCuller::is_supported();
+}
+
+void FoliagePainter3D::_clear_gpu_layers() {
+	for (GPULayer *gpu_layer : gpu_layers) {
+		if (gpu_layer == nullptr) {
+			continue;
+		}
+		// Released before the MultiMeshes it reads from, since its uniform sets
+		// reference their buffers.
+		if (gpu_layer->culler != nullptr) {
+			memdelete(gpu_layer->culler);
+		}
+		for (MultiMeshInstance3D *node : gpu_layer->lod_nodes) {
+			if (node != nullptr) {
+				remove_child(node);
+				node->queue_free();
+			}
+		}
+		memdelete(gpu_layer);
+	}
+	gpu_layers.clear();
+	set_process_internal(false);
+}
+
+void FoliagePainter3D::_mark_gpu_layer_dirty(int p_layer) {
+	if (!_is_gpu_culling_active() || p_layer < 0 || p_layer >= layers.size()) {
+		return;
+	}
+	while ((int)gpu_layers.size() <= p_layer) {
+		gpu_layers.push_back(memnew(GPULayer));
+	}
+	gpu_layers[p_layer]->dirty = true;
+	// The rebuild itself happens in internal process, which has to be running
+	// for it (and the per-frame cull dispatch) to ever get there.
+	set_process_internal(true);
+}
+
+void FoliagePainter3D::_rebuild_gpu_layer(int p_layer) {
+	if (!_is_gpu_culling_active() || p_layer < 0 || p_layer >= layers.size()) {
+		return;
+	}
+
+	while ((int)gpu_layers.size() <= p_layer) {
+		gpu_layers.push_back(memnew(GPULayer));
+	}
+
+	GPULayer *gpu_layer = gpu_layers[p_layer];
+	gpu_layer->dirty = false;
+
+	// Torn down before the MultiMeshes below are replaced, since the culler's
+	// uniform sets reference their buffers.
+	if (gpu_layer->culler != nullptr) {
+		memdelete(gpu_layer->culler);
+		gpu_layer->culler = nullptr;
+	}
+	for (MultiMeshInstance3D *node : gpu_layer->lod_nodes) {
+		if (node != nullptr) {
+			remove_child(node);
+			node->queue_free();
+		}
+	}
+	gpu_layer->lod_nodes.clear();
+	gpu_layer->lod_multimeshes.clear();
+
+	Ref<FoliageLayer> layer = layers[p_layer];
+	if (layer.is_null()) {
+		return;
+	}
+
+	// Every instance of this layer, gathered out of its cells into the flat
+	// array the compute pass reads.
+	LocalVector<Transform3D> transforms;
+	AABB bounds;
+	bool first = true;
+	if (p_layer < (int)layer_cells.size()) {
+		for (const KeyValue<Vector2i, FoliageCell> &kv : layer_cells[p_layer]) {
+			if (kv.value.lod_multimeshes.is_empty() || kv.value.lod_multimeshes[0].is_null()) {
+				continue;
+			}
+			const LocalVector<Transform3D> cell_transforms = _read_transforms(kv.value.lod_multimeshes[0]);
+			for (const Transform3D &t : cell_transforms) {
+				if (first) {
+					bounds = AABB(t.origin, Vector3());
+					first = false;
+				} else {
+					bounds.expand_to(t.origin);
+				}
+				transforms.push_back(t);
+			}
+		}
+	}
+
+	if (transforms.is_empty()) {
+		return;
+	}
+
+	const TypedArray<FoliageLODLevel> lod_levels = layer->get_lod_levels();
+	const int lod_count = MIN(lod_levels.size(), FoliageGPUCuller::MAX_LOD_LEVELS);
+
+	LocalVector<FoliageGPUCuller::LODLevel> culler_levels;
+	float previous_range_end = 0.0f;
+
+	for (int i = 0; i < lod_count; i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		if (level.is_null() || level->get_mesh().is_null()) {
+			continue;
+		}
+
+		const AABB mesh_aabb = level->get_mesh()->get_aabb();
+		// Distance from the instance origin to the farthest corner of the mesh,
+		// since a mesh is rarely centered on its origin.
+		const Vector3 farthest(
+				MAX(Math::abs(mesh_aabb.position.x), Math::abs(mesh_aabb.position.x + mesh_aabb.size.x)),
+				MAX(Math::abs(mesh_aabb.position.y), Math::abs(mesh_aabb.position.y + mesh_aabb.size.y)),
+				MAX(Math::abs(mesh_aabb.position.z), Math::abs(mesh_aabb.position.z + mesh_aabb.size.z)));
+		const float instance_radius = farthest.length();
+
+		Ref<MultiMesh> mm;
+		mm.instantiate();
+		// Order matters: the indirect flag has to be set before the buffers are
+		// allocated, and the mesh after, since that is what builds the draw
+		// command buffer the compute pass writes into.
+		mm->set_use_indirect(true);
+		mm->set_transform_format(MultiMesh::TRANSFORM_3D);
+		mm->set_instance_count((int)transforms.size());
+		mm->set_mesh(level->get_mesh());
+		// How many instances survive culling is only known on the GPU, so the
+		// bounds are stated up front: every instance origin, plus its reach.
+		mm->set_custom_aabb(bounds.grow(instance_radius * MAX(1.0f, layer->get_max_scale())));
+
+		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
+		node->set_multimesh(mm);
+		node->set_material_override(level->get_material_override());
+		node->set_cast_shadows_setting(layer->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		node->set_ignore_screen_space_shadows(layer->is_ignoring_screen_space_shadows());
+		node->set_lod_bias(layer->get_lod_bias());
+		node->set_gi_mode(layer->get_gi_mode());
+		// No visibility range: one node covers every instance of the layer, so
+		// the distance banding is the compute pass's job instead.
+		add_child(node, false, INTERNAL_MODE_FRONT);
+
+		FoliageGPUCuller::LODLevel culler_level;
+		culler_level.multimesh = mm->get_rid();
+		// Bands are walked forward and clamped so that an instance lands in
+		// exactly one level: overlapping ranges would otherwise draw it twice,
+		// and the GPU path has no cross-fade to blend them with.
+		culler_level.range_begin = MAX(level->get_visibility_range_begin(), previous_range_end);
+		culler_level.range_end = level->get_visibility_range_end();
+		if (culler_level.range_end > 0.0f) {
+			culler_level.range_end = MAX(culler_level.range_end, culler_level.range_begin);
+			previous_range_end = culler_level.range_end;
+		}
+		culler_level.instance_radius = instance_radius;
+		culler_level.surface_count = MAX(1, level->get_mesh()->get_surface_count());
+
+		gpu_layer->lod_multimeshes.push_back(mm);
+		gpu_layer->lod_nodes.push_back(node);
+		culler_levels.push_back(culler_level);
+	}
+
+	if (culler_levels.is_empty()) {
+		return;
+	}
+
+	gpu_layer->culler = memnew(FoliageGPUCuller);
+	gpu_layer->culler->update_instances(transforms, culler_levels);
+	set_process_internal(true);
+}
+
+void FoliagePainter3D::_dispatch_gpu_culling() {
+	if (gpu_layers.is_empty() || !is_inside_tree()) {
+		return;
+	}
+
+	// Coalesced here rather than done per insert/remove, so a brush stroke that
+	// touches the same layer many times in one frame rebuilds its buffer once.
+	for (uint32_t i = 0; i < gpu_layers.size(); i++) {
+		if (gpu_layers[i] != nullptr && gpu_layers[i]->dirty) {
+			_rebuild_gpu_layer((int)i);
+		}
+	}
+
+	Viewport *viewport = get_viewport();
+	Camera3D *camera = viewport != nullptr ? viewport->get_camera_3d() : nullptr;
+	if (camera == nullptr) {
+		return;
+	}
+
+	// The compute pass works in the MultiMeshes' local space, which is this
+	// node's own space, so the frustum is brought over rather than every
+	// instance being transformed into world space.
+	const Transform3D to_local = get_global_transform().affine_inverse();
+
+	Vector<Plane> planes = camera->get_frustum();
+	for (int i = 0; i < planes.size(); i++) {
+		planes.write[i] = to_local.xform(planes[i]);
+	}
+	const Vector3 camera_position = to_local.xform(camera->get_global_position());
+
+	for (GPULayer *gpu_layer : gpu_layers) {
+		if (gpu_layer != nullptr && gpu_layer->culler != nullptr) {
+			gpu_layer->culler->cull(planes, camera_position);
+		}
+	}
+}
+
+void FoliagePainter3D::set_gpu_culling(bool p_enabled) {
+	if (gpu_culling == p_enabled) {
+		return;
+	}
+	gpu_culling = p_enabled;
+
+	// Cells are the source of truth either way, so nothing painted is lost;
+	// only what renders them changes. _sync_layer_cells drops the per-cell
+	// nodes (or brings them back), and the GPU layers are rebuilt from the
+	// cells that are already there.
+	_clear_gpu_layers();
+	for (int i = 0; i < layers.size(); i++) {
+		_sync_layer_cells(i);
+		_mark_gpu_layer_dirty(i);
+	}
+
+	update_gizmos();
+	update_configuration_warnings();
+	notify_property_list_changed();
+}
+
+bool FoliagePainter3D::is_gpu_culling_enabled() const {
+	return gpu_culling;
+}
+
 Array FoliagePainter3D::_get_cell_data() const {
 	Array result;
 	for (uint32_t li = 0; li < layer_cells.size(); li++) {
@@ -501,6 +797,7 @@ void FoliagePainter3D::_set_cell_data(const Array &p_data) {
 	}
 
 	for (int i = 0; i < layers.size(); i++) {
+		_mark_gpu_layer_dirty(i);
 		_refresh_layer_instance_count(i);
 	}
 	update_gizmos();
@@ -518,10 +815,29 @@ PackedStringArray FoliagePainter3D::get_configuration_warnings() const {
 		if (layer.is_valid() && !layer->has_any_mesh()) {
 			warnings.push_back(vformat(RTR("Layer %d (\"%s\") has no Mesh assigned on any of its LOD levels."), i, layer->get_layer_name()));
 		}
+		if (gpu_culling && layer.is_valid() && layer->get_lod_levels().size() > FoliageGPUCuller::MAX_LOD_LEVELS) {
+			warnings.push_back(vformat(RTR("GPU Culling only drives the first %d LOD levels of layer %d; the rest are not rendered."), FoliageGPUCuller::MAX_LOD_LEVELS, i));
+		}
+	}
+
+	if (gpu_culling && !FoliageGPUCuller::is_supported()) {
+		warnings.push_back(RTR("GPU Culling needs a RenderingDevice-based renderer (Forward+ or Mobile); the Compatibility renderer cannot draw indirect MultiMeshes. Falling back to cell chunking."));
 	}
 
 	return warnings;
 }
 
 FoliagePainter3D::FoliagePainter3D() {
+}
+
+FoliagePainter3D::~FoliagePainter3D() {
+	for (GPULayer *gpu_layer : gpu_layers) {
+		if (gpu_layer == nullptr) {
+			continue;
+		}
+		if (gpu_layer->culler != nullptr) {
+			memdelete(gpu_layer->culler);
+		}
+		memdelete(gpu_layer);
+	}
 }
