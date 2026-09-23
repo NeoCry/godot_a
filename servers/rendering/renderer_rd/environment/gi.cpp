@@ -4280,10 +4280,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	push_constant.max_voxel_gi_instances = MIN((uint64_t)MAX_VOXEL_GI_INSTANCES, p_voxel_gi_instances.size());
 	push_constant.high_quality_vct = voxel_gi_quality == RSE::VOXEL_GI_QUALITY_HIGH;
 	push_constant.temporal_enabled = use_temporal;
-	// Order the slots so consecutive frames refresh diagonally opposite pixels, which keeps a
-	// partially updated 2x2 block from reading as a horizontal or vertical stripe.
-	static const uint32_t slot_order[TEMPORAL_SLOT_COUNT] = { 0, 3, 1, 2 };
-	push_constant.trace_slot = slot_order[rbgi->history_frame % TEMPORAL_SLOT_COUNT];
+	push_constant.trace_slot = rbgi->history_frame % TEMPORAL_SLOT_COUNT;
 	push_constant.temporal_blend = temporal_blend;
 	push_constant.history_valid = history_valid;
 	push_constant.pad2 = 0;

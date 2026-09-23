@@ -937,13 +937,17 @@ public:
 
 	bool half_resolution = false;
 
-	// Temporal accumulation: each frame only traces the pixels of one checkerboard slot and
+	// Temporal accumulation: each frame only traces the pixels of one checkerboard phase and
 	// reprojects the previous frame's result for the rest, so the cone tracing cost is spread
 	// over TEMPORAL_SLOT_COUNT frames. Pixels whose history is missing or rejected are always
 	// traced, so the result is correct on disocclusion, just more expensive there.
-	enum { TEMPORAL_SLOT_COUNT = 4 };
+	//
+	// Two phases, not more: reuse chains, and each link resamples the value at a fractional
+	// offset, so the longer a value can go without being retraced the further a sharp feature
+	// creeps along the direction of travel. See the note beside the slot test in gi.glsl.
+	enum { TEMPORAL_SLOT_COUNT = 2 };
 	bool temporal_accumulation = true;
-	float temporal_blend = 0.5;
+	float temporal_blend = 1.0;
 
 	GiShaderRD shader;
 	RID shader_version;

@@ -3745,17 +3745,17 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/global_illumination/gi/use_half_resolution", false);
 
 	// Voxel cone tracing is the dominant cost of the GI pass and its result is
-	// deterministic, so instead of tracing every pixel every frame the pass traces one
-	// quarter of them in a 2x2 rotation and reprojects the previous frame for the rest.
-	// Pixels whose history is rejected -- a disocclusion, a screen edge, the first frame --
-	// are still traced, so this trades a few frames of latency on lighting changes for
-	// roughly a quarter of the tracing work. Not applied to multiview or VRS rendering.
+	// deterministic, so instead of tracing every pixel every frame the pass traces half of
+	// them in a checkerboard and reprojects the previous frame for the rest. Pixels whose
+	// history is rejected -- a disocclusion, a screen edge, the first frame -- are still
+	// traced, so this halves the tracing work for a frame of latency on lighting changes.
+	// Not applied to multiview or VRS rendering.
 	GLOBAL_DEF_RST("rendering/global_illumination/gi/use_temporal_accumulation", true);
 
-	// How much of a freshly traced pixel replaces its reprojected history. 1.0 takes the
-	// new value outright, which converges in one rotation but can make a lighting change
-	// appear as a briefly visible 2x2 pattern; lower values fade it in over more frames.
-	GLOBAL_DEF_RST(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/gi/temporal_blend", PROPERTY_HINT_RANGE, "0.05,1.0,0.01"), 0.5);
+	// How much of a freshly traced pixel replaces its reprojected history. The trace is
+	// exact, so the default takes it outright; lower values fade a lighting change in over
+	// more frames, at the cost of dragging the stale value forward with it.
+	GLOBAL_DEF_RST(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/gi/temporal_blend", PROPERTY_HINT_RANGE, "0.05,1.0,0.01"), 1.0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/quality", PROPERTY_HINT_ENUM, "Low (4 Cones - Fast),High (6 Cones - Slow)"), 0);
 

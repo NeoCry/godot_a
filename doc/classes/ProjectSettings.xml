@@ -3082,8 +3082,8 @@
 			If [code]true[/code], disables the threaded optimization feature from the NVIDIA drivers, which are known to cause stuttering in most OpenGL applications.
 			[b]Note:[/b] This setting only works on Windows, as threaded optimization is disabled by default on other platforms.
 		</member>
-		<member name="rendering/global_illumination/gi/temporal_blend" type="float" setter="" getter="" default="0.5">
-			How much of a freshly traced pixel replaces its reprojected history when [member rendering/global_illumination/gi/use_temporal_accumulation] is enabled. At [code]1.0[/code] a traced pixel takes its new value outright, so the whole screen catches up within one 4-frame rotation, but an abrupt lighting change can briefly show as a 2&#215;2 pattern. Lower values fade the change in over more frames at the cost of more latency.
+		<member name="rendering/global_illumination/gi/temporal_blend" type="float" setter="" getter="" default="1.0">
+			How much of a freshly traced pixel replaces its reprojected history when [member rendering/global_illumination/gi/use_temporal_accumulation] is enabled. The trace is deterministic rather than noisy, so a freshly traced value is exact, not a sample to average against previous ones; the default of [code]1.0[/code] takes it outright, and the whole screen catches up within one 2-frame rotation. Lowering this fades an abrupt lighting change in over more frames instead of showing it as an immediate checkerboard pattern, at the cost of dragging the previous (increasingly stale) value forward for that much longer.
 			[b]Note:[/b] This property is only read when the project starts.
 		</member>
 		<member name="rendering/global_illumination/gi/use_half_resolution" type="bool" setter="" getter="" default="false" keywords="size">
@@ -3091,7 +3091,7 @@
 			[b]Note:[/b] This property is only read when the project starts. To set half-resolution GI at run-time, call [method RenderingServer.gi_set_use_half_resolution] instead.
 		</member>
 		<member name="rendering/global_illumination/gi/use_temporal_accumulation" type="bool" setter="" getter="" default="true">
-			If [code]true[/code], the [VoxelGI] and SDFGI resolve pass traces only a quarter of the screen's pixels each frame, in a 2&#215;2 rotation, and reprojects the previous frame's result for the rest. Cone tracing dominates the cost of that pass and its result is deterministic rather than noisy, so this cuts the tracing work to roughly a quarter without adding noise. A pixel whose history cannot be reused &#8212; behind a disocclusion, off the edge of the previous frame, or on the first frame &#8212; is still traced, so the result stays correct where reprojection fails.
+			If [code]true[/code], the [VoxelGI] and SDFGI resolve pass traces only half of the screen's pixels each frame, in a checkerboard, and reprojects the previous frame's result for the rest. Cone tracing dominates the cost of that pass and its result is deterministic rather than noisy, so this halves the tracing work without adding noise. A pixel whose history cannot be reused &#8212; behind a disocclusion, off the edge of the previous frame, or on the first frame &#8212; is still traced, so the result stays correct where reprojection fails.
 			The cost is latency: after a light moves, indirect lighting takes a few frames to catch up, tuned by [member rendering/global_illumination/gi/temporal_blend]. It also allocates six extra buffers at GI resolution to hold the history.
 			This has no effect when rendering multiple views (such as in XR), where each eye has its own view space, or when variable rate shading is active, since most pixels are then filled by replicating a neighbour rather than by an invocation that could store history. Both cases fall back to tracing every pixel every frame.
 			[b]Note:[/b] This property is only read when the project starts.
