@@ -154,6 +154,11 @@
 		<member name="use_custom_data" type="bool" setter="set_use_custom_data" getter="is_using_custom_data" default="false">
 			If [code]true[/code], the [MultiMesh] will use custom data (see [method set_instance_custom_data]). Can only be set when [member instance_count] is [code]0[/code] or less. This means that you need to call this method before setting the instance count, or temporarily reset it to [code]0[/code].
 		</member>
+		<member name="use_indirect" type="bool" setter="set_use_indirect" getter="is_using_indirect" default="false">
+			If [code]true[/code], the [MultiMesh] is drawn through an indirect draw command whose instance count lives in GPU memory, so a compute shader can decide how many instances are drawn without the CPU having to know. Use [method RenderingServer.multimesh_get_command_buffer_rd_rid] to get the command buffer to write that count into, and [method RenderingServer.multimesh_get_buffer_rd_rid] to get the transform buffer to write the instances themselves into. Since the CPU can no longer derive the bounds from the buffer's contents, set [member custom_aabb] to cover wherever the instances may end up, or the [MultiMesh] will be culled incorrectly.
+			Can only be set when [member instance_count] is [code]0[/code] or less. This means that you need to call this method before setting the instance count, or temporarily reset it to [code]0[/code]. Assign [member mesh] afterwards, since that is what builds the draw command buffer.
+			[b]Note:[/b] Only supported by the Forward+ and Mobile rendering methods, not Compatibility.
+		</member>
 		<member name="visible_instance_count" type="int" setter="set_visible_instance_count" getter="get_visible_instance_count" default="-1">
 			Limits the number of instances drawn, -1 draws all instances. Changing this does not change the sizes of the buffers.
 		</member>

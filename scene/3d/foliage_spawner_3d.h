@@ -32,6 +32,7 @@
 
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
+#include "scene/3d/foliage_gpu_culler.h"
 #include "scene/3d/foliage_lod_level.h"
 #include "scene/3d/multimesh_instance_3d.h"
 
@@ -115,10 +116,28 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	bool cell_ignore_screen_space_shadows = false;
 	GIMode cell_gi_mode = GI_MODE_DISABLED;
 
+	// GPU-driven culling. When enabled, cells are not used at all: every
+	// generated instance lives in one flat array that is uploaded once, and a
+	// compute pass picks the visible ones per frame (see FoliageGPUCuller).
+	// Each LOD level then owns a single indirect MultiMesh sized for the worst
+	// case, instead of one small MultiMesh per cell.
+	bool gpu_culling = false;
+	LocalVector<Transform3D> gpu_transforms;
+	LocalVector<Ref<MultiMesh>> gpu_multimeshes;
+	LocalVector<MultiMeshInstance3D *> gpu_nodes;
+	FoliageGPUCuller gpu_culler;
+
 	// Debug.
 	bool debug_show_cells = false;
 
 	void _on_lod_level_changed();
+
+	bool _is_gpu_culling_active() const;
+	void _clear_gpu_instances();
+	void _rebuild_gpu_instances();
+	void _dispatch_gpu_culling();
+	PackedFloat32Array _get_gpu_instance_data() const;
+	void _set_gpu_instance_data(const PackedFloat32Array &p_data);
 
 	Ref<Image> _get_mask_image() const;
 	bool _sample_mask(const Ref<Image> &p_image, const Vector2 &p_uv, RandomPCG &p_rng) const;
@@ -131,7 +150,9 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	// lod_levels. Safe to call at any time: creates/frees MultiMeshInstance3D
 	// children and copies existing transforms into any newly added LOD level.
 	void _sync_cell_lods(FoliageCell &p_cell);
-	void _configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level) const;
+	// The GPU path leaves the visibility range off: one node covers the whole
+	// volume there, so the distance banding is the compute pass's job instead.
+	void _configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level, bool p_apply_visibility_range = true) const;
 	void _sync_all_cells_settings();
 
 	static LocalVector<Transform3D> _read_transforms(const Ref<MultiMesh> &p_multimesh);
@@ -234,6 +255,9 @@ public:
 
 	void set_cell_gi_mode(GIMode p_mode);
 	GIMode get_cell_gi_mode() const;
+
+	void set_gpu_culling(bool p_enabled);
+	bool is_gpu_culling_enabled() const;
 
 	void set_debug_show_cells(bool p_enabled);
 	bool is_debug_show_cells_enabled() const;
