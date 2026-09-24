@@ -373,13 +373,36 @@ void GI::voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
 	ERR_FAIL_NULL(voxel_gi);
 
-	voxel_gi->anisotropic_strength = CLAMP(p_strength, 0.0, 1.0);
+	float strength = CLAMP(p_strength, 0.0, 1.0);
+
+	// The anisotropic mipmap chains cost 6 extra 3D textures plus a 6x larger scratch
+	// buffer, so they are only allocated while the strength is non-zero. Crossing zero
+	// changes which resources and which shader variants the instance needs, so bump the
+	// data version to have VoxelGIInstance::update() rebuild them.
+	if ((voxel_gi->anisotropic_strength > 0.0) != (strength > 0.0)) {
+		voxel_gi->data_version++;
+	}
+
+	voxel_gi->anisotropic_strength = strength;
 }
 
 float GI::voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const {
 	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
 	ERR_FAIL_NULL_V(voxel_gi, 0);
 	return voxel_gi->anisotropic_strength;
+}
+
+void GI::voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL(voxel_gi);
+
+	voxel_gi->reflection_filter = CLAMP(p_filter, 0.0f, 8.0f);
+}
+
+float GI::voxel_gi_get_reflection_filter(RID p_voxel_gi) const {
+	VoxelGI *voxel_gi = voxel_gi_owner.get_or_null(p_voxel_gi);
+	ERR_FAIL_NULL_V(voxel_gi, 0);
+	return voxel_gi->reflection_filter;
 }
 
 uint32_t GI::voxel_gi_get_version(RID p_voxel_gi) const {
@@ -2640,6 +2663,10 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
 ////////////////////////////////////////////////////////////////////////////////
 // VoxelGIInstance
 
+int GI::VoxelGIInstance::aniso_variant(int p_version) const {
+	return uses_aniso ? p_version + VOXEL_GI_SHADER_VERSION_ANISO_OFFSET : p_version;
+}
+
 void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects) {
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
@@ -2658,6 +2685,11 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 			//can create a 3D texture
 			Vector<int> levels = gi->voxel_gi_get_level_counts(probe);
 
+			// Only pay for the 6 directional mipmap chains when cone tracing will actually
+			// blend them in (see sample_aniso_voxel() in gi.glsl). At strength 0 this saves
+			// 6/7 of the instance's texture memory and 6/7 of its per-trace samples.
+			uses_aniso = gi->voxel_gi_get_anisotropic_strength(probe) > 0.0;
+
 			RD::TextureFormat tf;
 			tf.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
 			tf.width = octree_size.x;
@@ -2673,10 +2705,12 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 
 			RD::get_singleton()->texture_clear(texture, Color(0, 0, 0, 0), 0, levels.size(), 0, 1);
 
-			for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
-				aniso_texture[d] = RD::get_singleton()->texture_create(tf, RD::TextureView());
-				RD::get_singleton()->set_resource_name(aniso_texture[d], "VoxelGI Instance Anisotropic Texture");
-				RD::get_singleton()->texture_clear(aniso_texture[d], Color(0, 0, 0, 0), 0, levels.size(), 0, 1);
+			if (uses_aniso) {
+				for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+					aniso_texture[d] = RD::get_singleton()->texture_create(tf, RD::TextureView());
+					RD::get_singleton()->set_resource_name(aniso_texture[d], "VoxelGI Instance Anisotropic Texture");
+					RD::get_singleton()->texture_clear(aniso_texture[d], Color(0, 0, 0, 0), 0, levels.size(), 0, 1);
+				}
 			}
 
 			int total_elements = 0;
@@ -2686,15 +2720,19 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 				}
 
 				write_buffer = RD::get_singleton()->storage_buffer_create(total_elements * 16);
-				// 6 directional (aniso) copies of the per-cell color+alpha used to build anisotropic mipmaps.
-				aniso_buffer = RD::get_singleton()->storage_buffer_create(total_elements * 16 * VOXEL_GI_ANISO_DIR_COUNT);
+				if (uses_aniso) {
+					// 6 directional (aniso) copies of the per-cell color+alpha used to build anisotropic mipmaps.
+					aniso_buffer = RD::get_singleton()->storage_buffer_create(total_elements * 16 * VOXEL_GI_ANISO_DIR_COUNT);
+				}
 			}
 
 			for (int i = 0; i < levels.size(); i++) {
 				VoxelGIInstance::Mipmap mipmap;
 				mipmap.texture = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), texture, 0, i, 1, RD::TEXTURE_SLICE_3D);
-				for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
-					mipmap.aniso_texture[d] = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), aniso_texture[d], 0, i, 1, RD::TEXTURE_SLICE_3D);
+				if (uses_aniso) {
+					for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+						mipmap.aniso_texture[d] = RD::get_singleton()->texture_create_shared_from_slice(RD::TextureView(), aniso_texture[d], 0, i, 1, RD::TEXTURE_SLICE_3D);
+					}
 				}
 				mipmap.level = levels.size() - i - 1;
 				mipmap.cell_offset = 0;
@@ -2726,7 +2764,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					u.append_id(write_buffer);
 					uniforms.push_back(u);
 				}
-				{
+				if (uses_aniso) {
 					RD::Uniform u;
 					u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 					u.binding = 6;
@@ -2759,7 +2797,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 							copy_uniforms.push_back(u);
 						}
 
-						mipmap.uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT], 0);
+						mipmap.uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT)], 0);
 
 						copy_uniforms = uniforms; //restore
 
@@ -2770,9 +2808,20 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 							u.append_id(texture);
 							copy_uniforms.push_back(u);
 						}
-						mipmap.second_bounce_uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE], 0);
+						if (uses_aniso) {
+							// The whole chains, not per-level slices: the second bounce cone
+							// marches across mip levels the same way the first one does.
+							RD::Uniform u;
+							u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+							u.binding = 12;
+							for (int d = 0; d < VOXEL_GI_ANISO_DIR_COUNT; d++) {
+								u.append_id(aniso_texture[d]);
+							}
+							copy_uniforms.push_back(u);
+						}
+						mipmap.second_bounce_uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE)], 0);
 					} else {
-						mipmap.uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP], 0);
+						mipmap.uniform_set = RD::get_singleton()->uniform_set_create(copy_uniforms, gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP)], 0);
 					}
 				}
 
@@ -2783,7 +2832,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					u.append_id(mipmap.texture);
 					uniforms.push_back(u);
 				}
-				{
+				if (uses_aniso) {
 					RD::Uniform u;
 					u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
 					u.binding = 11;
@@ -2793,7 +2842,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					uniforms.push_back(u);
 				}
 
-				mipmap.write_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->voxel_gi_lighting_shader_version_shaders[VOXEL_GI_SHADER_VERSION_WRITE_TEXTURE], 0);
+				mipmap.write_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_WRITE_TEXTURE)], 0);
 
 				mipmaps.push_back(mipmap);
 			}
@@ -3020,9 +3069,49 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 		RD::get_singleton()->texture_clear(texture, Color(0, 0, 0, 0), 0, mipmaps.size(), 0, 1);
 	}
 
+	// SCHEDULE THE RELIGHT
+	//
+	// A probe holding dynamic objects re-runs its whole chain every frame and has just had
+	// its texture cleared, so it must end this frame with the texture complete and is never
+	// throttled. Only the static relight a light change triggers gets spread over frames.
+	const bool has_dynamic = has_dynamic_object_data || p_dynamic_objects.size() > 0;
+	const int relight_budget = has_dynamic ? 0 : gi->voxel_gi_relight_cells_per_frame;
+
+	if (!mipmaps.size()) {
+		// Nothing baked to relight; drop any cursor left from a previous set of resources.
+		relight.active = false;
+		relight.restart_pending = false;
+	} else if (p_update_light_instances) {
+		if (relight.active) {
+			// Let the chain in flight finish first, then start over from the leaves. See
+			// Relight::restart_pending.
+			relight.restart_pending = true;
+		} else {
+			// Lights changed and nothing is running: start at the leaf level of the first bounce.
+			relight.active = true;
+			relight.pass = 0;
+			relight.total_passes = gi->voxel_gi_is_using_two_bounces(probe) ? 2 : 1;
+			relight.level = 0;
+			relight.cell_cursor = 0;
+			relight.writing = false;
+		}
+	} else if (!relight.active && has_dynamic) {
+		// The lighting in `outputs` is still valid, but the texture was cleared above for the
+		// dynamic objects, so it has to be blitted again. Run the write phase only.
+		relight.active = true;
+		relight.pass = 0;
+		relight.total_passes = 1;
+		relight.level = 0;
+		relight.cell_cursor = 0;
+		relight.writing = true;
+	}
+
 	uint32_t light_count = 0;
 
-	if (p_update_light_instances || p_dynamic_objects.size() > 0) {
+	// While a relight is in flight the lights have to be re-uploaded on every one of its
+	// frames: voxel_gi_lights_uniform is shared between all probes, so another probe may
+	// have overwritten it since the last frame.
+	if (relight.active || p_dynamic_objects.size() > 0) {
 		light_count = MIN(gi->voxel_gi_max_lights, (uint32_t)p_light_instances.size());
 
 		{
@@ -3119,11 +3208,9 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 		}
 	}
 
-	if (has_dynamic_object_data || p_update_light_instances || p_dynamic_objects.size()) {
+	if (relight.active) {
 		// PROCESS MIPMAPS
-		if (mipmaps.size()) {
-			//can update mipmaps
-
+		{
 			Vector3i probe_size = gi->voxel_gi_get_octree_size(probe);
 
 			Vector3 ps = probe_size / gi->voxel_gi_get_bounds(probe).size;
@@ -3142,20 +3229,31 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 			push_constant.aniso_strength = 0; // Unused: anisotropic_strength is applied at cone-trace time instead (see gi.glsl).
 			push_constant.cell_size = cell_size;
 
-			/*		print_line("probe update to version " + itos(last_probe_version));
-			print_line("propagation " + rtos(push_constant.propagation));
-			print_line("dynrange " + rtos(push_constant.dynamic_range));
-	*/
 			RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 
-			int passes;
-			if (p_update_light_instances) {
-				passes = gi->voxel_gi_is_using_two_bounces(probe) ? 2 : 1;
-			} else {
-				passes = 1; //only re-blitting is necessary
-			}
-			int wg_size = 64;
-			int64_t wg_limit_x = (int64_t)RD::get_singleton()->limit_get(RD::LIMIT_MAX_COMPUTE_WORKGROUP_COUNT_X);
+			const uint32_t wg_size = 64;
+			const int64_t wg_limit_x = (int64_t)RD::get_singleton()->limit_get(RD::LIMIT_MAX_COMPUTE_WORKGROUP_COUNT_X);
+
+			// Dispatches one contiguous run of octree cells, split further when it exceeds the
+			// device's workgroup-count limit. Each dispatch carries its own cell_count because
+			// the shader bounds-checks the invocation index *relative* to the dispatch, so a
+			// count left over from the whole run would let the last workgroup's padding
+			// invocations read and write cells past the end of the run.
+			auto dispatch_cells = [&](uint32_t p_offset, uint32_t p_count) {
+				uint32_t offset = p_offset;
+				uint32_t remaining = p_count;
+				while (remaining) {
+					int64_t wg_todo = (remaining + wg_size - 1) / wg_size;
+					int64_t wg_count = MIN(wg_todo, wg_limit_x);
+					uint32_t chunk = MIN((uint64_t)wg_count * wg_size, (uint64_t)remaining);
+					push_constant.cell_offset = offset;
+					push_constant.cell_count = chunk;
+					RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(VoxelGIPushConstant));
+					RD::get_singleton()->compute_list_dispatch(compute_list, wg_count, 1, 1);
+					offset += chunk;
+					remaining -= chunk;
+				}
+			};
 
 			RID compute_light_area_light_atlas_uniform_set;
 			{
@@ -3164,61 +3262,100 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 				u.binding = 0;
 				u.append_id(RendererRD::TextureStorage::get_singleton()->area_light_atlas_get_texture());
 
-				compute_light_area_light_atlas_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(gi->voxel_gi_lighting_shader_version_shaders[VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT], 1, u);
+				compute_light_area_light_atlas_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(gi->voxel_gi_lighting_shader_version_shaders[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT)], 1, u);
 			}
 
-			for (int pass = 0; pass < passes; pass++) {
-				if (p_update_light_instances) {
-					for (int i = 0; i < mipmaps.size(); i++) {
-						if (i == 0) {
-							RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->voxel_gi_lighting_shader_version_pipelines[pass == 0 ? VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT : VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE].get_rid());
-						} else if (i == 1) {
-							RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->voxel_gi_lighting_shader_version_pipelines[VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP].get_rid());
-						}
+			// Walk the chain from wherever the previous frame stopped, spending at most
+			// `relight_budget` cells (0 = no limit). Every step reads what the step before it
+			// wrote, so a barrier goes between any two steps that land in the same frame;
+			// steps separated by a frame boundary get one for free from the submission. A
+			// level is never split into more than one step per frame, so no barrier is ever
+			// placed between chunks of the same level, whose cells are independent.
+			int64_t cells_left = relight_budget > 0 ? relight_budget : INT64_MAX;
+			bool first_step = true;
+			bool prev_writing = false;
 
-						if (pass == 1 || i > 0) {
-							RD::get_singleton()->compute_list_add_barrier(compute_list); //wait til previous step is done
-						}
-						if (pass == 0 || i > 0) {
-							RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mipmaps[i].uniform_set, 0);
-							if (i == 0) {
-								RD::get_singleton()->compute_list_bind_uniform_set(compute_list, compute_light_area_light_atlas_uniform_set, 1);
-							}
-						} else {
-							RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mipmaps[i].second_bounce_uniform_set, 0);
-						}
-
-						push_constant.cell_offset = mipmaps[i].cell_offset;
-						push_constant.cell_count = mipmaps[i].cell_count;
-
-						int64_t wg_todo = (mipmaps[i].cell_count + wg_size - 1) / wg_size;
-						while (wg_todo) {
-							int64_t wg_count = MIN(wg_todo, wg_limit_x);
-							RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(VoxelGIPushConstant));
-							RD::get_singleton()->compute_list_dispatch(compute_list, wg_count, 1, 1);
-							wg_todo -= wg_count;
-							push_constant.cell_offset += wg_count * wg_size;
-						}
-					}
-
-					RD::get_singleton()->compute_list_add_barrier(compute_list); //wait til previous step is done
+			while (relight.active) {
+				// Only the first bounce's lighting and mipmap steps are spread over frames.
+				// From its blit onwards the rest of the chain runs to the end in this frame,
+				// because everything past that point is visible in the texture and only the
+				// end of the chain is a state worth showing: a half-written mip chain has
+				// some levels at the new lighting and the rest at the old, which reads as a
+				// brightness step wherever a cone crosses the split, and with two bounces the
+				// texture between the two blits holds direct light only, which is visibly
+				// dimmer than the finished result. Both showed up as the probe flashing while
+				// a light moved. The blit itself is one store per cell with no tracing, so the
+				// cost that actually lands in this frame is the second bounce.
+				const bool budgeted = relight.pass == 0 && !relight.writing;
+				if (budgeted && cells_left <= 0) {
+					break;
 				}
 
-				RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->voxel_gi_lighting_shader_version_pipelines[VOXEL_GI_SHADER_VERSION_WRITE_TEXTURE].get_rid());
+				const Mipmap &mm = mipmaps[relight.level];
 
-				for (int i = 0; i < mipmaps.size(); i++) {
-					RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mipmaps[i].write_uniform_set, 0);
+				// Two consecutive blit steps write disjoint mip slices from disjoint cells, so
+				// they are the one pair that needs nothing between them.
+				if (!first_step && !(prev_writing && relight.writing)) {
+					RD::get_singleton()->compute_list_add_barrier(compute_list); //wait til previous step is done
+				}
+				first_step = false;
+				prev_writing = relight.writing;
 
-					push_constant.cell_offset = mipmaps[i].cell_offset;
-					push_constant.cell_count = mipmaps[i].cell_count;
+				if (relight.writing) {
+					RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->voxel_gi_lighting_shader_version_pipelines[aniso_variant(VOXEL_GI_SHADER_VERSION_WRITE_TEXTURE)].get_rid());
+					RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mm.write_uniform_set, 0);
+				} else if (relight.level == 0) {
+					const bool second_bounce = relight.pass == 1;
+					RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->voxel_gi_lighting_shader_version_pipelines[aniso_variant(second_bounce ? VOXEL_GI_SHADER_VERSION_COMPUTE_SECOND_BOUNCE : VOXEL_GI_SHADER_VERSION_COMPUTE_LIGHT)].get_rid());
+					if (second_bounce) {
+						// MODE_SECOND_BOUNCE gathers from the texture rather than from the lights,
+						// so it declares neither the light buffer nor the set 1 area light atlas.
+						RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mm.second_bounce_uniform_set, 0);
+					} else {
+						RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mm.uniform_set, 0);
+						RD::get_singleton()->compute_list_bind_uniform_set(compute_list, compute_light_area_light_atlas_uniform_set, 1);
+					}
+				} else {
+					RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->voxel_gi_lighting_shader_version_pipelines[aniso_variant(VOXEL_GI_SHADER_VERSION_COMPUTE_MIPMAP)].get_rid());
+					RD::get_singleton()->compute_list_bind_uniform_set(compute_list, mm.uniform_set, 0);
+				}
 
-					int64_t wg_todo = (mipmaps[i].cell_count + wg_size - 1) / wg_size;
-					while (wg_todo) {
-						int64_t wg_count = MIN(wg_todo, wg_limit_x);
-						RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(VoxelGIPushConstant));
-						RD::get_singleton()->compute_list_dispatch(compute_list, wg_count, 1, 1);
-						wg_todo -= wg_count;
-						push_constant.cell_offset += wg_count * wg_size;
+				const uint32_t remaining = mm.cell_count - relight.cell_cursor;
+				const uint32_t chunk = budgeted ? (uint32_t)MIN((uint64_t)cells_left, (uint64_t)remaining) : remaining;
+				if (chunk) {
+					dispatch_cells(mm.cell_offset + relight.cell_cursor, chunk);
+					relight.cell_cursor += chunk;
+					if (budgeted) {
+						cells_left -= chunk;
+					}
+				}
+
+				if (relight.cell_cursor < mm.cell_count) {
+					break; // Out of budget part-way through a level; resume here next frame.
+				}
+
+				// Level done: advance to the next level, then to the blit phase, then to the
+				// next bounce, and retire the relight once the last bounce has been blitted.
+				relight.cell_cursor = 0;
+				relight.level++;
+				if (relight.level >= mipmaps.size()) {
+					relight.level = 0;
+					if (relight.writing) {
+						relight.writing = false;
+						relight.pass++;
+						if (relight.pass >= relight.total_passes) {
+							if (relight.restart_pending) {
+								// Lights moved while this chain was running; go again from the
+								// leaves, now that the texture holds a complete result.
+								relight.restart_pending = false;
+								relight.pass = 0;
+								relight.total_passes = gi->voxel_gi_is_using_two_bounces(probe) ? 2 : 1;
+							} else {
+								relight.active = false;
+							}
+						}
+					} else {
+						relight.writing = true;
 					}
 				}
 			}
@@ -3655,6 +3792,12 @@ void GI::init(SkyRD *p_sky) {
 		versions.push_back("\n#define MODE_SECOND_BOUNCE\n");
 		versions.push_back("\n#define MODE_UPDATE_MIPMAPS\n");
 		versions.push_back("\n#define MODE_WRITE_TEXTURE\n");
+		// USE_ANISO counterparts of the four static passes above, in the order the
+		// VOXEL_GI_SHADER_VERSION_*_ANISO enumerators expect.
+		versions.push_back("\n#define MODE_COMPUTE_LIGHT\n#define USE_ANISO\n");
+		versions.push_back("\n#define MODE_SECOND_BOUNCE\n#define USE_ANISO\n");
+		versions.push_back("\n#define MODE_UPDATE_MIPMAPS\n#define USE_ANISO\n");
+		versions.push_back("\n#define MODE_WRITE_TEXTURE\n#define USE_ANISO\n");
 		versions.push_back("\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_LIGHTING\n");
 		versions.push_back("\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_WRITE\n");
 		versions.push_back("\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_PLOT\n");
@@ -3873,6 +4016,9 @@ void GI::init(SkyRD *p_sky) {
 	}
 	default_voxel_gi_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(VoxelGIData) * MAX_VOXEL_GI_INSTANCES);
 	half_resolution = GLOBAL_GET("rendering/global_illumination/gi/use_half_resolution");
+	voxel_gi_relight_cells_per_frame = MAX(0, int(GLOBAL_GET("rendering/global_illumination/voxel_gi/relight_cells_per_frame")));
+	temporal_accumulation = GLOBAL_GET("rendering/global_illumination/gi/use_temporal_accumulation");
+	temporal_blend = CLAMP(float(GLOBAL_GET("rendering/global_illumination/gi/temporal_blend")), 0.05, 1.0);
 }
 
 void GI::free() {
@@ -3966,6 +4112,7 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 				gipd.blend_ambient = !voxel_gi_is_interior(base_probe);
 				gipd.mipmaps = gipi->mipmaps.size();
 				gipd.anisotropic_strength = voxel_gi_get_anisotropic_strength(base_probe);
+				gipd.reflection_filter = voxel_gi_get_reflection_filter(base_probe);
 				gipd.exposure_normalization = 1.0;
 				if (p_render_data->camera_attributes.is_valid()) {
 					float exposure_normalization = RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes);
@@ -3999,11 +4146,13 @@ void GI::setup_voxel_gi_instances(RenderDataRD *p_render_data, Ref<RenderSceneBu
 	}
 
 	if (voxel_gi_instances_changed) {
-		for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
-			if (RD::get_singleton()->uniform_set_is_valid(rbgi->uniform_set[v])) {
-				RD::get_singleton()->free_rid(rbgi->uniform_set[v]);
+		for (uint32_t p = 0; p < 2; p++) {
+			for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
+				if (RD::get_singleton()->uniform_set_is_valid(rbgi->uniform_set[p][v])) {
+					RD::get_singleton()->free_rid(rbgi->uniform_set[p][v]);
+				}
+				rbgi->uniform_set[p][v] = RID();
 			}
-			rbgi->uniform_set[v] = RID();
 		}
 
 		if (p_render_buffers->has_custom_data(RB_SCOPE_FOG)) {
@@ -4030,11 +4179,13 @@ RID GI::RenderBuffersGI::get_voxel_gi_buffer() {
 }
 
 void GI::RenderBuffersGI::free_data() {
-	for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
-		if (RD::get_singleton()->uniform_set_is_valid(uniform_set[v])) {
-			RD::get_singleton()->free_rid(uniform_set[v]);
+	for (uint32_t p = 0; p < 2; p++) {
+		for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
+			if (RD::get_singleton()->uniform_set_is_valid(uniform_set[p][v])) {
+				RD::get_singleton()->free_rid(uniform_set[p][v]);
+			}
+			uniform_set[p][v] = RID();
 		}
-		uniform_set[v] = RID();
 	}
 
 	if (scene_data_ubo.is_valid()) {
@@ -4063,7 +4214,15 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 	Size2i internal_size = p_render_buffers->get_internal_size();
 
-	if (rbgi->using_half_size_gi != half_resolution) {
+	// Temporal accumulation needs one reprojection matrix for the whole pass and history it
+	// can sample everywhere it writes. Neither holds for multiview, where each eye has its
+	// own view space, or for VRS, where most pixels are filled by replicating a neighbour
+	// rather than by an invocation that could store history for them. Both fall back to
+	// tracing every pixel every frame.
+	bool has_vrs_texture = p_render_buffers->has_texture(RB_SCOPE_VRS, RB_TEXTURE);
+	const bool use_temporal = temporal_accumulation && p_view_count == 1 && !has_vrs_texture;
+
+	if (rbgi->using_half_size_gi != half_resolution || rbgi->using_temporal_gi != use_temporal) {
 		p_render_buffers->clear_context(RB_SCOPE_GI);
 	}
 
@@ -4079,7 +4238,32 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_AMBIENT, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, size);
 		p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_REFLECTION, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, size);
 
+		// The history bindings are declared unconditionally by the shader, so they always need
+		// something valid bound. Rather than compile a second set of pipelines without them,
+		// allocate the textures at 1x1 when temporal accumulation is off: the shader is told
+		// so through the push constant and never touches them.
+		{
+			const Size2i history_size = use_temporal ? size : Size2i(1, 1);
+			// texture_clear() below is a copy as far as RenderingDevice is concerned, so these
+			// need CAN_COPY_TO on top of what the buffers above use.
+			const uint32_t history_usage_bits = usage_bits | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+
+			for (uint32_t i = 0; i < 2; i++) {
+				RID ambient = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_ambient_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				RID reflection = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_reflection_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				RID depth = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_depth_name(i), RD::DATA_FORMAT_R32_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				// A fresh texture holds whatever was in that memory. The pass never reads
+				// history until it has written some, so this is belt and braces, but it keeps a
+				// stray read from turning into stray colour.
+				RD::get_singleton()->texture_clear(ambient, Color(0, 0, 0, 0), 0, 1, 0, p_view_count);
+				RD::get_singleton()->texture_clear(reflection, Color(0, 0, 0, 0), 0, 1, 0, p_view_count);
+				RD::get_singleton()->texture_clear(depth, Color(0, 0, 0, 0), 0, 1, 0, p_view_count);
+			}
+		}
+
 		rbgi->using_half_size_gi = half_resolution;
+		rbgi->using_temporal_gi = use_temporal;
+		rbgi->history_valid = false;
 	}
 
 	// Setup our scene data
@@ -4106,11 +4290,27 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		// Note that we will be ignoring the origin of this transform.
 		RendererRD::MaterialStorage::store_transform(p_cam_transform, scene_data.cam_transform);
 
+		// Reprojection into the previous frame, for the temporal history lookup. Single view
+		// only, so there is no eye offset to fold in: this frame's view space -> world ->
+		// the previous frame's view space, and from there through its projection to clip.
+		Transform3D prev_view_from_view = rbgi->prev_cam_transform.affine_inverse() * p_cam_transform;
+		Projection prev_projection = correction * rbgi->prev_projection;
+		RendererRD::MaterialStorage::store_transform(prev_view_from_view, scene_data.prev_view_from_view);
+		RendererRD::MaterialStorage::store_camera(prev_projection * Projection(prev_view_from_view), scene_data.reprojection);
+
 		scene_data.screen_size[0] = internal_size.x;
 		scene_data.screen_size[1] = internal_size.y;
 
 		RD::get_singleton()->buffer_update(rbgi->scene_data_ubo, 0, sizeof(SceneData), &scene_data);
 	}
+
+	// Remember this frame's camera so the next frame can reproject into it. The pass writes
+	// history from the first frame after an allocation but only starts reading it on the
+	// second, when there is a real previous frame to reproject and prev_cam_transform below
+	// describes it.
+	const bool history_valid = use_temporal && rbgi->history_valid;
+	rbgi->prev_cam_transform = p_cam_transform;
+	rbgi->prev_projection = p_projections[0];
 
 	// Now compute the contents of our buffers.
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
@@ -4124,6 +4324,12 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 	push_constant.max_voxel_gi_instances = MIN((uint64_t)MAX_VOXEL_GI_INSTANCES, p_voxel_gi_instances.size());
 	push_constant.high_quality_vct = voxel_gi_quality == RSE::VOXEL_GI_QUALITY_HIGH;
+	push_constant.temporal_enabled = use_temporal;
+	push_constant.trace_slot = rbgi->history_frame % TEMPORAL_SLOT_COUNT;
+	push_constant.temporal_blend = temporal_blend;
+	push_constant.history_valid = history_valid;
+	push_constant.pad2 = 0;
+	push_constant.pad3 = 0;
 
 	// these should be the same for all views
 	push_constant.orthogonal = p_projections[0].is_orthogonal();
@@ -4151,7 +4357,6 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	if (p_view_count > 1) {
 		pipeline_specialization |= SHADER_SPECIALIZATION_USE_FULL_PROJECTION_MATRIX;
 	}
-	bool has_vrs_texture = p_render_buffers->has_texture(RB_SCOPE_VRS, RB_TEXTURE);
 	if (has_vrs_texture) {
 		pipeline_specialization |= SHADER_SPECIALIZATION_USE_VRS;
 	}
@@ -4170,7 +4375,8 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		push_constant.view_index = v;
 
 		// setup our uniform set
-		if (rbgi->uniform_set[v].is_null() || !RD::get_singleton()->uniform_set_is_valid(rbgi->uniform_set[v])) {
+		const uint32_t set_parity = rbgi->history_frame & 1;
+		if (rbgi->uniform_set[set_parity][v].is_null() || !RD::get_singleton()->uniform_set_is_valid(rbgi->uniform_set[set_parity][v])) {
 			Vector<RD::Uniform> uniforms;
 			{
 				RD::Uniform u;
@@ -4337,6 +4543,32 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 				}
 				uniforms.push_back(u);
 			}
+			// Temporal history, ping-ponged: `read` is what the previous frame wrote and is
+			// sampled at reprojected coordinates, `write` is this frame's half and is stored
+			// into at the current pixel. They must be different textures, since a pass cannot
+			// sample a texture it also writes through an image binding.
+			{
+				const uint32_t read = (rbgi->history_frame + 1) & 1;
+				const uint32_t write = rbgi->history_frame & 1;
+
+				const StringName read_names[3] = { gi_history_ambient_name(read), gi_history_reflection_name(read), gi_history_depth_name(read) };
+				for (int i = 0; i < 3; i++) {
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+					u.binding = 26 + i;
+					u.append_id(p_render_buffers->get_texture_slice(RB_SCOPE_GI, read_names[i], v, 0));
+					uniforms.push_back(u);
+				}
+
+				const StringName write_names[3] = { gi_history_ambient_name(write), gi_history_reflection_name(write), gi_history_depth_name(write) };
+				for (int i = 0; i < 3; i++) {
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+					u.binding = 29 + i;
+					u.append_id(p_render_buffers->get_texture_slice(RB_SCOPE_GI, write_names[i], v, 0));
+					uniforms.push_back(u);
+				}
+			}
 			if (RendererSceneRenderRD::get_singleton()->is_vrs_supported()) {
 				RD::Uniform u;
 				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
@@ -4348,11 +4580,11 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 			bool vrs_supported = RendererSceneRenderRD::get_singleton()->is_vrs_supported();
 			int variant_base = vrs_supported ? MODE_MAX : 0;
-			rbgi->uniform_set[v] = RD::get_singleton()->uniform_set_create(uniforms, shader.version_get_shader(shader_version, variant_base), 0);
+			rbgi->uniform_set[set_parity][v] = RD::get_singleton()->uniform_set_create(uniforms, shader.version_get_shader(shader_version, variant_base), 0);
 		}
 
 		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][mode].get_rid());
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[v], 0);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
 
 		if (rbgi->using_half_size_gi) {
@@ -4364,6 +4596,11 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 	RD::get_singleton()->compute_list_end();
 	RD::get_singleton()->draw_command_end_label();
+
+	// Swap the ping-pong for the next frame. Done once per frame rather than per view, so
+	// both eyes of a multiview pass agree on which half they wrote.
+	rbgi->history_frame++;
+	rbgi->history_valid = use_temporal;
 }
 
 RID GI::voxel_gi_instance_create(RID p_base) {
@@ -4392,6 +4629,13 @@ bool GI::voxel_gi_needs_update(RID p_probe) const {
 	ERR_FAIL_NULL_V(voxel_gi, false);
 
 	return voxel_gi->last_probe_version != voxel_gi_get_version(voxel_gi->probe);
+}
+
+bool GI::voxel_gi_has_pending_update(RID p_probe) const {
+	VoxelGIInstance *voxel_gi = voxel_gi_instance_owner.get_or_null(p_probe);
+	ERR_FAIL_NULL_V(voxel_gi, false);
+
+	return voxel_gi->has_pending_relight();
 }
 
 void GI::voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects) {

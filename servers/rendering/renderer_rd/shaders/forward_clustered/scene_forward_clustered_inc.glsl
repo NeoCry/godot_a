@@ -471,7 +471,7 @@ struct VoxelGIData {
 
 	uint mipmaps; // 4 - 100
 	float anisotropic_strength; // 4 - 104
-	float pad; // 4 - 108
+	float reflection_filter; // 4 - 108
 	float exposure_normalization; // 4 - 112
 };
 

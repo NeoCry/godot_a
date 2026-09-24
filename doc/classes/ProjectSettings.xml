@@ -3102,9 +3102,19 @@
 			If [code]true[/code], disables the threaded optimization feature from the NVIDIA drivers, which are known to cause stuttering in most OpenGL applications.
 			[b]Note:[/b] This setting only works on Windows, as threaded optimization is disabled by default on other platforms.
 		</member>
+		<member name="rendering/global_illumination/gi/temporal_blend" type="float" setter="" getter="" default="1.0">
+			How much of a freshly traced pixel replaces its reprojected history when [member rendering/global_illumination/gi/use_temporal_accumulation] is enabled. The trace is deterministic rather than noisy, so a freshly traced value is exact, not a sample to average against previous ones; the default of [code]1.0[/code] takes it outright, and the whole screen catches up within one 2-frame rotation. Lowering this fades an abrupt lighting change in over more frames instead of showing it as an immediate checkerboard pattern, at the cost of dragging the previous (increasingly stale) value forward for that much longer.
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
 		<member name="rendering/global_illumination/gi/use_half_resolution" type="bool" setter="" getter="" default="false" keywords="size">
 			If [code]true[/code], renders [VoxelGI] and SDFGI ([member Environment.sdfgi_enabled]) buffers at halved resolution (e.g. 960×540 when the viewport size is 1920×1080). This improves performance significantly when VoxelGI or SDFGI is enabled, at the cost of artifacts that may be visible on polygon edges. The loss in quality becomes less noticeable as the viewport resolution increases. [LightmapGI] rendering is not affected by this setting.
 			[b]Note:[/b] This property is only read when the project starts. To set half-resolution GI at run-time, call [method RenderingServer.gi_set_use_half_resolution] instead.
+		</member>
+		<member name="rendering/global_illumination/gi/use_temporal_accumulation" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], the [VoxelGI] and SDFGI resolve pass traces only half of the screen's pixels each frame, in a checkerboard, and reprojects the previous frame's result for the rest. Cone tracing dominates the cost of that pass and its result is deterministic rather than noisy, so this halves the tracing work without adding noise. A pixel whose history cannot be reused &#8212; behind a disocclusion, off the edge of the previous frame, or on the first frame &#8212; is still traced, so the result stays correct where reprojection fails.
+			The cost is latency: after a light moves, indirect lighting takes a few frames to catch up, tuned by [member rendering/global_illumination/gi/temporal_blend]. It also allocates six extra buffers at GI resolution to hold the history.
+			This has no effect when rendering multiple views (such as in XR), where each eye has its own view space, or when variable rate shading is active, since most pixels are then filled by replicating a neighbour rather than by an invocation that could store history. Both cases fall back to tracing every pixel every frame.
+			[b]Note:[/b] This property is only read when the project starts.
 		</member>
 		<member name="rendering/global_illumination/sdfgi/frames_to_converge" type="int" setter="" getter="" default="5">
 			The number of frames to use for converging signed distance field global illumination. Higher values lead to a less noisy result, at the cost of taking a longer time to fully converge. This means the scene's global illumination will be too dark for a longer period of time, especially when the camera moves fast. The actual convergence speed depends on rendered framerate. For example, with the default setting of 30 frames, rendering at 60 FPS will make SDFGI fully converge after 0.5 seconds. See also [member rendering/global_illumination/sdfgi/frames_to_update_lights] and [member rendering/global_illumination/sdfgi/probe_ray_count].
@@ -3122,6 +3132,12 @@
 		<member name="rendering/global_illumination/voxel_gi/quality" type="int" setter="" getter="" default="0">
 			The VoxelGI quality to use. High quality leads to more precise lighting and better reflections, but is slower to render. This setting does not affect the baked data and doesn't require baking the [VoxelGI] again to apply.
 			[b]Note:[/b] This property is only read when the project starts. To control VoxelGI quality at runtime, call [method RenderingServer.voxel_gi_set_quality] instead.
+		</member>
+		<member name="rendering/global_illumination/voxel_gi/relight_cells_per_frame" type="int" setter="" getter="" default="0">
+			The most octree cells a single [VoxelGI] probe may relight in one frame, or [code]0[/code] for no cap. Relighting a probe touches every cell of its octree, which is one large spike on the frame a light inside it moves; capping it spreads that work over as many frames as the octree needs.
+			This trades indirect lighting latency for frame time, so it is off by default. A probe keeps showing its previous lighting until the relight finishes, which for a light that changes once just means indirect light arrives a few frames late. For a light that keeps moving, though, the probe updates once per relight instead of once per frame, so its indirect light advances in steps rather than smoothly, which reads as the bounce light popping. Only set a cap if the relight spike is a measured problem, and set it as high as the frame budget allows: an octree's cell count runs into the hundreds of thousands, so a cap below that is what splits the relight in the first place.
+			Probes containing dynamic objects are never capped, since they are re-lit every frame anyway and their texture has to be complete by the end of each one. On a probe using two bounces the second bounce is never spread either: it runs in the same frame the first bounce finishes, because between the two the probe's texture holds direct light only and is visibly dimmer than the finished result.
+			[b]Note:[/b] This property is only read when the project starts.
 		</member>
 		<member name="rendering/lightmapping/bake_performance/max_rays_per_pass" type="int" setter="" getter="" default="4">
 			The maximum number of rays that can be thrown per pass when baking lightmaps with [LightmapGI]. Depending on the scene, adjusting this value may result in higher GPU utilization when baking lightmaps, leading to faster bake times.

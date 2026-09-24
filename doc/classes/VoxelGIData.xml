@@ -52,7 +52,7 @@
 		<method name="get_octree_size" qualifiers="const">
 			<return type="Vector3" />
 			<description>
-				Returns the baked octree size for this [VoxelGIData], which corresponds to the number of subdivisions per axis. This can be viewed in the editor by hovering the [b]Bake VoxelGI[/b] button at the top of the 3D editor viewport when a [VoxelGI] node is selected and looking at the [b]Subdivisions[/b] field in the tooltip.
+				Returns the baked octree size for this [VoxelGIData], which corresponds to the number of subdivisions per axis. This can be viewed in the editor by hovering the [b]Bake VoxelGI[/b] button at the top of the 3D editor viewport when a [VoxelGI] node is selected and looking at the [b]Voxel grid[/b] field in the tooltip.
 			</description>
 		</method>
 		<method name="get_to_cell_xform" qualifiers="const">
@@ -64,7 +64,10 @@
 	</methods>
 	<members>
 		<member name="anisotropic_strength" type="float" setter="set_anisotropic_strength" getter="get_anisotropic_strength" default="0.0">
-			Blends in 6 additional directional (anisotropic) copies of the voxel mipmap chain when tracing diffuse light and reflections, picking whichever directions best match the light or reflection being computed. This reduces light leaking through thin geometry (such as walls and floors), at the cost of increased VRAM usage. At [code]0.0[/code] (the default), only the regular isotropic mipmap chain is used. Higher values blend in more of the anisotropic result; because this blend happens when tracing rather than when baking, it can be tuned freely without re-baking the [VoxelGI] node, but the anisotropic mipmap chain itself is still generated during baking, so this property has no effect until the node has been baked at least once.
+			Blends in 6 additional directional (anisotropic) copies of the voxel mipmap chain when tracing diffuse light and reflections, picking whichever directions best match the light or reflection being computed. This reduces light leaking through thin geometry (such as walls and floors), at the cost of increased VRAM usage.
+			At [code]0.0[/code] (the default), the anisotropic mipmap chains are not allocated at all, which makes the probe use 7 times less VRAM and take 7 times fewer texture samples per traced cone than at any non-zero value. Raising this above [code]0.0[/code] allocates them; lowering it back to [code]0.0[/code] frees them again.
+			While non-zero, higher values blend in more of the anisotropic result. That blend happens when tracing rather than when baking, so it can be tuned freely without re-baking the [VoxelGI] node. Because it is a blend, [code]1.0[/code] is what actually removes the leaking: at [code]0.5[/code] half of each sample still comes from the isotropic chain, which is the leaky one.
+			[b]Note:[/b] The second light bounce, when [member use_two_bounces] is enabled, gathers through the anisotropic chains whenever they exist, regardless of this value &#8212; its result is baked into the probe's lighting rather than blended per frame, so there is nothing to blend it against. Raising this from [code]0.0[/code] or lowering it back therefore re-lights the probe, while changes between two non-zero values do not.
 		</member>
 		<member name="bias" type="float" setter="set_bias" getter="get_bias" default="1.5">
 			The normal bias to use for indirect lighting. Higher values reduce self-lighting artifacts visible in non-rough materials, at the cost of more visible light leaking and flatter-looking indirect lighting. See also [member reflection_bias]. To prioritize hiding self-reflections over lighting quality, set [member bias] to [code]0.0[/code] and [member normal_bias] to a value between [code]1.0[/code] and [code]2.0[/code].
@@ -86,6 +89,10 @@
 		</member>
 		<member name="reflection_bias" type="float" setter="set_reflection_bias" getter="get_reflection_bias" default="1.5">
 			The normal bias to use for reflections. Higher values reduce self-reflections visible in non-rough materials, at the cost of more visible light leaking and flatter-looking reflections. Since reflections are most noticeable on smooth surfaces, this can usually be set lower than [member bias] to get sharper contact reflections while keeping diffuse lighting free of leaks.
+		</member>
+		<member name="reflection_filter" type="float" setter="set_reflection_filter" getter="get_reflection_filter" default="1.0">
+			How finely the reflection cone is sampled along its length, as the number of extra samples taken per step of the cone's own radius. At [code]0.0[/code] the cone takes one sample per radius. That is enough for the wide cones indirect diffuse light uses, but a reflection cone on a smooth material is barely wider than a voxel, so its steps keep meeting voxel boundaries at the same phase and draw a diagonal herringbone across the reflection. Higher values sample the same cone more finely and remove that pattern: [code]1.0[/code] takes twice as many samples, [code]4.0[/code] five times as many.
+			The cost is paid by the reflection cone alone, not by the diffuse ones, so it is a fraction of what a [member VoxelGI.voxel_size] change would cost. Sampling more finely also settles the reflection at a slightly darker, more accurate value, because a coarse step overshoots on the one that saturates the cone.
 		</member>
 		<member name="use_two_bounces" type="bool" setter="set_use_two_bounces" getter="is_using_two_bounces" default="true">
 			If [code]true[/code], performs two bounces of indirect lighting instead of one. This makes indirect lighting look more natural and brighter at a small performance cost. The second bounce is also visible in reflections. If the scene appears too bright after enabling [member use_two_bounces], adjust [member propagation] and [member energy].

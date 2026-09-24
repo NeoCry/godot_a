@@ -51,6 +51,7 @@ class VoxelGIData : public Resource {
 	float energy = 1.0;
 	float bias = 1.5;
 	float reflection_bias = 1.5;
+	float reflection_filter = 1.0;
 	float normal_bias = 0.0;
 	float propagation = 0.5;
 	float anisotropic_strength = 0.0;
@@ -85,6 +86,9 @@ public:
 	void set_reflection_bias(float p_bias);
 	float get_reflection_bias() const;
 
+	void set_reflection_filter(float p_filter);
+	float get_reflection_filter() const;
+
 	void set_normal_bias(float p_normal_bias);
 	float get_normal_bias() const;
 
@@ -107,13 +111,12 @@ class VoxelGI : public VisualInstance3D {
 	GDCLASS(VoxelGI, VisualInstance3D);
 
 public:
-	enum Subdiv {
-		SUBDIV_64,
-		SUBDIV_128,
-		SUBDIV_256,
-		SUBDIV_512,
-		SUBDIV_MAX
-
+	// Deepest octree the baked format can address. VoxelGI packs a cell's position into a
+	// single 32-bit word as 11/10/11 bits (see Voxelizer::get_voxel_gi_data_cells() and the
+	// matching unpack in voxel_gi.glsl), so the 10-bit field caps every axis at 1024 cells.
+	enum {
+		MAX_OCTREE_DEPTH = 10,
+		MIN_OCTREE_DEPTH = 1,
 	};
 
 	typedef void (*BakeBeginFunc)();
@@ -125,7 +128,10 @@ private:
 
 	RID voxel_gi;
 
-	Subdiv subdiv = SUBDIV_128;
+	// Target edge length of one voxel, in metres. The octree depth is derived from this and
+	// `size` at bake time, so resizing the node keeps the lighting detail constant instead
+	// of stretching the voxels.
+	float voxel_size = 0.25;
 	Vector3 size = Vector3(20, 20, 20);
 	Ref<CameraAttributes> camera_attributes;
 
@@ -156,8 +162,8 @@ public:
 	void set_probe_data(const Ref<VoxelGIData> &p_data);
 	Ref<VoxelGIData> get_probe_data() const;
 
-	void set_subdiv(Subdiv p_subdiv);
-	Subdiv get_subdiv() const;
+	void set_voxel_size(float p_voxel_size);
+	float get_voxel_size() const;
 
 	void set_size(const Vector3 &p_size);
 	Vector3 get_size() const;
@@ -165,7 +171,17 @@ public:
 	void set_camera_attributes(const Ref<CameraAttributes> &p_camera_attributes);
 	Ref<CameraAttributes> get_camera_attributes() const;
 
+	// Octree depth the current `size` / `voxel_size` pair bakes to, clamped to
+	// [MIN_OCTREE_DEPTH, MAX_OCTREE_DEPTH]. The longest axis gets `1 << depth` cells.
+	int get_octree_depth() const;
+	// Voxel edge length the bake will actually use. Always <= `voxel_size`, since the cell
+	// count is rounded up to a power of two, and larger when the depth had to be clamped.
+	float get_effective_voxel_size() const;
+
 	Vector3i get_estimated_cell_size() const;
+	// Bytes of video memory the runtime probe will occupy: one RGBA8 mip chain over the voxel
+	// grid, plus 6 more when the baked data enables anisotropic mipmaps.
+	uint64_t get_estimated_video_memory() const;
 
 	void bake(Node *p_from_node = nullptr, bool p_create_visual_debug = false);
 
@@ -176,5 +192,3 @@ public:
 	VoxelGI();
 	~VoxelGI();
 };
-
-VARIANT_ENUM_CAST(VoxelGI::Subdiv)

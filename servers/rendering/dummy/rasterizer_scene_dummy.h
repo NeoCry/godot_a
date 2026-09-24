@@ -157,6 +157,7 @@ public:
 	RID voxel_gi_instance_create(RID p_voxel_gi) override { return RID(); }
 	void voxel_gi_instance_set_transform_to_data(RID p_probe, const Transform3D &p_xform) override {}
 	bool voxel_gi_needs_update(RID p_probe) const override { return false; }
+	bool voxel_gi_has_pending_update(RID p_probe) const override { return false; }
 	void voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects) override {}
 
 	void voxel_gi_set_quality(RSE::VoxelGIQuality) override {}

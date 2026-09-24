@@ -4678,7 +4678,7 @@
 			<return type="Vector3i" />
 			<param index="0" name="voxel_gi" type="RID" />
 			<description>
-				Returns the octree size for the specified voxel GI data instance, which corresponds to the number of subdivisions per axis. This can be viewed in the editor by hovering the [b]Bake VoxelGI[/b] button at the top of the 3D editor viewport when a [VoxelGI] node is selected and looking at the [b]Subdivisions[/b] field in the tooltip.
+				Returns the octree size for the specified voxel GI data instance, which corresponds to the number of subdivisions per axis. This can be viewed in the editor by hovering the [b]Bake VoxelGI[/b] button at the top of the 3D editor viewport when a [VoxelGI] node is selected and looking at the [b]Voxel grid[/b] field in the tooltip.
 			</description>
 		</method>
 		<method name="voxel_gi_get_to_cell_xform" qualifiers="const">
@@ -4765,6 +4765,14 @@
 			<param index="1" name="bias" type="float" />
 			<description>
 				Sets the [member VoxelGIData.reflection_bias] value to use on the specified [param voxel_gi]'s [RID].
+			</description>
+		</method>
+		<method name="voxel_gi_set_reflection_filter">
+			<return type="void" />
+			<param index="0" name="voxel_gi" type="RID" />
+			<param index="1" name="filter" type="float" />
+			<description>
+				Sets the [member VoxelGIData.reflection_filter] value to use on the specified [param voxel_gi]'s [RID].
 			</description>
 		</method>
 		<method name="voxel_gi_set_use_two_bounces">

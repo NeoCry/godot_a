@@ -2702,6 +2702,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_interior", "voxel_gi", "enable"), &RenderingServer::voxel_gi_set_interior);
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_use_two_bounces", "voxel_gi", "enable"), &RenderingServer::voxel_gi_set_use_two_bounces);
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_anisotropic_strength", "voxel_gi", "strength"), &RenderingServer::voxel_gi_set_anisotropic_strength);
+	ClassDB::bind_method(D_METHOD("voxel_gi_set_reflection_filter", "voxel_gi", "filter"), &RenderingServer::voxel_gi_set_reflection_filter);
 
 	ClassDB::bind_method(D_METHOD("voxel_gi_set_quality", "quality"), &RenderingServer::voxel_gi_set_quality);
 
@@ -3746,7 +3747,27 @@ void RenderingServer::init() {
 
 	GLOBAL_DEF("rendering/global_illumination/gi/use_half_resolution", false);
 
+	// Voxel cone tracing is the dominant cost of the GI pass and its result is
+	// deterministic, so instead of tracing every pixel every frame the pass traces half of
+	// them in a checkerboard and reprojects the previous frame for the rest. Pixels whose
+	// history is rejected -- a disocclusion, a screen edge, the first frame -- are still
+	// traced, so this halves the tracing work for a frame of latency on lighting changes.
+	// Not applied to multiview or VRS rendering.
+	GLOBAL_DEF_RST("rendering/global_illumination/gi/use_temporal_accumulation", true);
+
+	// How much of a freshly traced pixel replaces its reprojected history. The trace is
+	// exact, so the default takes it outright; lower values fade a lighting change in over
+	// more frames, at the cost of dragging the stale value forward with it.
+	GLOBAL_DEF_RST(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/gi/temporal_blend", PROPERTY_HINT_RANGE, "0.05,1.0,0.01"), 1.0);
+
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/quality", PROPERTY_HINT_ENUM, "Low (4 Cones - Fast),High (6 Cones - Slow)"), 0);
+
+	// Relighting a VoxelGI probe touches every cell of its octree, which is a single large
+	// spike on the frame a light moves. Spreading it over several frames keeps the spike
+	// bounded; the probe's texture keeps the previous lighting until the chain completes, so
+	// the visible effect is that indirect light catches up over a few frames instead of
+	// snapping. 0 relights the whole probe in one frame.
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/relight_cells_per_frame", PROPERTY_HINT_RANGE, "0,4194304,1"), 0);
 
 	GLOBAL_DEF_RST("rendering/shading/overrides/force_vertex_shading", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley", false);

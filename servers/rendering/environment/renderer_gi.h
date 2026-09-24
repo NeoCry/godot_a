@@ -85,6 +85,8 @@ public:
 
 	virtual void voxel_gi_set_anisotropic_strength(RID p_voxel_gi, float p_strength) = 0;
 	virtual float voxel_gi_get_anisotropic_strength(RID p_voxel_gi) const = 0;
+	virtual void voxel_gi_set_reflection_filter(RID p_voxel_gi, float p_filter) = 0;
+	virtual float voxel_gi_get_reflection_filter(RID p_voxel_gi) const = 0;
 
 	virtual void voxel_gi_set_interior(RID p_voxel_gi, bool p_enable) = 0;
 	virtual bool voxel_gi_is_interior(RID p_voxel_gi) const = 0;
