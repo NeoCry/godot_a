@@ -280,6 +280,16 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_velocity_only_
 	return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), velocity);
 }
 
+RID RenderForwardClustered::RenderBufferDataForwardClustered::get_velocity_depth_fb() {
+	ERR_FAIL_NULL_V(render_buffers, RID());
+	bool use_msaa = render_buffers->get_msaa_3d() != RSE::VIEWPORT_MSAA_DISABLED;
+
+	RID velocity = render_buffers->get_texture(RB_SCOPE_BUFFERS, use_msaa ? RB_TEX_VELOCITY_MSAA : RB_TEX_VELOCITY);
+	RID depth = use_msaa ? render_buffers->get_texture(RB_SCOPE_BUFFERS, RB_TEX_DEPTH_MSAA) : render_buffers->get_depth_texture();
+
+	return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), velocity, depth);
+}
+
 RD::DataFormat RenderForwardClustered::RenderBufferDataForwardClustered::get_specular_format() {
 	return RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
 }
@@ -373,6 +383,12 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 		if (p_pass_mode == PASS_MODE_COLOR && surf->color_pass_inclusion_mask && (p_color_pass_flags & surf->color_pass_inclusion_mask) == 0) {
 			// Some surfaces can be repeated in multiple render lists. We exclude them from being rendered on the color pass based on the
 			// features supported by the pass compared to the exclusion mask.
+			continue;
+		}
+
+		if (p_pass_mode == PASS_MODE_VELOCITY && !(surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH)) {
+			// This pass runs over the alpha render list, which also holds ordinary blended surfaces.
+			// Those own no depth, so the velocity beneath them belongs to what is behind them.
 			continue;
 		}
 
@@ -510,6 +526,12 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 				// Note, SDF is prepared in world space, this shouldn't be a multiview buffer even when stereoscopic rendering is used.
 				ERR_FAIL_COND_MSG(p_params->view_count > 1, "Multiview not supported for SDF pass");
 				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_SDF;
+			} break;
+			case PASS_MODE_VELOCITY: {
+				// Carried so the vertex format binds the previous vertex positions the motion
+				// vector is computed from; the shader variant is picked by the version alone.
+				pipeline_key.color_pass_flags = SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_MOTION_VECTORS;
+				pipeline_key.version = p_params->view_count > 1 ? SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS_MULTIVIEW : SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS;
 			} break;
 		}
 
@@ -702,6 +724,9 @@ void RenderForwardClustered::_render_list(RenderingDevice::DrawListID p_draw_lis
 		} break;
 		case PASS_MODE_SDF: {
 			_render_list_template<PASS_MODE_SDF>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
+		} break;
+		case PASS_MODE_VELOCITY: {
+			_render_list_template<PASS_MODE_VELOCITY>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
 		} break;
 		default: {
 			// Unknown pass mode.
@@ -2438,6 +2463,25 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 			RenderListParameters render_list_params(render_list[RENDER_LIST_MOTION].elements.ptr(), render_list[RENDER_LIST_MOTION].element_info.ptr(), render_list[RENDER_LIST_MOTION].elements.size(), reverse_cull, PASS_MODE_COLOR, color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization, !is_reflection_probe);
 			_render_list_with_draw_list(&render_list_params, color_framebuffer);
+
+			RD::get_singleton()->draw_command_end_label();
+		}
+
+		// Surfaces shaded in the transparent pass that nonetheless establish their own depth -
+		// alpha to coverage foliage, and anything using depth_prepass_alpha - are what the depth
+		// buffer refers to where they are visible, so the reprojection needs their velocity. The
+		// transparent pass cannot supply it: a blended draw would overwrite the velocity of what
+		// is behind it across its whole silhouette, feathered edges included. Their velocity is
+		// laid down here instead, depth-tested against the pre-pass and writing nothing else, so
+		// it lands on exactly the fragments the depth buffer already attributes to them.
+		if (rb_data.is_valid() && p_render_data->scene_data->calculate_motion_vectors && render_list[RENDER_LIST_ALPHA].elements.size() > 0) {
+			RD::get_singleton()->draw_command_begin_label("Render Alpha Velocity Pass");
+			RENDER_TIMESTAMP("Render Alpha Velocity Pass");
+
+			rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_ALPHA, p_render_data, is_multiview, radiance_texture, samplers, opaque_pass_uniform_buffer_index, true);
+
+			RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_VELOCITY, 0, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization, !is_reflection_probe);
+			_render_list_with_draw_list(&render_list_params, rb_data->get_velocity_depth_fb(), RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0u, p_render_data->render_region);
 
 			RD::get_singleton()->draw_command_end_label();
 		}

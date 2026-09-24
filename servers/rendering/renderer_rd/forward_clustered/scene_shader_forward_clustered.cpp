@@ -296,6 +296,10 @@ uint16_t SceneShaderForwardClustered::ShaderData::_get_shader_version(PipelineVe
 			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_MATERIAL + ubershader_base;
 		case PIPELINE_VERSION_DEPTH_PASS_WITH_SDF:
 			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_SDF + ubershader_base;
+		case PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS:
+			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS + ubershader_base;
+		case PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS_MULTIVIEW:
+			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS_MULTIVIEW + ubershader_base;
 		case PIPELINE_VERSION_COLOR_PASS: {
 			int shader_flags = 0;
 
@@ -470,6 +474,18 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL:
 				// Writes to normal and roughness in opaque way.
 				blend_state = RD::PipelineColorBlendState::create_disabled(5);
+				break;
+			case PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS:
+			case PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS_MULTIVIEW:
+				// Velocity only: the motion vector is the single attachment, written straight.
+				blend_state = RD::PipelineColorBlendState::create_disabled(1);
+				// The depth this tests against was established by the pre-pass, which ran the same
+				// vertex shader over the same geometry and applied the same alpha threshold. Testing
+				// without writing therefore restricts the velocity to the fragments the depth buffer
+				// actually attributes to this surface - the feathered edge of an alpha-antialiased
+				// material, which is blended against whatever lies behind it, keeps the velocity of
+				// what is behind it, and nothing is reprojected along a motion it does not have.
+				depth_stencil_state.enable_depth_write = false;
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS:
 			case PIPELINE_VERSION_DEPTH_PASS_DP:
@@ -657,6 +673,8 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED_MULTIVIEW, base_define + "\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_VOXEL_GI\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_VOXEL_GI_MULTIVIEW
 			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED, base_define + "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_MATERIAL
 			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED, base_define + "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_SDF\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_SDF
+			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED, base_define + "\n#define MODE_RENDER_DEPTH\n#define MOTION_VECTORS\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS
+			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED_MULTIVIEW, base_define + "\n#define USE_MULTIVIEW\n#define MODE_RENDER_DEPTH\n#define MOTION_VECTORS\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS_MULTIVIEW
 		}
 
 		Vector<String> color_pass_flags = {
