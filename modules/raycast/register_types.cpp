@@ -34,6 +34,8 @@
 #include "raycast_occlusion_cull.h"
 #include "static_raycaster_embree.h"
 
+#include "core/config/project_settings.h"
+
 RaycastOcclusionCull *raycast_occlusion_cull = nullptr;
 
 void initialize_raycast_module(ModuleInitializationLevel p_level) {
@@ -45,7 +47,14 @@ void initialize_raycast_module(ModuleInitializationLevel p_level) {
 	LightmapRaycasterEmbree::make_default_raycaster();
 	StaticRaycasterEmbree::make_default_raycaster();
 #endif
-	raycast_occlusion_cull = memnew(RaycastOcclusionCull);
+
+	// Occlusion culling defaults to the rasterized hierarchical Z-buffer
+	// backend built into the rendering server (see HZBOcclusionCull), which is
+	// already the singleton by this point; this one only takes over when the
+	// project asks for it.
+	if ((int)GLOBAL_GET("rendering/occlusion_culling/backend") == 1) {
+		raycast_occlusion_cull = memnew(RaycastOcclusionCull);
+	}
 }
 
 void uninitialize_raycast_module(ModuleInitializationLevel p_level) {
@@ -53,7 +62,10 @@ void uninitialize_raycast_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 
-	memdelete(raycast_occlusion_cull);
+	if (raycast_occlusion_cull) {
+		memdelete(raycast_occlusion_cull);
+		raycast_occlusion_cull = nullptr;
+	}
 #ifdef TOOLS_ENABLED
 	StaticRaycasterEmbree::free();
 #endif

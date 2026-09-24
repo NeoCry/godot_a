@@ -51,8 +51,18 @@ void RendererSceneOcclusionCull::HZBuffer::clear() {
 		debug_image.unref();
 	}
 
+	debug_pyramid_data.clear();
+	debug_pyramid_size = Size2i();
+	if (debug_pyramid_image.is_valid()) {
+		debug_pyramid_image.unref();
+	}
+
 	ERR_FAIL_NULL(RenderingServer::get_singleton());
 	RS::get_singleton()->free_rid(debug_texture);
+	if (debug_pyramid_texture.is_valid()) {
+		RS::get_singleton()->free_rid(debug_pyramid_texture);
+		debug_pyramid_texture = RID();
+	}
 }
 
 void RendererSceneOcclusionCull::HZBuffer::resize(const Size2i &p_size) {
@@ -113,6 +123,17 @@ void RendererSceneOcclusionCull::HZBuffer::resize(const Size2i &p_size) {
 		RS::get_singleton()->free_rid(debug_texture);
 		debug_texture = RID();
 	}
+
+	// Room for the finest level plus the column of coarser ones, padded to the
+	// buffer's own aspect ratio: the debug view stretches whatever it is given
+	// across the whole viewport, and a canvas of a different shape would show
+	// up as a distorted buffer.
+	debug_pyramid_size = Size2i(sizes[0].x + 1 + MAX(1, sizes[0].x / 2), sizes[0].y + MAX(1, sizes[0].y / 2));
+	debug_pyramid_data.resize(debug_pyramid_size.x * debug_pyramid_size.y);
+	if (debug_pyramid_texture.is_valid()) {
+		RS::get_singleton()->free_rid(debug_pyramid_texture);
+		debug_pyramid_texture = RID();
+	}
 }
 
 void RendererSceneOcclusionCull::HZBuffer::update_mips() {
@@ -163,6 +184,59 @@ void RendererSceneOcclusionCull::HZBuffer::update_mips() {
 	}
 }
 
+RID RendererSceneOcclusionCull::HZBuffer::get_debug_pyramid_texture() {
+	if (sizes.is_empty() || sizes[0] == Size2i() || debug_pyramid_size == Size2i()) {
+		return RID();
+	}
+
+	if (debug_pyramid_image.is_null()) {
+		debug_pyramid_image.instantiate();
+	}
+
+	uint8_t *ptrw = debug_pyramid_data.ptrw();
+	memset(ptrw, 0, debug_pyramid_data.size());
+
+	// Laid out from the top down (row 0 of the buffer is the bottom of the
+	// screen, so that is the high end here), with one texel of black between
+	// levels so neighbouring ones stay readable as separate images even where
+	// both are empty. What is left over is the padding that keeps the canvas
+	// at the buffer's aspect ratio.
+	int column_top = debug_pyramid_size.y;
+	for (uint32_t mip = 0; mip < mips.size(); mip++) {
+		const Size2i size = sizes[mip];
+		const int origin_x = mip == 0 ? 0 : sizes[0].x + 1;
+		int origin_y;
+		if (mip == 0) {
+			origin_y = debug_pyramid_size.y - size.y;
+		} else {
+			origin_y = column_top - size.y;
+			column_top = origin_y - 1;
+		}
+
+		if (origin_y < 0 || origin_x + size.x > debug_pyramid_size.x) {
+			break; // Out of room: the levels left are a handful of texels anyway.
+		}
+
+		for (int y = 0; y < size.y; y++) {
+			const float *row = &mips[mip][y * size.x];
+			uint8_t *dst = &ptrw[(origin_y + y) * debug_pyramid_size.x + origin_x];
+			for (int x = 0; x < size.x; x++) {
+				dst[x] = _depth_to_debug_value(row[x]);
+			}
+		}
+	}
+
+	debug_pyramid_image->set_data(debug_pyramid_size.x, debug_pyramid_size.y, false, Image::FORMAT_L8, debug_pyramid_data);
+
+	if (debug_pyramid_texture.is_null()) {
+		debug_pyramid_texture = RS::get_singleton()->texture_2d_create(debug_pyramid_image);
+	} else {
+		RS::get_singleton()->texture_2d_update(debug_pyramid_texture, debug_pyramid_image);
+	}
+
+	return debug_pyramid_texture;
+}
+
 RID RendererSceneOcclusionCull::HZBuffer::get_debug_texture() {
 	if (sizes.is_empty() || sizes[0] == Size2i()) {
 		return RID();
@@ -174,7 +248,7 @@ RID RendererSceneOcclusionCull::HZBuffer::get_debug_texture() {
 
 	unsigned char *ptrw = debug_data.ptrw();
 	for (int i = 0; i < debug_data.size(); i++) {
-		ptrw[i] = MIN(Math::log(1.0 + mips[0][i]) / Math::log(1.0 + debug_tex_range), 1.0) * 255;
+		ptrw[i] = _depth_to_debug_value(mips[0][i]);
 	}
 
 	debug_image->set_data(sizes[0].x, sizes[0].y, false, Image::FORMAT_L8, debug_data);

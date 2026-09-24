@@ -474,7 +474,6 @@
 		<member name="use_occlusion_culling" type="bool" setter="set_use_occlusion_culling" getter="is_using_occlusion_culling" default="false">
 			If [code]true[/code], [OccluderInstance3D] nodes will be usable for occlusion culling in 3D for this viewport. For the root viewport, [member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling] must be set to [code]true[/code] instead.
 			[b]Note:[/b] Enabling occlusion culling has a cost on the CPU. Only enable occlusion culling if you actually plan to use it, and think whether your scene can actually benefit from occlusion culling. Large, open scenes with few or no objects blocking the view will generally not benefit much from occlusion culling. Large open scenes generally benefit more from mesh LOD and visibility ranges ([member GeometryInstance3D.visibility_range_begin] and [member GeometryInstance3D.visibility_range_end]) compared to occlusion culling.
-			[b]Note:[/b] Due to memory constraints, occlusion culling is not supported by default in Web export templates. It can be enabled by compiling custom Web export templates with [code]module_raycast_enabled=yes[/code].
 		</member>
 		<member name="use_taa" type="bool" setter="set_use_taa" getter="is_using_taa" default="false">
 			Enables temporal antialiasing for this viewport. TAA works by jittering the camera and accumulating the images of the last rendered frames, motion vector rendering is used to account for camera and object motion.
@@ -748,7 +747,7 @@
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="DEBUG_DRAW_OCCLUDERS" value="24" enum="DebugDraw">
-			Draws the buffer used for occlusion culling.
+			Draws the buffer used for occlusion culling: the depth the occluders were drawn into, at full resolution, with what is nearest to the camera darkest. See also [constant DEBUG_DRAW_OCCLUSION_PYRAMID].
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
 		<constant name="DEBUG_DRAW_MOTION_VECTORS" value="25" enum="DebugDraw">
@@ -770,6 +769,10 @@
 		<constant name="DEBUG_DRAW_SSCS_WAVE_INDEX" value="29" enum="DebugDraw">
 			Colors screen-space contact shadow output by compute wavefront index instead of computing real shadows, so the wavefront layout can be visually verified (wavefronts should appear aligned and projected towards the light).
 			[b]Note:[/b] Only supported when using the Forward+ rendering method. Requires screen-space contact shadows to be enabled (see [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] and [member Environment.sscs_enabled]) to have a visible effect.
+		</constant>
+		<constant name="DEBUG_DRAW_OCCLUSION_PYRAMID" value="30" enum="DebugDraw">
+			Draws every level of the occlusion culling buffer's depth pyramid at once: the full resolution level on the left, and the halved ones stacked in a column beside it, each holding the farthest depth of the four texels below it. An object's bounding box is tested against whichever level its screen footprint is about the size of, so this shows what the test actually reads, where [constant DEBUG_DRAW_OCCLUDERS] shows only the level the occluders were drawn into.
+			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
 		<constant name="DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST" value="0" enum="DefaultCanvasItemTextureFilter">
 			The texture filter reads from the nearest pixel only. This makes the texture look pixelated from up close, and grainy from a distance (due to mipmaps not being sampled).

@@ -55,6 +55,15 @@ class FoliageCullResources : public RefCounted {
 	RID source_buffer;
 	uint32_t source_instance_count = 0;
 
+	// Occlusion side of the cull pass: a copy of the renderer's depth pyramid
+	// for the viewport being culled for, plus the camera and mip layout needed
+	// to look instances up in it. Rebuilt every frame, since both the pyramid
+	// and the camera change.
+	RID occlusion_params_buffer;
+	RID occlusion_depth_buffer;
+	uint32_t occlusion_depth_floats = 0;
+	RID occlusion_uniform_set;
+
 	struct LODResources {
 		RID counter_buffer;
 		RID cull_uniform_set;
@@ -68,11 +77,17 @@ class FoliageCullResources : public RefCounted {
 
 	bool _ensure_shaders();
 	void _free_levels();
+	void _free_occlusion();
 	void _free_all();
+
+	// Uploads the depth pyramid the renderer built for p_viewport, in the shape
+	// the cull shader reads it. Leaves the pass with occlusion switched off
+	// (but still bound) when there is no pyramid to hand it.
+	void _update_occlusion(RID p_viewport, const Transform3D &p_node_transform, bool p_enabled);
 
 	// Bound to the queued calls, so these run on the rendering thread.
 	void rt_setup(const PackedByteArray &p_transform_data, const Array &p_multimeshes, const PackedFloat32Array &p_level_params, const PackedInt32Array &p_surface_counts);
-	void rt_cull(const PackedFloat32Array &p_frame_params);
+	void rt_cull(const PackedFloat32Array &p_frame_params, RID p_occlusion_viewport, bool p_occlusion_enabled);
 };
 
 // GPU-driven culling for foliage drawn through indirect MultiMeshes.
@@ -134,7 +149,13 @@ public:
 
 	// Queues one frame's culling. The frustum planes and camera position must
 	// already be in the MultiMeshes' local space.
-	void cull(const Vector<Plane> &p_frustum_planes, const Vector3 &p_camera_position);
+	//
+	// Instances hidden behind an occluder are dropped as well, when the
+	// viewport being culled for has an occlusion culling buffer (see
+	// Viewport.use_occlusion_culling and Landscape3D.occluder_enabled) and
+	// p_occlusion_enabled says to use it. That test needs the instances in
+	// world space, hence the node's own transform.
+	void cull(const Vector<Plane> &p_frustum_planes, const Vector3 &p_camera_position, RID p_occlusion_viewport = RID(), const Transform3D &p_node_transform = Transform3D(), bool p_occlusion_enabled = false);
 
 	// Drops every GPU resource. Called automatically on destruction.
 	void release();

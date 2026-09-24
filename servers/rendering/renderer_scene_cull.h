@@ -130,7 +130,7 @@ public:
 
 	/* VISIBILITY NOTIFIER API */
 
-	RendererSceneOcclusionCull *dummy_occlusion_culling = nullptr;
+	RendererSceneOcclusionCull *default_occlusion_culling = nullptr;
 
 	/* SCENARIO API */
 

@@ -428,6 +428,12 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_lod_bias", "bias"), &Landscape3D::set_lod_bias);
 	ClassDB::bind_method(D_METHOD("get_lod_bias"), &Landscape3D::get_lod_bias);
 
+	ClassDB::bind_method(D_METHOD("set_occluder_enabled", "enabled"), &Landscape3D::set_occluder_enabled);
+	ClassDB::bind_method(D_METHOD("is_occluder_enabled"), &Landscape3D::is_occluder_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_occluder_detail", "detail"), &Landscape3D::set_occluder_detail);
+	ClassDB::bind_method(D_METHOD("get_occluder_detail"), &Landscape3D::get_occluder_detail);
+
 	ClassDB::bind_method(D_METHOD("set_cast_shadow", "setting"), &Landscape3D::set_cast_shadow);
 	ClassDB::bind_method(D_METHOD("get_cast_shadow"), &Landscape3D::get_cast_shadow);
 
@@ -503,6 +509,10 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw_chunks"), "set_debug_draw_chunks", "is_debug_draw_chunks_enabled");
 
+	ADD_GROUP("Occlusion Culling", "occluder_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "occluder_enabled"), "set_occluder_enabled", "is_occluder_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "occluder_detail", PROPERTY_HINT_ENUM, "1x1 Quad (Fastest):1,2x2 Quads:2,4x4 Quads:4,8x8 Quads:8,16x16 Quads:16,32x32 Quads (Most Accurate):32"), "set_occluder_detail", "get_occluder_detail");
+
 	ADD_GROUP("Parallax Occlusion Mapping", "pom_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_enabled"), "set_pom_enabled", "is_pom_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_min_layers", PROPERTY_HINT_RANGE, "1,64,1"), "set_pom_min_layers", "get_pom_min_layers");
@@ -543,6 +553,9 @@ void Landscape3D::_notification(int p_what) {
 				if (kv.value.instance.is_valid()) {
 					RS::get_singleton()->instance_set_scenario(kv.value.instance, scenario);
 				}
+				if (kv.value.occluder_instance.is_valid()) {
+					RS::get_singleton()->instance_set_scenario(kv.value.occluder_instance, scenario);
+				}
 			}
 		} break;
 
@@ -550,6 +563,9 @@ void Landscape3D::_notification(int p_what) {
 			for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 				if (kv.value.instance.is_valid()) {
 					RS::get_singleton()->instance_set_scenario(kv.value.instance, RID());
+				}
+				if (kv.value.occluder_instance.is_valid()) {
+					RS::get_singleton()->instance_set_scenario(kv.value.occluder_instance, RID());
 				}
 			}
 		} break;
@@ -568,6 +584,9 @@ void Landscape3D::_notification(int p_what) {
 			for (KeyValue<Vector2i, Chunk> &kv : chunks) {
 				if (kv.value.instance.is_valid()) {
 					RS::get_singleton()->instance_set_visible(kv.value.instance, vis);
+				}
+				if (kv.value.occluder_instance.is_valid()) {
+					RS::get_singleton()->instance_set_visible(kv.value.occluder_instance, vis);
 				}
 			}
 		} break;
@@ -852,15 +871,158 @@ void Landscape3D::_clear_chunks() {
 		if (kv.value.instance.is_valid()) {
 			RS::get_singleton()->free_rid(kv.value.instance);
 		}
+		_free_chunk_occluder(kv.value);
 	}
 	chunks.clear();
 }
 
-void Landscape3D::_update_chunk_transform(Chunk &p_chunk) {
-	if (!p_chunk.instance.is_valid()) {
+int Landscape3D::_get_occluder_stride() const {
+	const int detail = CLAMP(occluder_detail, 1, CHUNK_QUADS);
+	int quads = 1;
+	while (quads * 2 <= detail) {
+		quads *= 2;
+	}
+	return CHUNK_QUADS / quads;
+}
+
+void Landscape3D::_free_chunk_occluder(Chunk &p_chunk) {
+	if (p_chunk.occluder_instance.is_valid()) {
+		RS::get_singleton()->free_rid(p_chunk.occluder_instance);
+		p_chunk.occluder_instance = RID();
+	}
+	if (p_chunk.occluder.is_valid()) {
+		RS::get_singleton()->free_rid(p_chunk.occluder);
+		p_chunk.occluder = RID();
+	}
+}
+
+void Landscape3D::_rebuild_all_occluders() {
+	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
+		_rebuild_chunk_occluder(kv.value, kv.key);
+	}
+}
+
+// Builds this chunk's occluder: the same surface, decimated to a grid of
+// occluder_detail x occluder_detail quads, with every vertex pushed down to
+// the lowest heightmap sample within one occluder quad of it.
+//
+// That minimum is what makes the simplification safe. Occlusion culling may
+// only ever claim less occlusion than the real geometry provides - an occluder
+// poking out above the surface it stands in for would hide things that are in
+// fact visible, which reads as geometry popping in and out - and taking the
+// minimum over a full stride in each direction guarantees the opposite: every
+// point of the terrain inside an occluder quad is within one stride of both of
+// that quad's ends along each axis, so both ends sit at or below it, and so
+// does everything the quad interpolates between them. The cost is that narrow
+// crevices flatten out and sharp ridges lose a little height, which only ever
+// costs some occlusion.
+//
+// Neighboring chunks agree on the shared edge vertices (the window is centered
+// on the vertex, not on the chunk), so the per-chunk occluders join up into one
+// continuous surface with no cracks for the depth buffer to leak through.
+void Landscape3D::_rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coord) {
+	if (!occluder_enabled || terrain_data.is_null()) {
+		_free_chunk_occluder(p_chunk);
 		return;
 	}
-	RS::get_singleton()->instance_set_transform(p_chunk.instance, _get_safe_global_transform() * Transform3D(Basis(), p_chunk.local_origin));
+
+	const int stride = _get_occluder_stride();
+	const int steps = CHUNK_QUADS / stride;
+	const int base_ix = p_coord.x * CHUNK_QUADS;
+	const int base_iz = p_coord.y * CHUNK_QUADS;
+	const float spacing = terrain_data->get_vertex_spacing();
+
+	const Rect2i height_region(base_ix - stride, base_iz - stride, CHUNK_QUADS + 2 * stride + 1, CHUNK_QUADS + 2 * stride + 1);
+	const PackedFloat32Array heights = terrain_data->get_height_region(height_region);
+	const int height_w = height_region.size.x;
+
+	PackedVector3Array vertices;
+	vertices.resize((steps + 1) * (steps + 1));
+	Vector3 *vertices_ptr = vertices.ptrw();
+
+	for (int jz = 0; jz <= steps; jz++) {
+		for (int jx = 0; jx <= steps; jx++) {
+			// The vertex sits on the chunk's sample (jx * stride, jz * stride),
+			// which the padded fetch holds one stride further in, so the
+			// window around it starts back at (jx * stride, jz * stride).
+			const int local_x = jx * stride;
+			const int local_z = jz * stride;
+			float lowest = heights[local_z * height_w + local_x];
+			for (int sz = 0; sz <= 2 * stride; sz++) {
+				const float *row = &heights.ptr()[(local_z + sz) * height_w + local_x];
+				for (int sx = 0; sx <= 2 * stride; sx++) {
+					lowest = MIN(lowest, row[sx]);
+				}
+			}
+			vertices_ptr[jz * (steps + 1) + jx] = Vector3(local_x * spacing, lowest, local_z * spacing);
+		}
+	}
+
+	const Rect2i hole_region(base_ix, base_iz, CHUNK_QUADS + 1, CHUNK_QUADS + 1);
+	const PackedByteArray holes = terrain_data->get_hole_region(hole_region);
+	const int hole_w = hole_region.size.x;
+
+	// A quad that covers any hole at all is dropped: you can see through a
+	// hole, so nothing standing behind one may be culled because of it.
+	auto quad_covers_hole = [&](int jx, int jz) {
+		for (int sz = jz * stride; sz <= (jz + 1) * stride; sz++) {
+			for (int sx = jx * stride; sx <= (jx + 1) * stride; sx++) {
+				if (holes[sz * hole_w + sx] != 0) {
+					return true;
+				}
+			}
+		}
+		return false;
+	};
+
+	PackedInt32Array indices;
+	for (int jz = 0; jz < steps; jz++) {
+		for (int jx = 0; jx < steps; jx++) {
+			if (quad_covers_hole(jx, jz)) {
+				continue;
+			}
+			const int a = jz * (steps + 1) + jx;
+			const int b = a + 1;
+			const int c = a + steps + 1;
+			const int d = c + 1;
+			indices.push_back(a);
+			indices.push_back(b);
+			indices.push_back(c);
+			indices.push_back(b);
+			indices.push_back(d);
+			indices.push_back(c);
+		}
+	}
+
+	if (indices.is_empty()) {
+		_free_chunk_occluder(p_chunk);
+		return;
+	}
+
+	if (p_chunk.occluder.is_null()) {
+		p_chunk.occluder = RS::get_singleton()->occluder_create();
+	}
+	RS::get_singleton()->occluder_set_mesh(p_chunk.occluder, vertices, indices);
+
+	if (p_chunk.occluder_instance.is_null()) {
+		const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
+		p_chunk.occluder_instance = RS::get_singleton()->instance_create2(p_chunk.occluder, scenario);
+	} else {
+		RS::get_singleton()->instance_set_base(p_chunk.occluder_instance, p_chunk.occluder);
+	}
+
+	RS::get_singleton()->instance_set_transform(p_chunk.occluder_instance, _get_safe_global_transform() * Transform3D(Basis(), p_chunk.local_origin));
+	RS::get_singleton()->instance_set_visible(p_chunk.occluder_instance, is_visible_in_tree());
+}
+
+void Landscape3D::_update_chunk_transform(Chunk &p_chunk) {
+	const Transform3D xform = _get_safe_global_transform() * Transform3D(Basis(), p_chunk.local_origin);
+	if (p_chunk.instance.is_valid()) {
+		RS::get_singleton()->instance_set_transform(p_chunk.instance, xform);
+	}
+	if (p_chunk.occluder_instance.is_valid()) {
+		RS::get_singleton()->instance_set_transform(p_chunk.occluder_instance, xform);
+	}
 }
 
 void Landscape3D::_apply_render_settings_to_chunk(const Chunk &p_chunk) {
@@ -1044,11 +1206,13 @@ void Landscape3D::_rebuild_chunk(const Vector2i &p_coord) {
 	chunk.local_origin = Vector3(base_ix * spacing, 0, base_iz * spacing);
 
 	if (base_indices.is_empty()) {
-		// Every quad in this chunk is a hole: nothing to draw or collide with.
+		// Every quad in this chunk is a hole: nothing to draw, collide with or
+		// occlude behind.
 		if (chunk.instance.is_valid()) {
 			RS::get_singleton()->free_rid(chunk.instance);
 			chunk.instance = RID();
 		}
+		_free_chunk_occluder(chunk);
 		chunk.mesh.unref();
 		return;
 	}
@@ -1085,6 +1249,7 @@ void Landscape3D::_rebuild_chunk(const Vector2i &p_coord) {
 		RS::get_singleton()->instance_set_base(chunk.instance, chunk.mesh->get_rid());
 	}
 
+	_rebuild_chunk_occluder(chunk, p_coord);
 	_update_chunk_transform(chunk);
 	_apply_render_settings_to_chunk(chunk);
 }
@@ -1183,6 +1348,38 @@ float Landscape3D::get_skirt_depth() const {
 void Landscape3D::set_lod_bias(float p_bias) {
 	lod_bias = MAX(p_bias, 0.001f);
 	_rebuild_all_chunks();
+}
+
+void Landscape3D::set_occluder_enabled(bool p_enabled) {
+	if (occluder_enabled == p_enabled) {
+		return;
+	}
+	occluder_enabled = p_enabled;
+	_rebuild_all_occluders();
+}
+
+bool Landscape3D::is_occluder_enabled() const {
+	return occluder_enabled;
+}
+
+void Landscape3D::set_occluder_detail(int p_detail) {
+	int detail = CLAMP(p_detail, 1, CHUNK_QUADS);
+	// Snap to a power of two, so the occluder grid lines up with the chunk's
+	// own vertices however it was set (the Inspector only offers those, but a
+	// script can set anything).
+	int snapped = 1;
+	while (snapped * 2 <= detail) {
+		snapped *= 2;
+	}
+	if (occluder_detail == snapped) {
+		return;
+	}
+	occluder_detail = snapped;
+	_rebuild_all_occluders();
+}
+
+int Landscape3D::get_occluder_detail() const {
+	return occluder_detail;
 }
 
 float Landscape3D::get_lod_bias() const {

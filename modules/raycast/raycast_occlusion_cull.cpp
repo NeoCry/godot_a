@@ -616,6 +616,7 @@ void RaycastOcclusionCull::buffer_update(RID p_buffer, const Transform3D &p_cam_
 
 	scenario.raycast(buffer.camera_rays, buffer.camera_ray_masks.ptr(), buffer.camera_rays_tile_count);
 	buffer.sort_rays(-p_cam_transform.basis.get_column(2), p_cam_orthogonal);
+	buffer.set_camera(p_cam_transform, p_cam_projection, p_cam_orthogonal);
 	buffer.update_mips();
 }
 
@@ -626,9 +627,9 @@ RaycastOcclusionCull::HZBuffer *RaycastOcclusionCull::buffer_get_ptr(RID p_buffe
 	return &buffers[p_buffer];
 }
 
-RID RaycastOcclusionCull::buffer_get_debug_texture(RID p_buffer) {
+RID RaycastOcclusionCull::buffer_get_debug_texture(RID p_buffer, bool p_pyramid) {
 	ERR_FAIL_COND_V(!buffers.has(p_buffer), RID());
-	return buffers[p_buffer].get_debug_texture();
+	return p_pyramid ? buffers[p_buffer].get_debug_pyramid_texture() : buffers[p_buffer].get_debug_texture();
 }
 
 ////////////////////////////////////////////////////////

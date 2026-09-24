@@ -35,6 +35,7 @@
 #include "core/math/geometry_3d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/worker_thread_pool.h"
+#include "servers/rendering/renderer_scene_occlusion_cull_hzb.h"
 #include "servers/rendering/rendering_light_culler.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -4763,7 +4764,12 @@ RendererSceneCull::RendererSceneCull() {
 	thread_cull_threshold = MAX(thread_cull_threshold, (uint32_t)WorkerThreadPool::get_singleton()->get_thread_count()); //make sure there is at least one thread per CPU
 	RendererSceneOcclusionCull::HZBuffer::occlusion_jitter_enabled = GLOBAL_GET("rendering/occlusion_culling/jitter_projection");
 
-	dummy_occlusion_culling = memnew(RendererSceneOcclusionCull);
+	// Default occlusion culling backend. It is always available, so it also
+	// acts as the fallback when the "rendering/occlusion_culling/backend"
+	// setting asks for a backend this build does not have. A module providing
+	// another backend (see modules/raycast) replaces the singleton with its
+	// own after this point, leaving this one unused but harmless.
+	default_occlusion_culling = memnew(HZBOcclusionCull);
 
 	light_culler = memnew(RenderingLightCuller);
 
@@ -4789,7 +4795,7 @@ RendererSceneCull::~RendererSceneCull() {
 	}
 	scene_cull_result_threads.clear();
 
-	memdelete(dummy_occlusion_culling);
+	memdelete(default_occlusion_culling);
 
 	if (light_culler) {
 		memdelete(light_culler);

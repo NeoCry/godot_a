@@ -41,6 +41,10 @@ class RendererSceneOcclusionCull {
 protected:
 	static RendererSceneOcclusionCull *singleton;
 
+	// The backend that was in use when this one was created, put back in place
+	// when it goes away again.
+	RendererSceneOcclusionCull *previous_singleton = nullptr;
+
 public:
 	class HZBuffer {
 	protected:
@@ -53,8 +57,33 @@ public:
 		PackedByteArray debug_data;
 		float debug_tex_range = 0.0f;
 
+		// Second debug image, holding every level of the pyramid instead of
+		// just the finest one (see get_debug_pyramid_texture). Kept apart from
+		// the one above because the two are different sizes.
+		RID debug_pyramid_texture;
+		Ref<Image> debug_pyramid_image;
+		PackedByteArray debug_pyramid_data;
+		Size2i debug_pyramid_size;
+
+		// Depth to the 0-255 the debug images are drawn with: near is dark,
+		// empty (nothing rasterized) is white, on a log scale so that the
+		// near-camera range where occlusion matters does not collapse into a
+		// few values.
+		_FORCE_INLINE_ uint8_t _depth_to_debug_value(float p_depth) const {
+			return MIN(Math::log(1.0 + p_depth) / Math::log(1.0 + debug_tex_range), 1.0) * 255;
+		}
+
 		uint64_t occlusion_frame = 0;
 		Size2i occlusion_buffer_size;
+
+		// The camera the depth pyramid was last filled from. Depth only means
+		// anything together with the view it was rendered from, so anything
+		// testing the pyramid outside of the frame that produced it (see
+		// get_depth_data(), used by GPU-driven culling) has to use this camera
+		// rather than the one it is culling for.
+		Transform3D camera_transform;
+		Projection camera_projection;
+		bool camera_orthogonal = false;
 
 		_FORCE_INLINE_ bool _is_occluded(const real_t p_bounds[6], const Vector3 &p_cam_position, const Transform3D &p_cam_inv_transform, const Projection &p_cam_projection, real_t p_near, bool p_is_orthogonal) const {
 			if (is_empty()) {
@@ -200,7 +229,38 @@ public:
 		}
 
 		RID get_debug_texture();
+
+		// The whole pyramid in one image: the finest level on the left, the
+		// coarser ones stacked in a column beside it, on black. Shows what the
+		// occlusion test actually reads, since it samples whichever level
+		// matches the tested object's screen footprint rather than this one.
+		RID get_debug_pyramid_texture();
+
 		const Size2i &get_occlusion_buffer_size() const { return occlusion_buffer_size; }
+
+		// Called by every backend right after it has filled the buffer.
+		void set_camera(const Transform3D &p_transform, const Projection &p_projection, bool p_orthogonal) {
+			camera_transform = p_transform;
+			camera_projection = p_projection;
+			camera_orthogonal = p_orthogonal;
+		}
+		const Transform3D &get_camera_transform() const { return camera_transform; }
+		const Projection &get_camera_projection() const { return camera_projection; }
+		bool is_camera_orthogonal() const { return camera_orthogonal; }
+
+		// The depth pyramid itself, for consumers that do their own occlusion
+		// test instead of calling is_occluded() (GPU-driven culling uploads it
+		// and tests in a compute shader, see FoliageGPUCuller). The mips are
+		// laid out one after another in a single allocation, coarsest last, so
+		// the whole pyramid uploads in one go and a mip's first texel is the
+		// sum of the sizes before it.
+		//
+		// Only safe to read on the thread that fills the buffer, which is the
+		// rendering thread.
+		_FORCE_INLINE_ uint32_t get_mip_count() const { return mips.size(); }
+		_FORCE_INLINE_ Size2i get_mip_size(uint32_t p_mip) const { return sizes[p_mip]; }
+		_FORCE_INLINE_ const float *get_depth_data() const { return data.ptr(); }
+		_FORCE_INLINE_ uint32_t get_depth_data_size() const { return data.size(); }
 
 		virtual ~HZBuffer() {}
 	};
@@ -231,18 +291,27 @@ public:
 	virtual void buffer_set_size(RID p_buffer, const Vector2i &p_size) { _print_warning(); }
 	virtual void buffer_update(RID p_buffer, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal) {}
 
-	virtual RID buffer_get_debug_texture(RID p_buffer) {
+	virtual RID buffer_get_debug_texture(RID p_buffer, bool p_pyramid) {
 		_print_warning();
 		return RID();
 	}
 
 	virtual void set_build_quality(RSE::ViewportOcclusionCullingBuildQuality p_quality) {}
 
+	// Several backends can be alive at once: the rendering server always
+	// creates the built-in one, and a module providing another (see
+	// modules/raycast) takes over from it afterwards if the project asks for
+	// it. Creating one makes it the backend in use, and destroying it hands
+	// the role back to whichever one it took over from, rather than leaving
+	// the engine with no backend at all.
 	RendererSceneOcclusionCull() {
+		previous_singleton = singleton;
 		singleton = this;
 	}
 
 	virtual ~RendererSceneOcclusionCull() {
-		singleton = nullptr;
+		if (singleton == this) {
+			singleton = previous_singleton;
+		}
 	}
 };
