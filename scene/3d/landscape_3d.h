@@ -87,6 +87,10 @@ private:
 	struct Chunk {
 		Ref<ArrayMesh> mesh;
 		RID instance;
+		// Simplified stand-in geometry fed to the renderer's occlusion culling
+		// (see _rebuild_chunk_occluder), not drawn by itself.
+		RID occluder;
+		RID occluder_instance;
 		Vector3 local_origin;
 	};
 
@@ -105,6 +109,22 @@ private:
 
 	float skirt_depth = 2.0;
 	float lod_bias = 1.0;
+
+	// Occlusion culling. Every chunk hands the renderer a decimated,
+	// deliberately pessimistic copy of its own surface as an occluder, so that
+	// hills hide whatever stands behind them (foliage especially, which is
+	// both the densest thing a terrain usually carries and the most likely to
+	// be completely hidden by a slope) without anyone having to author and
+	// bake OccluderInstance3D geometry by hand. Only does anything while
+	// occlusion culling is actually on, i.e. with
+	// "rendering/occlusion_culling/use_occlusion_culling" enabled (or
+	// Viewport.use_occlusion_culling on the viewport doing the rendering).
+	bool occluder_enabled = true;
+	// Quads per chunk edge in that simplified surface, always a power of two
+	// no larger than CHUNK_QUADS: the occluder for one chunk is a grid of
+	// occluder_detail x occluder_detail quads, whatever the terrain's own
+	// resolution is.
+	int occluder_detail = 8;
 
 	// Parallax Occlusion Mapping (see TerrainLayer.height_texture/
 	// heightmap_scale for the per-layer half of this). Off by default, like
@@ -158,6 +178,10 @@ private:
 	void _rebuild_chunks_in_region(const Rect2i &p_vertex_region);
 	void _rebuild_chunk(const Vector2i &p_coord);
 	void _clear_chunks();
+	int _get_occluder_stride() const;
+	void _rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coord);
+	void _free_chunk_occluder(Chunk &p_chunk);
+	void _rebuild_all_occluders();
 	void _update_chunk_transform(Chunk &p_chunk);
 	void _apply_render_settings_to_chunk(const Chunk &p_chunk);
 	Vector2i _get_chunk_grid_size() const;
@@ -200,6 +224,12 @@ public:
 
 	void set_lod_bias(float p_bias);
 	float get_lod_bias() const;
+
+	void set_occluder_enabled(bool p_enabled);
+	bool is_occluder_enabled() const;
+
+	void set_occluder_detail(int p_detail);
+	int get_occluder_detail() const;
 
 	void set_cast_shadow(GeometryInstance3D::ShadowCastingSetting p_setting);
 	GeometryInstance3D::ShadowCastingSetting get_cast_shadow() const;

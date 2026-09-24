@@ -3312,21 +3312,34 @@
 			[b]Note:[/b] [member rendering/mesh_lod/lod_change/threshold_pixels] does not affect [GeometryInstance3D] visibility ranges (also known as "manual" LOD or hierarchical LOD).
 			[b]Note:[/b] This property is only read when the project starts. To adjust the automatic LOD threshold at runtime, set [member Viewport.mesh_lod_threshold] on the root [Viewport].
 		</member>
+		<member name="rendering/occlusion_culling/backend" type="int" setter="" getter="" default="0">
+			How the occlusion culling buffer is filled in.
+			[b]Hierarchical Z-Buffer (Rasterized)[/b] (the default) scan-converts the occluders into the buffer on the CPU, the classic hierarchical Z-buffer approach: the work it does per occluder triangle is proportional to the handful of buffer pixels that triangle covers, which is what makes it cheap enough to keep a whole terrain's worth of occluders on screen (see [member Landscape3D.occluder_enabled]). It is part of the rendering server itself, so it is available in every build, including Web export templates.
+			[b]Raycast (Embree)[/b] instead traces one ray per buffer pixel through a [url=https://www.embree.org/]Embree[/url] BVH built from the occluders. It costs the same regardless of how much of the screen the occluders cover, which can be an advantage for a scene with very many large occluders, and is the behavior projects had before the rasterized backend existed. It requires the [code]raycast[/code] module (compiled in by default on desktop platforms, but not in Web export templates); the rasterized backend is used instead where it is missing. See also [member rendering/occlusion_culling/bvh_build_quality].
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
 		<member name="rendering/occlusion_culling/bvh_build_quality" type="int" setter="" getter="" default="2">
 			The [url=https://en.wikipedia.org/wiki/Bounding_volume_hierarchy]Bounding Volume Hierarchy[/url] quality to use when rendering the occlusion culling buffer. Higher values will result in more accurate occlusion culling, at the cost of higher CPU usage. See also [member rendering/occlusion_culling/occlusion_rays_per_thread].
+			[b]Note:[/b] This setting only applies to the [code]Raycast (Embree)[/code] value of [member rendering/occlusion_culling/backend], which is the only one that builds a BVH.
 			[b]Note:[/b] This property is only read when the project starts. To adjust the BVH build quality at runtime, use [method RenderingServer.viewport_set_occlusion_culling_build_quality].
 		</member>
 		<member name="rendering/occlusion_culling/jitter_projection" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], the projection used for rendering the occlusion buffer will be jittered. This can help prevent objects being incorrectly culled when visible through small gaps.
 		</member>
+		<member name="rendering/occlusion_culling/occluder_triangle_budget" type="int" setter="" getter="" default="131072">
+			The maximum number of occluder triangles rasterized into the occlusion culling buffer in one frame. When the occluders in view add up to more than this, the ones covering the most screen are rasterized first and the rest are skipped for that frame, which bounds the cost of a scene with a very large number of occluders (a big [Landscape3D], typically) at the price of culling a little less. Occluders too small to cover a buffer pixel are always skipped and do not count against this.
+			[b]Note:[/b] This setting only applies to the [code]Hierarchical Z-Buffer (Rasterized)[/code] value of [member rendering/occlusion_culling/backend].
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
 		<member name="rendering/occlusion_culling/occlusion_rays_per_thread" type="int" setter="" getter="" default="512">
 			The number of occlusion rays traced per CPU thread. Higher values will result in more accurate occlusion culling, at the cost of higher CPU usage. The occlusion culling buffer's pixel count is roughly equal to [code]occlusion_rays_per_thread * number_of_logical_cpu_cores[/code], so it will depend on the system's CPU. Therefore, CPUs with fewer cores will use a lower resolution to attempt keeping performance costs even across devices. See also [member rendering/occlusion_culling/bvh_build_quality].
+			[b]Note:[/b] This sizes the occlusion culling buffer for every [member rendering/occlusion_culling/backend], including the rasterized one, which traces no rays but uses a buffer of the same resolution.
 			[b]Note:[/b] This property is only read when the project starts. To adjust the number of occlusion rays traced per thread at runtime, use [method RenderingServer.viewport_set_occlusion_rays_per_thread].
 		</member>
 		<member name="rendering/occlusion_culling/use_occlusion_culling" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], [OccluderInstance3D] nodes will be usable for occlusion culling in 3D in the root viewport. In custom viewports, [member Viewport.use_occlusion_culling] must be set to [code]true[/code] instead.
+			A [Landscape3D] occludes on its own as well, without any [OccluderInstance3D] (see [member Landscape3D.occluder_enabled]).
 			[b]Note:[/b] Enabling occlusion culling has a cost on the CPU. Only enable occlusion culling if you actually plan to use it. Large open scenes with few or no objects blocking the view will generally not benefit much from occlusion culling. Large open scenes generally benefit more from mesh LOD and visibility ranges ([member GeometryInstance3D.visibility_range_begin] and [member GeometryInstance3D.visibility_range_end]) compared to occlusion culling.
-			[b]Note:[/b] Due to memory constraints, occlusion culling is not supported by default in Web export templates. It can be enabled by compiling custom Web export templates with [code]module_raycast_enabled=yes[/code].
 		</member>
 		<member name="rendering/reflections/reflection_atlas/reflection_count" type="int" setter="" getter="" default="64">
 			Number of cubemaps to store in the reflection atlas. The number of [ReflectionProbe]s in a scene will be limited by this amount. A higher number requires more VRAM.

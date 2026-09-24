@@ -41,6 +41,10 @@ class RendererSceneOcclusionCull {
 protected:
 	static RendererSceneOcclusionCull *singleton;
 
+	// The backend that was in use when this one was created, put back in place
+	// when it goes away again.
+	RendererSceneOcclusionCull *previous_singleton = nullptr;
+
 public:
 	class HZBuffer {
 	protected:
@@ -238,11 +242,20 @@ public:
 
 	virtual void set_build_quality(RSE::ViewportOcclusionCullingBuildQuality p_quality) {}
 
+	// Several backends can be alive at once: the rendering server always
+	// creates the built-in one, and a module providing another (see
+	// modules/raycast) takes over from it afterwards if the project asks for
+	// it. Creating one makes it the backend in use, and destroying it hands
+	// the role back to whichever one it took over from, rather than leaving
+	// the engine with no backend at all.
 	RendererSceneOcclusionCull() {
+		previous_singleton = singleton;
 		singleton = this;
 	}
 
 	virtual ~RendererSceneOcclusionCull() {
-		singleton = nullptr;
+		if (singleton == this) {
+			singleton = previous_singleton;
+		}
 	}
 };
