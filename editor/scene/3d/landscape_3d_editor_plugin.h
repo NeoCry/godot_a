@@ -128,6 +128,11 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	SpinBox *generate_slope_min_spin = nullptr;
 	SpinBox *generate_slope_max_spin = nullptr;
 	SpinBox *generate_slope_falloff_spin = nullptr;
+	Label *generate_curvature_range_label = nullptr;
+	SpinBox *generate_curvature_min_spin = nullptr;
+	SpinBox *generate_curvature_max_spin = nullptr;
+	SpinBox *generate_curvature_falloff_spin = nullptr;
+	SpinBox *generate_curvature_radius_spin = nullptr;
 	CheckBox *generate_normalize_check = nullptr;
 
 	Mode mode = MODE_RAISE;
@@ -166,6 +171,9 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 
 	void _generate_layer_mask_pressed();
 	void _do_generate_layer_mask();
+	// Curvature values have no intuitive scale, so the dialog states the range
+	// the terrain actually covers at the chosen radius (which changes it).
+	void _update_curvature_range_label(double p_unused = 0.0);
 	// Fills p_option with the terrain's current layers and preselects the one
 	// the Paint brush is on; returns false if there are none to offer.
 	bool _fill_layer_option(OptionButton *p_option);

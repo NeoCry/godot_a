@@ -27,12 +27,31 @@
 			<param index="4" name="slope_min" type="float" default="0.0" />
 			<param index="5" name="slope_max" type="float" default="90.0" />
 			<param index="6" name="slope_falloff" type="float" default="0.0" />
-			<param index="7" name="normalize" type="bool" default="true" />
+			<param index="7" name="curvature_min" type="float" default="-100000.0" />
+			<param index="8" name="curvature_max" type="float" default="100000.0" />
+			<param index="9" name="curvature_falloff" type="float" default="0.0" />
+			<param index="10" name="curvature_radius" type="int" default="2" />
+			<param index="11" name="normalize" type="bool" default="true" />
 			<description>
-				Builds the mask for the [TerrainLayer] at [param layer_index] out of the terrain's own shape rather than an image, the procedural counterpart to [method import_layer_mask]: a sample gets weight where its height falls between [param height_min] and [param height_max] (in world units, the scale [method get_height] returns) [i]and[/i] its slope falls between [param slope_min] and [param slope_max] degrees, where [code]0[/code] is flat ground and [code]90[/code] is a vertical wall. This is the usual way to texture a terrain by its shape - rock on cliff faces, snow on peaks, sand in the low flats - without authoring a mask by hand.
-				Both bands fade in and out over their falloff ([param height_falloff] in world units, [param slope_falloff] in degrees) instead of ending abruptly, which is what keeps a visible contour line from appearing around the result; a falloff of [code]0[/code] gives a hard edge. Both defaults cover everything, so a call that only sets one criterion's numbers leaves the other unconstrained.
-				Because both criteria have to be met, one call can express a rule like "snow above 180 m, but not on anything steeper than 40 degrees". Layering several such rules is a matter of calling this once per layer, in the order the layers should take precedence: each call takes what it needs from the layers already there (see [param normalize] under [method import_layer_mask], which means the same thing here).
+				Builds the mask for the [TerrainLayer] at [param layer_index] out of the terrain's own shape rather than an image, the procedural counterpart to [method import_layer_mask]. A sample gets weight where it satisfies all three of:
+				- [b]Height[/b], between [param height_min] and [param height_max] in world units (the scale [method get_height] returns).
+				- [b]Slope[/b], between [param slope_min] and [param slope_max] degrees, where [code]0[/code] is flat ground and [code]90[/code] is a vertical wall.
+				- [b]Curvature[/b], between [param curvature_min] and [param curvature_max] as [method get_curvature] measures it at [param curvature_radius]: negative in a hollow, positive on a rise, zero on ground that is flat or evenly sloping however steep.
+				This is the usual way to texture a terrain by its shape - rock on cliff faces, snow on peaks, sand in the low flats, mud collecting in hollows - without authoring a mask by hand.
+				Each band fades in and out over its own falloff ([param height_falloff] in world units, [param slope_falloff] in degrees, [param curvature_falloff] in curvature) instead of ending abruptly, which is what keeps a visible contour line from appearing around the result; a falloff of [code]0[/code] gives a hard edge. Every band defaults to covering everything, so a call that only sets one criterion's numbers leaves the others unconstrained.
+				Because all three criteria have to be met, one call can express a rule like "snow above 180 m, but not on anything steeper than 40 degrees", or "mud in the hollows of the low ground". Layering several such rules is a matter of calling this once per layer, in the order the layers should take precedence: each call takes what it needs from the layers already there (see [param normalize] under [method import_layer_mask], which means the same thing here).
 				[b]Note:[/b] this reads the heightmap as it stands, so it does not keep following later sculpting - run it again after reshaping the terrain. Like [method import_layer_mask], it replaces that layer's weights outright and is not undoable.
+			</description>
+		</method>
+		<method name="get_curvature" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="radius" type="int" default="2" />
+			<description>
+				Returns how much the surface bulges out of, or dishes into, its surroundings at height sample [param x], [param z]: negative in a hollow, positive on a rise or ridge, and [code]0[/code] on any ground that is flat or evenly sloping, however steep. It is the [i]change[/i] in slope, not the slope itself - see [method get_normal] for that - which is what tells a dip apart from a hillside.
+				It is measured as the sample's height against the average of the four samples [param radius] apart from it, over the distance to them. Being a ratio rather than a height difference means the same terrain shape reads the same whatever [member vertex_spacing] or world scale it was built at, but it also means the numbers run small and have no natural unit: read the range a terrain actually covers off this method rather than guessing thresholds for [method generate_layer_mask].
+				[param radius] chooses which size of feature is measured, and with it how much of the single-sample noise an imported heightmap carries gets ignored: [code]1[/code] catches the finest bumps the sample grid can hold, while larger radii pick out broad valleys and ridges and step over small detail.
 			</description>
 		</method>
 		<method name="get_height" qualifiers="const">

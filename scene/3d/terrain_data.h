@@ -159,19 +159,37 @@ public:
 	// resolution is resampled onto the current one instead.
 	void import_layer_mask(const Ref<Image> &p_image, int p_layer_index, MaskChannel p_channel = MASK_CHANNEL_RED, bool p_normalize = true);
 
-	// Builds a layer's mask out of the terrain's own shape instead of an image:
-	// where it sits between p_height_min and p_height_max (in world units) and
-	// how steep it is there, from p_slope_min to p_slope_max degrees (0 is
-	// flat, 90 is a vertical wall). Both bands fade in and out over their
-	// falloff (meters and degrees respectively) rather than cutting off hard,
-	// and a sample has to satisfy both to get any weight - which is what lets
-	// one call mean "snow on high ground, but not on cliff faces". The default
-	// bands cover every height and every slope, so passing only one criterion's
-	// numbers leaves the other unconstrained.
+	// Builds a layer's mask out of the terrain's own shape instead of an image,
+	// from three bands a sample has to satisfy all of:
+	//  - height, between p_height_min and p_height_max in world units;
+	//  - slope, from p_slope_min to p_slope_max degrees (0 is flat, 90 is a
+	//    vertical wall);
+	//  - curvature, how much the ground bulges or dishes here (see
+	//    get_curvature): negative in a hollow, positive on a ridge.
+	// Each fades in and out over its own falloff rather than cutting off hard.
+	// Needing all three at once is what lets one call mean "snow on high
+	// ground, but not on cliff faces" or "mud in low hollows". Every band
+	// defaults to covering everything, so naming one criterion's numbers
+	// leaves the others unconstrained.
 	void generate_layer_mask(int p_layer_index,
 			float p_height_min = -100000.0, float p_height_max = 100000.0, float p_height_falloff = 0.0,
 			float p_slope_min = 0.0, float p_slope_max = 90.0, float p_slope_falloff = 0.0,
+			float p_curvature_min = -100000.0, float p_curvature_max = 100000.0, float p_curvature_falloff = 0.0,
+			int p_curvature_radius = 2,
 			bool p_normalize = true);
+
+	// How much the surface bulges out of (positive) or dishes into (negative)
+	// its surroundings at this sample: its height against the average of the
+	// four samples p_radius away, over the distance to them. Zero on any flat
+	// or evenly sloping ground, however steep - it is the change in slope, not
+	// the slope. Being a ratio rather than a height difference keeps the same
+	// terrain shape reading the same whatever vertex_spacing or world scale it
+	// is built at; the values still run small, so read a terrain's actual range
+	// off it rather than guessing thresholds. p_radius picks which size of
+	// feature is measured (and, with it, how much single-sample noise in an
+	// imported heightmap is ignored): 1 catches the finest bumps the grid can
+	// hold, larger radii pick out broader valleys and ridges.
+	float get_curvature(int p_x, int p_z, int p_radius = 2) const;
 
 	// Plain C++ helpers for Landscape3D's mesh building and texture upload; not
 	// bound to ClassDB, like FoliagePainter3D's own editor-only helpers.

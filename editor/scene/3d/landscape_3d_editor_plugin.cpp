@@ -309,8 +309,32 @@ void Landscape3DEditorPlugin::_generate_layer_mask_pressed() {
 	generate_range_label->set_text(vformat(TTR("This terrain spans %.2f m to %.2f m."), lowest, highest));
 	generate_height_min_spin->set_value(lowest);
 	generate_height_max_spin->set_value(highest);
+	_update_curvature_range_label();
 
 	generate_mask_dialog->popup_centered();
+}
+
+void Landscape3DEditorPlugin::_update_curvature_range_label(double p_unused) {
+	if (terrain == nullptr) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		return;
+	}
+
+	const int resolution = data->get_resolution();
+	const int radius = (int)generate_curvature_radius_spin->get_value();
+	float most_hollow = 0.0f;
+	float most_raised = 0.0f;
+	for (int z = 0; z < resolution; z++) {
+		for (int x = 0; x < resolution; x++) {
+			const float c = data->get_curvature(x, z, radius);
+			most_hollow = MIN(most_hollow, c);
+			most_raised = MAX(most_raised, c);
+		}
+	}
+	generate_curvature_range_label->set_text(vformat(TTR("At this radius the terrain runs %.4f (deepest hollow) to %.4f (sharpest rise)."), most_hollow, most_raised));
 }
 
 void Landscape3DEditorPlugin::_do_generate_layer_mask() {
@@ -329,6 +353,8 @@ void Landscape3DEditorPlugin::_do_generate_layer_mask() {
 	data->generate_layer_mask(layer_index,
 			generate_height_min_spin->get_value(), generate_height_max_spin->get_value(), generate_height_falloff_spin->get_value(),
 			generate_slope_min_spin->get_value(), generate_slope_max_spin->get_value(), generate_slope_falloff_spin->get_value(),
+			generate_curvature_min_spin->get_value(), generate_curvature_max_spin->get_value(), generate_curvature_falloff_spin->get_value(),
+			(int)generate_curvature_radius_spin->get_value(),
 			generate_normalize_check->is_pressed());
 }
 
@@ -953,6 +979,42 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	generate_slope_falloff_spin->set_value(5.0);
 	generate_slope_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the slope range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
 	generate_vbc->add_margin_child(TTR("Slope Falloff (degrees):"), generate_slope_falloff_spin);
+
+	generate_curvature_radius_spin = memnew(SpinBox);
+	generate_curvature_radius_spin->set_min(1.0);
+	generate_curvature_radius_spin->set_max(64.0);
+	generate_curvature_radius_spin->set_step(1.0);
+	generate_curvature_radius_spin->set_value(2.0);
+	generate_curvature_radius_spin->set_tooltip_text(TTR("How far apart, in height samples, the ground is compared against itself to tell a hollow from a rise. Small values catch fine bumps (and the single-sample noise an imported heightmap carries); larger ones pick out broad valleys and ridges."));
+	generate_vbc->add_margin_child(TTR("Curvature Radius (samples):"), generate_curvature_radius_spin);
+	generate_curvature_radius_spin->connect(SceneStringName(value_changed), callable_mp(this, &Landscape3DEditorPlugin::_update_curvature_range_label));
+
+	generate_curvature_range_label = memnew(Label);
+	generate_vbc->add_child(generate_curvature_range_label);
+
+	generate_curvature_min_spin = memnew(SpinBox);
+	generate_curvature_min_spin->set_min(-100000.0);
+	generate_curvature_min_spin->set_max(100000.0);
+	generate_curvature_min_spin->set_step(0.0001);
+	generate_curvature_min_spin->set_value(-100000.0);
+	generate_curvature_min_spin->set_tooltip_text(TTR("The layer only shows where the ground is at least this curved. Negative is a hollow, 0 is flat or evenly sloping however steep, positive is a rise. Leave at the minimum to put no lower limit on it."));
+	generate_vbc->add_margin_child(TTR("Curvature From (hollow ... rise):"), generate_curvature_min_spin);
+
+	generate_curvature_max_spin = memnew(SpinBox);
+	generate_curvature_max_spin->set_min(-100000.0);
+	generate_curvature_max_spin->set_max(100000.0);
+	generate_curvature_max_spin->set_step(0.0001);
+	generate_curvature_max_spin->set_value(100000.0);
+	generate_curvature_max_spin->set_tooltip_text(TTR("The layer only shows where the ground is at most this curved. Set this negative to catch hollows alone; leave at the maximum to put no upper limit on it."));
+	generate_vbc->add_margin_child(TTR("Curvature To (hollow ... rise):"), generate_curvature_max_spin);
+
+	generate_curvature_falloff_spin = memnew(SpinBox);
+	generate_curvature_falloff_spin->set_min(0.0);
+	generate_curvature_falloff_spin->set_max(100000.0);
+	generate_curvature_falloff_spin->set_step(0.0001);
+	generate_curvature_falloff_spin->set_value(0.0);
+	generate_curvature_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the curvature range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
+	generate_vbc->add_margin_child(TTR("Curvature Falloff:"), generate_curvature_falloff_spin);
 
 	generate_normalize_check = memnew(CheckBox);
 	generate_normalize_check->set_text(TTR("Take the weight from the other layers"));

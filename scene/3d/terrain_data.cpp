@@ -138,6 +138,7 @@ void TerrainData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_hole_region", "region", "holes"), &TerrainData::set_hole_region);
 
 	ClassDB::bind_method(D_METHOD("get_normal", "x", "z"), &TerrainData::get_normal);
+	ClassDB::bind_method(D_METHOD("get_curvature", "x", "z", "radius"), &TerrainData::get_curvature, DEFVAL(2));
 
 	ClassDB::bind_method(D_METHOD("get_height_at_position", "local_xz"), &TerrainData::get_height_at_position);
 	ClassDB::bind_method(D_METHOD("get_normal_at_position", "local_xz"), &TerrainData::get_normal_at_position);
@@ -145,7 +146,7 @@ void TerrainData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("fill_height", "height"), &TerrainData::fill_height);
 	ClassDB::bind_method(D_METHOD("import_heightmap", "image", "height_min", "height_max"), &TerrainData::import_heightmap);
 	ClassDB::bind_method(D_METHOD("import_layer_mask", "image", "layer_index", "channel", "normalize"), &TerrainData::import_layer_mask, DEFVAL(MASK_CHANNEL_RED), DEFVAL(true));
-	ClassDB::bind_method(D_METHOD("generate_layer_mask", "layer_index", "height_min", "height_max", "height_falloff", "slope_min", "slope_max", "slope_falloff", "normalize"), &TerrainData::generate_layer_mask, DEFVAL(-100000.0), DEFVAL(100000.0), DEFVAL(0.0), DEFVAL(0.0), DEFVAL(90.0), DEFVAL(0.0), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("generate_layer_mask", "layer_index", "height_min", "height_max", "height_falloff", "slope_min", "slope_max", "slope_falloff", "curvature_min", "curvature_max", "curvature_falloff", "curvature_radius", "normalize"), &TerrainData::generate_layer_mask, DEFVAL(-100000.0), DEFVAL(100000.0), DEFVAL(0.0), DEFVAL(0.0), DEFVAL(90.0), DEFVAL(0.0), DEFVAL(-100000.0), DEFVAL(100000.0), DEFVAL(0.0), DEFVAL(2), DEFVAL(true));
 
 	ClassDB::bind_method(D_METHOD("_get_storage_data"), &TerrainData::_get_storage_data);
 	ClassDB::bind_method(D_METHOD("_set_storage_data", "data"), &TerrainData::_set_storage_data);
@@ -562,9 +563,22 @@ static float _mask_band(float p_value, float p_lo, float p_hi, float p_falloff) 
 	return MIN(rising, falling);
 }
 
+float TerrainData::get_curvature(int p_x, int p_z, int p_radius) const {
+	const int r = MAX(p_radius, 1);
+	const float mean = (get_height(p_x - r, p_z) + get_height(p_x + r, p_z) +
+							   get_height(p_x, p_z - r) + get_height(p_x, p_z + r)) *
+			0.25f;
+	// Over the distance to those neighbours, so this stays a change in slope
+	// (dimensionless) rather than a height difference, and reads the same for
+	// the same shape at any vertex_spacing.
+	return (get_height(p_x, p_z) - mean) / (vertex_spacing * (float)r);
+}
+
 void TerrainData::generate_layer_mask(int p_layer_index,
 		float p_height_min, float p_height_max, float p_height_falloff,
 		float p_slope_min, float p_slope_max, float p_slope_falloff,
+		float p_curvature_min, float p_curvature_max, float p_curvature_falloff,
+		int p_curvature_radius,
 		bool p_normalize) {
 	ERR_FAIL_INDEX(p_layer_index, MAX_LAYERS);
 
@@ -574,13 +588,17 @@ void TerrainData::generate_layer_mask(int p_layer_index,
 
 	for (int z = 0; z < resolution; z++) {
 		for (int x = 0; x < resolution; x++) {
+			// Each band is only evaluated while the sample is still in the
+			// running, so a rule that rejects most of the terrain on height
+			// never pays for the height reads the other two need.
 			float m = _mask_band(get_height(x, z), p_height_min, p_height_max, p_height_falloff);
 			if (m > 0.0f) {
-				// Only worth the normal (four more height reads) once the
-				// height band has already let this sample through.
 				const Vector3 n = get_normal(x, z);
 				const float slope_deg = Math::rad_to_deg(Math::acos(CLAMP(n.y, -1.0f, 1.0f)));
 				m *= _mask_band(slope_deg, p_slope_min, p_slope_max, p_slope_falloff);
+			}
+			if (m > 0.0f) {
+				m *= _mask_band(get_curvature(x, z, p_curvature_radius), p_curvature_min, p_curvature_max, p_curvature_falloff);
 			}
 			values_w[z * resolution + x] = m;
 		}
