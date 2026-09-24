@@ -423,6 +423,19 @@ void FoliageSpawner3D::_sync_all_cells_settings() {
 			_configure_cell_node(kv.value.lod_nodes[i], level);
 		}
 	}
+
+	// The GPU path renders through its own nodes instead of the cells', and
+	// there are no cells at all while it is on, so without this every cell_*
+	// property would silently stop doing anything until the next Regenerate
+	// rebuilt the nodes from scratch.
+	for (uint32_t i = 0; i < gpu_nodes.size(); i++) {
+		if (gpu_nodes[i] == nullptr) {
+			continue;
+		}
+		const int level_index = i < gpu_lod_indices.size() ? gpu_lod_indices[i] : -1;
+		Ref<FoliageLODLevel> level = (level_index >= 0 && level_index < lod_levels.size()) ? Ref<FoliageLODLevel>(lod_levels[level_index]) : Ref<FoliageLODLevel>();
+		_configure_cell_node(gpu_nodes[i], level, false);
+	}
 }
 
 bool FoliageSpawner3D::_is_gpu_culling_active() const {
@@ -479,6 +492,7 @@ void FoliageSpawner3D::_clear_gpu_instances() {
 	}
 	gpu_nodes.clear();
 	gpu_multimeshes.clear();
+	gpu_lod_indices.clear();
 	set_process_internal(false);
 }
 
@@ -494,8 +508,15 @@ void FoliageSpawner3D::_rebuild_gpu_instances() {
 		return;
 	}
 
-	const Vector3 volume = volume_size.abs();
 	const int instance_count = (int)gpu_transforms.size();
+
+	// Taken from where the instances actually are rather than from volume_size,
+	// so that shrinking the volume after generating cannot leave the bounds too
+	// small and have the renderer cull foliage that is still there.
+	AABB bounds(gpu_transforms[0].origin, Vector3());
+	for (uint32_t i = 1; i < gpu_transforms.size(); i++) {
+		bounds.expand_to(gpu_transforms[i].origin);
+	}
 
 	LocalVector<FoliageGPUCuller::LODLevel> culler_levels;
 	float previous_range_end = 0.0f;
@@ -524,9 +545,9 @@ void FoliageSpawner3D::_rebuild_gpu_instances() {
 		mm->set_transform_format(MultiMesh::TRANSFORM_3D);
 		mm->set_instance_count(instance_count);
 		mm->set_mesh(level->get_mesh());
-		// The CPU cannot know how many instances survive culling, so the bounds
-		// have to be stated up front, covering the whole volume.
-		mm->set_custom_aabb(AABB(volume * -0.5f, volume).grow(instance_radius));
+		// How many instances survive culling is only known on the GPU, so the
+		// bounds are stated up front: every instance origin, plus its reach.
+		mm->set_custom_aabb(bounds.grow(instance_radius * MAX(1.0f, max_scale)));
 
 		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
 		node->set_multimesh(mm);
@@ -549,6 +570,7 @@ void FoliageSpawner3D::_rebuild_gpu_instances() {
 
 		gpu_multimeshes.push_back(mm);
 		gpu_nodes.push_back(node);
+		gpu_lod_indices.push_back(i);
 		culler_levels.push_back(culler_level);
 	}
 

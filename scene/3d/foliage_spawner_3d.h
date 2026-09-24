@@ -125,6 +125,9 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	LocalVector<Transform3D> gpu_transforms;
 	LocalVector<Ref<MultiMesh>> gpu_multimeshes;
 	LocalVector<MultiMeshInstance3D *> gpu_nodes;
+	// Which lod_levels entry each of the nodes above was built from. Levels
+	// without a mesh are skipped, so the indices are not one to one.
+	LocalVector<int> gpu_lod_indices;
 	FoliageGPUCuller gpu_culler;
 	ObjectID gpu_culling_camera;
 
