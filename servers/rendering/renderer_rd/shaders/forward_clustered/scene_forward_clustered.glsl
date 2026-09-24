@@ -1032,7 +1032,12 @@ layout(location = 0) out vec4 frag_color;
 #endif // RENDER DEPTH
 
 #ifdef MOTION_VECTORS
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_NORMAL_ROUGHNESS) && !defined(MODE_RENDER_MATERIAL)
+// Velocity-only pass: nothing else is attached, so the motion vector is attachment 0.
+layout(location = 0) out vec2 motion_vector;
+#else
 layout(location = 2) out vec2 motion_vector;
+#endif
 #endif
 
 #include "../scene_forward_aa_inc.glsl"
