@@ -1741,7 +1741,7 @@ void MeshStorage::_multimesh_set_mesh(RID p_multimesh, RID p_mesh) {
 		_multimesh_mark_all_dirty(multimesh, false, true);
 	} else if (multimesh->instances) {
 		//need to re-create AABB unfortunately, calling this has a penalty
-		if (multimesh->buffer_set) {
+		if (multimesh->buffer_set && multimesh->mesh.is_valid()) {
 			Vector<uint8_t> buffer = RD::get_singleton()->buffer_get_data(multimesh->buffer);
 			const uint8_t *r = buffer.ptr() + multimesh->motion_vectors_current_offset * multimesh->stride_cache * sizeof(float);
 			const float *data = reinterpret_cast<const float *>(r);
@@ -2329,7 +2329,10 @@ void MeshStorage::_update_dirty_multimeshes() {
 				multimesh->data_cache_dirty_region_count = 0;
 			}
 
-			if (multimesh->aabb_dirty) {
+			// Without a mesh there is no AABB to derive; leave the flag set so
+			// that it is recomputed once one is assigned (the GLES3 backend
+			// guards the same call the same way).
+			if (multimesh->aabb_dirty && multimesh->mesh.is_valid()) {
 				//aabb is dirty..
 				multimesh->aabb_dirty = false;
 				if (multimesh->custom_aabb == AABB()) {
