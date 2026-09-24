@@ -126,6 +126,11 @@
 		<member name="layers" type="TerrainLayer[]" setter="set_layers" getter="get_layers" default="[]">
 			The ground materials this terrain can be painted with, in the order the Paint brush's layer picker lists them. See [TerrainLayer] and the class description; up to 32 entries are supported.
 		</member>
+		<member name="layer_texture_size_limit" type="int" setter="set_layer_texture_size_limit" getter="get_layer_texture_size_limit" default="2048">
+			The largest a [TerrainLayer]'s textures are kept at when they have to be resampled to build the shared texture arrays this terrain renders from. A GPU texture array needs every layer to share one size and format, so a set that does not already agree is resampled to the largest source in it, capped here; a texture smaller than the cap is never enlarged.
+			Raising this keeps more of a high-resolution texture at the cost of memory, which is considerable: a resampled set is uncompressed, so each 4096×4096 layer costs roughly 67 MB per array (there are four) before mipmaps.
+			[b]This is skipped entirely, and ignored, when a set needs no resampling:[/b] if every layer supplies that texture and they already share a size and format and carry mipmaps, they go to the GPU untouched, keeping whatever VRAM compression they were imported with. That is the only practical way to use 4K layer textures - compressed, they cost a small fraction of the above - so for large textures it is worth making the set uniform and importing it as VRAM Compressed rather than raising this.
+		</member>
 		<member name="lod_bias" type="float" setter="set_lod_bias" getter="get_lod_bias" default="1.0">
 			Scales how aggressively chunks switch to a lower level of detail with distance. Values above [code]1.0[/code] switch to a lower level of detail sooner (closer to the camera); values below [code]1.0[/code] delay switching, keeping more chunks at full detail for longer at the cost of performance.
 		</member>
