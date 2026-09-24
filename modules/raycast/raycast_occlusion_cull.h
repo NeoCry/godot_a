@@ -184,7 +184,7 @@ public:
 	virtual void buffer_set_size(RID p_buffer, const Vector2i &p_size) override;
 	virtual void buffer_update(RID p_buffer, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal) override;
 
-	virtual RID buffer_get_debug_texture(RID p_buffer) override;
+	virtual RID buffer_get_debug_texture(RID p_buffer, bool p_pyramid) override;
 
 	virtual void set_build_quality(RSE::ViewportOcclusionCullingBuildQuality p_quality) override;
 

@@ -747,7 +747,7 @@
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="DEBUG_DRAW_OCCLUDERS" value="24" enum="DebugDraw">
-			Draws the buffer used for occlusion culling.
+			Draws the buffer used for occlusion culling: the depth the occluders were drawn into, at full resolution, with what is nearest to the camera darkest. See also [constant DEBUG_DRAW_OCCLUSION_PYRAMID].
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
 		<constant name="DEBUG_DRAW_MOTION_VECTORS" value="25" enum="DebugDraw">
@@ -769,6 +769,10 @@
 		<constant name="DEBUG_DRAW_SSCS_WAVE_INDEX" value="29" enum="DebugDraw">
 			Colors screen-space contact shadow output by compute wavefront index instead of computing real shadows, so the wavefront layout can be visually verified (wavefronts should appear aligned and projected towards the light).
 			[b]Note:[/b] Only supported when using the Forward+ rendering method. Requires screen-space contact shadows to be enabled (see [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] and [member Environment.sscs_enabled]) to have a visible effect.
+		</constant>
+		<constant name="DEBUG_DRAW_OCCLUSION_PYRAMID" value="30" enum="DebugDraw">
+			Draws every level of the occlusion culling buffer's depth pyramid at once: the full resolution level on the left, and the halved ones stacked in a column beside it, each holding the farthest depth of the four texels below it. An object's bounding box is tested against whichever level its screen footprint is about the size of, so this shows what the test actually reads, where [constant DEBUG_DRAW_OCCLUDERS] shows only the level the occluders were drawn into.
+			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
 		<constant name="DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST" value="0" enum="DefaultCanvasItemTextureFilter">
 			The texture filter reads from the nearest pixel only. This makes the texture look pixelated from up close, and grainy from a distance (due to mipmaps not being sampled).

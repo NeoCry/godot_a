@@ -57,6 +57,22 @@ public:
 		PackedByteArray debug_data;
 		float debug_tex_range = 0.0f;
 
+		// Second debug image, holding every level of the pyramid instead of
+		// just the finest one (see get_debug_pyramid_texture). Kept apart from
+		// the one above because the two are different sizes.
+		RID debug_pyramid_texture;
+		Ref<Image> debug_pyramid_image;
+		PackedByteArray debug_pyramid_data;
+		Size2i debug_pyramid_size;
+
+		// Depth to the 0-255 the debug images are drawn with: near is dark,
+		// empty (nothing rasterized) is white, on a log scale so that the
+		// near-camera range where occlusion matters does not collapse into a
+		// few values.
+		_FORCE_INLINE_ uint8_t _depth_to_debug_value(float p_depth) const {
+			return MIN(Math::log(1.0 + p_depth) / Math::log(1.0 + debug_tex_range), 1.0) * 255;
+		}
+
 		uint64_t occlusion_frame = 0;
 		Size2i occlusion_buffer_size;
 
@@ -213,6 +229,13 @@ public:
 		}
 
 		RID get_debug_texture();
+
+		// The whole pyramid in one image: the finest level on the left, the
+		// coarser ones stacked in a column beside it, on black. Shows what the
+		// occlusion test actually reads, since it samples whichever level
+		// matches the tested object's screen footprint rather than this one.
+		RID get_debug_pyramid_texture();
+
 		const Size2i &get_occlusion_buffer_size() const { return occlusion_buffer_size; }
 
 		// Called by every backend right after it has filled the buffer.
@@ -268,7 +291,7 @@ public:
 	virtual void buffer_set_size(RID p_buffer, const Vector2i &p_size) { _print_warning(); }
 	virtual void buffer_update(RID p_buffer, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal) {}
 
-	virtual RID buffer_get_debug_texture(RID p_buffer) {
+	virtual RID buffer_get_debug_texture(RID p_buffer, bool p_pyramid) {
 		_print_warning();
 		return RID();
 	}

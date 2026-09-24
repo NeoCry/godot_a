@@ -4646,6 +4646,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_DISPLAY_DEBUG_CLUSTER_DECALS:
 		case VIEW_DISPLAY_DEBUG_CLUSTER_REFLECTION_PROBES:
 		case VIEW_DISPLAY_DEBUG_OCCLUDERS:
+		case VIEW_DISPLAY_DEBUG_OCCLUSION_PYRAMID:
 		case VIEW_DISPLAY_MOTION_VECTORS:
 		case VIEW_DISPLAY_INTERNAL_BUFFER:
 		case VIEW_DISPLAY_DEBUG_SSCS_WAVE_INDEX: {
@@ -4677,6 +4678,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				VIEW_DISPLAY_DEBUG_CLUSTER_DECALS,
 				VIEW_DISPLAY_DEBUG_CLUSTER_REFLECTION_PROBES,
 				VIEW_DISPLAY_DEBUG_OCCLUDERS,
+				VIEW_DISPLAY_DEBUG_OCCLUSION_PYRAMID,
 				VIEW_DISPLAY_MOTION_VECTORS,
 				VIEW_DISPLAY_INTERNAL_BUFFER,
 				VIEW_DISPLAY_DEBUG_SSCS_WAVE_INDEX,
@@ -4710,6 +4712,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				Viewport::DEBUG_DRAW_CLUSTER_DECALS,
 				Viewport::DEBUG_DRAW_CLUSTER_REFLECTION_PROBES,
 				Viewport::DEBUG_DRAW_OCCLUDERS,
+				Viewport::DEBUG_DRAW_OCCLUSION_PYRAMID,
 				Viewport::DEBUG_DRAW_MOTION_VECTORS,
 				Viewport::DEBUG_DRAW_INTERNAL_BUFFER,
 				Viewport::DEBUG_DRAW_SSCS_WAVE_INDEX,
@@ -6998,6 +7001,8 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 			TTRC("Highlights tiles of pixels that are affected by at least one ReflectionProbe."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Occlusion Culling Buffer"), VIEW_DISPLAY_DEBUG_OCCLUDERS, SupportedRenderingMethods::FORWARD_PLUS_MOBILE,
 			TTRC("Represents occluders with black pixels. Requires occlusion culling to be enabled to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Occlusion Culling Pyramid"), VIEW_DISPLAY_DEBUG_OCCLUSION_PYRAMID, SupportedRenderingMethods::FORWARD_PLUS_MOBILE,
+			TTRC("Shows every level of the occlusion culling buffer's depth pyramid: the full resolution one on the left, the halved ones beside it. Requires occlusion culling to be enabled to have a visible effect."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Motion Vectors"), VIEW_DISPLAY_MOTION_VECTORS, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Represents motion vectors with colored lines in the direction of motion. Gray dots represent areas with no per-pixel motion."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("Internal Buffer"), VIEW_DISPLAY_INTERNAL_BUFFER, SupportedRenderingMethods::FORWARD_PLUS_MOBILE,

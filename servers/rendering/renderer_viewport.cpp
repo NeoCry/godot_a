@@ -1243,8 +1243,14 @@ RID RendererViewport::viewport_get_occluder_debug_texture(RID p_viewport) const 
 	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL_V(viewport, RID());
 
-	if (viewport->use_occlusion_culling && viewport->debug_draw == RSE::VIEWPORT_DEBUG_DRAW_OCCLUDERS) {
-		return RendererSceneOcclusionCull::get_singleton()->buffer_get_debug_texture(p_viewport);
+	if (!viewport->use_occlusion_culling) {
+		return RID();
+	}
+	if (viewport->debug_draw == RSE::VIEWPORT_DEBUG_DRAW_OCCLUDERS) {
+		return RendererSceneOcclusionCull::get_singleton()->buffer_get_debug_texture(p_viewport, false);
+	}
+	if (viewport->debug_draw == RSE::VIEWPORT_DEBUG_DRAW_OCCLUSION_PYRAMID) {
+		return RendererSceneOcclusionCull::get_singleton()->buffer_get_debug_texture(p_viewport, true);
 	}
 	return RID();
 }

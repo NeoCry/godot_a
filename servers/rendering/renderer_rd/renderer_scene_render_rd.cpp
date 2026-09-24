@@ -1150,7 +1150,7 @@ void RendererSceneRenderRD::_render_buffers_debug_draw(const RenderDataRD *p_ren
 		copy_effects->copy_to_fb_rect(_render_buffers_get_normal_texture(rb), texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, false, RID(), false, false, false, true);
 	}
 
-	if (debug_draw == RSE::VIEWPORT_DEBUG_DRAW_OCCLUDERS) {
+	if (debug_draw == RSE::VIEWPORT_DEBUG_DRAW_OCCLUDERS || debug_draw == RSE::VIEWPORT_DEBUG_DRAW_OCCLUSION_PYRAMID) {
 		if (p_render_data->occluder_debug_tex.is_valid()) {
 			Size2i rtsize = texture_storage->render_target_get_size(render_target);
 			copy_effects->copy_to_fb_rect(texture_storage->texture_get_rd_texture(p_render_data->occluder_debug_tex), texture_storage->render_target_get_rd_framebuffer(render_target), Rect2i(Vector2(), rtsize), true, false);

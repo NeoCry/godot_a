@@ -627,9 +627,9 @@ RaycastOcclusionCull::HZBuffer *RaycastOcclusionCull::buffer_get_ptr(RID p_buffe
 	return &buffers[p_buffer];
 }
 
-RID RaycastOcclusionCull::buffer_get_debug_texture(RID p_buffer) {
+RID RaycastOcclusionCull::buffer_get_debug_texture(RID p_buffer, bool p_pyramid) {
 	ERR_FAIL_COND_V(!buffers.has(p_buffer), RID());
-	return buffers[p_buffer].get_debug_texture();
+	return p_pyramid ? buffers[p_buffer].get_debug_pyramid_texture() : buffers[p_buffer].get_debug_texture();
 }
 
 ////////////////////////////////////////////////////////

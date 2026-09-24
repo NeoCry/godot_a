@@ -247,10 +247,10 @@ void HZBOcclusionCull::buffer_set_size(RID p_buffer, const Vector2i &p_size) {
 	buffer->resize(p_size);
 }
 
-RID HZBOcclusionCull::buffer_get_debug_texture(RID p_buffer) {
+RID HZBOcclusionCull::buffer_get_debug_texture(RID p_buffer, bool p_pyramid) {
 	RasterHZBuffer *buffer = buffers.getptr(p_buffer);
 	ERR_FAIL_NULL_V(buffer, RID());
-	return buffer->get_debug_texture();
+	return p_pyramid ? buffer->get_debug_pyramid_texture() : buffer->get_debug_texture();
 }
 
 Vector2 HZBOcclusionCull::_get_jitter(const Size2i &p_buffer_size) const {
