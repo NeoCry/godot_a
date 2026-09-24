@@ -151,6 +151,7 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	Ref<Image> _get_mask_image() const;
 	bool _sample_mask(const Ref<Image> &p_image, const Vector2 &p_uv, RandomPCG &p_rng) const;
 	Callable _get_regenerate_button() const;
+	Callable _get_fit_to_ground_mesh_button() const;
 
 	void _clear_cells();
 	FoliageCell &_get_or_create_cell(const Vector2i &p_cell);
@@ -279,6 +280,10 @@ public:
 	Vector<AABB> get_cell_local_aabbs() const;
 
 	void regenerate();
+
+	// Moves this node onto the center of the ground mesh and resizes the volume
+	// to enclose it, so the volume does not have to be dialed in by hand.
+	void fit_to_ground_mesh();
 
 	virtual AABB get_aabb() const override;
 	PackedStringArray get_configuration_warnings() const override;

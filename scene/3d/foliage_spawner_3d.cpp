@@ -147,6 +147,9 @@ void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("regenerate"), &FoliageSpawner3D::regenerate);
 	ClassDB::bind_method(D_METHOD("get_regenerate_button"), &FoliageSpawner3D::_get_regenerate_button);
 
+	ClassDB::bind_method(D_METHOD("fit_to_ground_mesh"), &FoliageSpawner3D::fit_to_ground_mesh);
+	ClassDB::bind_method(D_METHOD("get_fit_to_ground_mesh_button"), &FoliageSpawner3D::_get_fit_to_ground_mesh_button);
+
 	ClassDB::bind_method(D_METHOD("_get_cell_data"), &FoliageSpawner3D::_get_cell_data);
 	ClassDB::bind_method(D_METHOD("_set_cell_data", "data"), &FoliageSpawner3D::_set_cell_data);
 
@@ -207,6 +210,7 @@ void FoliageSpawner3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "instance_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_instance_count");
 
 	ADD_GROUP("", "");
+	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "fit_to_ground_mesh_button", PROPERTY_HINT_TOOL_BUTTON, "Fit To Ground Mesh", PROPERTY_USAGE_EDITOR), "", "get_fit_to_ground_mesh_button");
 	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "regenerate_button", PROPERTY_HINT_TOOL_BUTTON, "Regenerate", PROPERTY_USAGE_EDITOR), "", "get_regenerate_button");
 }
 
@@ -283,6 +287,10 @@ void FoliageSpawner3D::_notification(int p_what) {
 
 Callable FoliageSpawner3D::_get_regenerate_button() const {
 	return Callable(const_cast<FoliageSpawner3D *>(this), "regenerate");
+}
+
+Callable FoliageSpawner3D::_get_fit_to_ground_mesh_button() const {
+	return Callable(const_cast<FoliageSpawner3D *>(this), "fit_to_ground_mesh");
 }
 
 void FoliageSpawner3D::_clear_cells() {
@@ -1333,6 +1341,34 @@ void FoliageSpawner3D::set_gpu_culling(bool p_enabled) {
 
 bool FoliageSpawner3D::is_gpu_culling_enabled() const {
 	return gpu_culling;
+}
+
+void FoliageSpawner3D::fit_to_ground_mesh() {
+	MeshInstance3D *ground = Object::cast_to<MeshInstance3D>(is_inside_tree() ? get_node_or_null(ground_mesh_path) : nullptr);
+	ERR_FAIL_NULL_MSG(ground, "Ground Mesh Path does not point to a MeshInstance3D, so there is nothing to fit the volume to.");
+
+	Ref<Mesh> ground_mesh = ground->get_mesh();
+	ERR_FAIL_COND_MSG(ground_mesh.is_null(), "The MeshInstance3D referenced by Ground Mesh Path has no Mesh assigned.");
+
+	// Measured in this node's own space, so a rotated spawner fits the ground
+	// in its own frame rather than to an axis-aligned box around it.
+	const Transform3D global_transform = get_global_transform();
+	const Transform3D ground_to_local = global_transform.affine_inverse() * ground->get_global_transform();
+	AABB local_aabb = ground_to_local.xform(ground_mesh->get_aabb());
+
+	// Instances are placed by casting a ray from the top of the volume straight
+	// down to its bottom, so a ground with no height of its own (a PlaneMesh is
+	// perfectly flat) needs some room for that ray to exist in.
+	const real_t min_height = 1.0;
+	if (local_aabb.size.y < min_height) {
+		local_aabb.position.y -= (min_height - local_aabb.size.y) * 0.5;
+		local_aabb.size.y = min_height;
+	}
+
+	// The volume is centered on this node's origin, so the node moves onto the
+	// center of the ground and the volume then only has to carry its size.
+	set_global_position(global_transform.xform(local_aabb.get_center()));
+	set_volume_size(local_aabb.size);
 }
 
 AABB FoliageSpawner3D::get_aabb() const {
