@@ -44,6 +44,24 @@
 #include "servers/rendering/rendering_server.h"
 
 namespace {
+// How much of a brush stamp lands at p_dist from its centre: 1 at the centre,
+// tapering to 0 at the rim. p_falloff is how much of the radius that taper
+// takes up - 0 stamps at full strength right up to the rim and stops dead
+// (a hard edge), 1 tapers across the whole radius, and anything between keeps
+// an inner core at full strength and fades only the outside of it.
+float brush_falloff_weight(float p_dist, float p_radius, float p_falloff) {
+	const float falloff = CLAMP(p_falloff, 0.0f, 1.0f);
+	if (falloff <= 0.0f) {
+		return 1.0f;
+	}
+	const float inner = p_radius * (1.0f - falloff);
+	if (p_dist <= inner) {
+		return 1.0f;
+	}
+	const float t = 1.0f - (p_dist - inner) / MAX(p_radius - inner, 0.00001f);
+	return t * t * (3.0f - 2.0f * t);
+}
+
 // Used only when a layer has no texture of its own to say how big its stand-in
 // should be, and as a floor under the size the real ones settle on.
 constexpr int MIN_LAYER_TEXTURE_SIZE = 4;
@@ -570,8 +588,8 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_pom_fade_end", "distance"), &Landscape3D::set_pom_fade_end);
 	ClassDB::bind_method(D_METHOD("get_pom_fade_end"), &Landscape3D::get_pom_fade_end);
 
-	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(0.0f), DEFVAL(true));
-	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index"), &Landscape3D::paint_layer);
+	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "falloff", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(1.0f), DEFVAL(0.0f), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index", "falloff"), &Landscape3D::paint_layer, DEFVAL(1.0f));
 	ClassDB::bind_method(D_METHOD("set_hole", "local_position", "radius", "hole", "update_collision"), &Landscape3D::set_hole, DEFVAL(true));
 
 	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &Landscape3D::get_height_region);
@@ -1391,7 +1409,7 @@ float Landscape3D::get_pom_fade_end() const {
 	return pom_fade_end;
 }
 
-void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height, bool p_update_collision) {
+void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_falloff, float p_flatten_height, bool p_update_collision) {
 	ERR_FAIL_COND(terrain_data.is_null());
 
 	const float spacing = terrain_data->get_vertex_spacing();
@@ -1416,18 +1434,49 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	PackedFloat32Array heights = terrain_data->get_height_region(region);
 	const int region_w = region.size.x;
 
-	// SMOOTH averages each vertex with its neighbors; it needs to read from an
-	// unmodified snapshot of the touched (padded by one ring) region rather
-	// than sampling this same stamp's own in-progress writes.
-	const Rect2i snapshot_region(x0 - 1, z0 - 1, x1 - x0 + 3, z1 - z0 + 3);
+	// Smoothing is the one operation strength cannot simply scale: averaging a
+	// vertex with its neighbours is one pass whatever fraction of it is applied,
+	// so once the blend reaches that average there is nothing left for more
+	// strength to do - which is why the brush used to feel stuck on weak however
+	// high it was set. Strength is the number of averaging passes here, run over
+	// the snapshot before any of it is blended in, so the result keeps getting
+	// smoother as it rises. Each pass reads one ring further out, hence the
+	// matching padding.
+	const int smooth_passes = (p_operation == SCULPT_SMOOTH) ? CLAMP((int)Math::round(p_strength), 1, 32) : 1;
+	const Rect2i snapshot_region(x0 - smooth_passes, z0 - smooth_passes,
+			(x1 - x0 + 1) + smooth_passes * 2, (z1 - z0 + 1) + smooth_passes * 2);
+	const int snapshot_w = snapshot_region.size.x;
+	const int snapshot_h = snapshot_region.size.y;
 	PackedFloat32Array before;
 	if (p_operation == SCULPT_SMOOTH) {
+		// get_height_region() clamps its reads to the terrain, so the padding
+		// beyond an edge repeats that edge rather than reading as a cliff down
+		// to zero.
 		before = terrain_data->get_height_region(snapshot_region);
+		PackedFloat32Array next;
+		next.resize(before.size());
+		for (int pass = 0; pass < smooth_passes; pass++) {
+			const float *src = before.ptr();
+			float *dst = next.ptrw();
+			for (int z = 0; z < snapshot_h; z++) {
+				for (int x = 0; x < snapshot_w; x++) {
+					float sum = 0.0f;
+					for (int nz = -1; nz <= 1; nz++) {
+						for (int nx = -1; nx <= 1; nx++) {
+							const int sx = CLAMP(x + nx, 0, snapshot_w - 1);
+							const int sz = CLAMP(z + nz, 0, snapshot_h - 1);
+							sum += src[sz * snapshot_w + sx];
+						}
+					}
+					dst[z * snapshot_w + x] = sum / 9.0f;
+				}
+			}
+			SWAP(before, next);
+		}
 	}
-	const int snapshot_w = snapshot_region.size.x;
 	auto sample_before = [&](int x, int z) -> float {
-		x = CLAMP(x, snapshot_region.position.x, snapshot_region.position.x + snapshot_region.size.x - 1);
-		z = CLAMP(z, snapshot_region.position.y, snapshot_region.position.y + snapshot_region.size.y - 1);
+		x = CLAMP(x, snapshot_region.position.x, snapshot_region.position.x + snapshot_w - 1);
+		z = CLAMP(z, snapshot_region.position.y, snapshot_region.position.y + snapshot_h - 1);
 		return before[(z - snapshot_region.position.y) * snapshot_w + (x - snapshot_region.position.x)];
 	};
 
@@ -1439,8 +1488,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 			if (dist > radius) {
 				continue;
 			}
-			const float t = 1.0f - dist / radius;
-			const float falloff = t * t * (3.0f - 2.0f * t);
+			const float falloff = brush_falloff_weight(dist, radius, p_falloff);
 			const float amount = p_strength * falloff;
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
@@ -1456,13 +1504,11 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 					h = Math::lerp(h, p_flatten_height, CLAMP(amount, 0.0f, 1.0f));
 				} break;
 				case SCULPT_SMOOTH: {
-					float sum = 0.0f;
-					for (int nz = -1; nz <= 1; nz++) {
-						for (int nx = -1; nx <= 1; nx++) {
-							sum += sample_before(x + nx, z + nz);
-						}
-					}
-					h = Math::lerp(h, sum / 9.0f, CLAMP(amount, 0.0f, 1.0f));
+					// Strength already went into how smooth sample_before() is
+					// (see smooth_passes above), so here it only decides how
+					// much of that to take below full strength - past 1 the
+					// passes carry it, not the blend.
+					h = Math::lerp(h, sample_before(x, z), CLAMP(p_strength, 0.0f, 1.0f) * falloff);
 				} break;
 			}
 			heights.set(local_idx, h);
@@ -1478,7 +1524,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	}
 }
 
-void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index) {
+void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	ERR_FAIL_INDEX(p_layer_index, layers.size());
 	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
@@ -1519,8 +1565,7 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 			if (dist > radius) {
 				continue;
 			}
-			const float t = 1.0f - dist / radius;
-			const float amount = p_strength * t * t * (3.0f - 2.0f * t);
+			const float amount = p_strength * brush_falloff_weight(dist, radius, p_falloff);
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
 			PackedFloat32Array &target = layer_weights.write[p_layer_index];

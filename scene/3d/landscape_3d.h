@@ -263,8 +263,12 @@ public:
 	// Sculpting/painting API. Positions are in this node's local space
 	// (XZ plane, Y up). Also directly usable at runtime (e.g. for explosion
 	// craters), not just from the editor brush.
-	void sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height = 0.0, bool p_update_collision = true);
-	void paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index);
+	// p_falloff shapes the stamp from its centre to its rim: 0 is a hard edge,
+	// 1 tapers across the whole radius. For SCULPT_SMOOTH, p_strength is how
+	// many averaging passes to smooth by rather than a per-stamp amount - see
+	// the comment in sculpt() for why that operation cannot use one.
+	void sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_falloff = 1.0, float p_flatten_height = 0.0, bool p_update_collision = true);
+	void paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff = 1.0);
 	void set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision = true);
 
 	PackedFloat32Array get_height_region(const Rect2i &p_region) const;
