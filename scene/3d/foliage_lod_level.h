@@ -49,6 +49,8 @@ class FoliageLODLevel : public Resource {
 	Ref<Mesh> mesh;
 	Ref<Material> material_override;
 
+	bool cast_shadows = true;
+
 	float visibility_range_begin = 0.0;
 	float visibility_range_begin_margin = 0.0;
 	float visibility_range_end = 0.0;
@@ -64,6 +66,14 @@ public:
 
 	void set_material_override(const Ref<Material> &p_material);
 	Ref<Material> get_material_override() const;
+
+	// Narrows the owner's shadow setting for this level only: a level can drop
+	// out of the shadow passes, but cannot cast where the owner casts nothing.
+	// Turning it off for the distant levels is usually the cheapest way to make
+	// foliage shadows affordable, since those are the levels that cover most of
+	// the ground while contributing the least.
+	void set_cast_shadows(bool p_enable);
+	bool is_casting_shadows() const;
 
 	void set_visibility_range_begin(float p_dist);
 	float get_visibility_range_begin() const;

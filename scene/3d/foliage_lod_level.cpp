@@ -40,6 +40,9 @@ void FoliageLODLevel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_material_override", "material"), &FoliageLODLevel::set_material_override);
 	ClassDB::bind_method(D_METHOD("get_material_override"), &FoliageLODLevel::get_material_override);
 
+	ClassDB::bind_method(D_METHOD("set_cast_shadows", "enable"), &FoliageLODLevel::set_cast_shadows);
+	ClassDB::bind_method(D_METHOD("is_casting_shadows"), &FoliageLODLevel::is_casting_shadows);
+
 	ClassDB::bind_method(D_METHOD("set_visibility_range_begin", "distance"), &FoliageLODLevel::set_visibility_range_begin);
 	ClassDB::bind_method(D_METHOD("get_visibility_range_begin"), &FoliageLODLevel::get_visibility_range_begin);
 
@@ -57,6 +60,7 @@ void FoliageLODLevel::_bind_methods() {
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"), "set_mesh", "get_mesh");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_override", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_material_override", "get_material_override");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cast_shadows"), "set_cast_shadows", "is_casting_shadows");
 
 	ADD_GROUP("Visibility Range", "visibility_range_");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_begin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_begin", "get_visibility_range_begin");
@@ -82,6 +86,15 @@ void FoliageLODLevel::set_material_override(const Ref<Material> &p_material) {
 
 Ref<Material> FoliageLODLevel::get_material_override() const {
 	return material_override;
+}
+
+void FoliageLODLevel::set_cast_shadows(bool p_enable) {
+	cast_shadows = p_enable;
+	emit_changed();
+}
+
+bool FoliageLODLevel::is_casting_shadows() const {
+	return cast_shadows;
 }
 
 void FoliageLODLevel::set_visibility_range_begin(float p_dist) {

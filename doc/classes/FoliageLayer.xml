@@ -22,7 +22,7 @@
 			Blends each instance's up axis between world up ([code]0.0[/code]) and the surface normal at the paint location ([code]1.0[/code]). Combined with [member random_tilt_degrees], this controls how much instances deviate from the surface normal.
 		</member>
 		<member name="cast_shadows" type="bool" setter="set_cast_shadows" getter="is_casting_shadows" default="true">
-			If [code]false[/code], this layer's instances do not cast shadows (equivalent to setting [member GeometryInstance3D.cast_shadow] to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF] on every LOD level's internal [MultiMeshInstance3D]). Shared by every entry in [member lod_levels]; there is no per-LOD override.
+			If [code]false[/code], this layer's instances do not cast shadows (equivalent to setting [member GeometryInstance3D.cast_shadow] to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF] on every LOD level's internal [MultiMeshInstance3D]). Applies to every entry in [member lod_levels], but an individual level can still drop out of the shadow passes through [member FoliageLODLevel.cast_shadows].
 		</member>
 		<member name="density" type="float" setter="set_density" getter="get_density" default="4.0">
 			The approximate number of instances the brush attempts to place per paint stamp while this layer is active. Actual placement is also limited by [member min_instance_spacing] and by whether a valid surface is found under each sample point.

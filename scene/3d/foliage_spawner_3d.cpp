@@ -39,9 +39,11 @@
 #include "core/object/class_db.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
-#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/3d/landscape_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/terrain_data.h"
+#include "scene/main/viewport.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/multimesh.h"
@@ -130,6 +132,12 @@ void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_cell_gi_mode", "mode"), &FoliageSpawner3D::set_cell_gi_mode);
 	ClassDB::bind_method(D_METHOD("get_cell_gi_mode"), &FoliageSpawner3D::get_cell_gi_mode);
 
+	ClassDB::bind_method(D_METHOD("set_gpu_culling", "enabled"), &FoliageSpawner3D::set_gpu_culling);
+	ClassDB::bind_method(D_METHOD("is_gpu_culling_enabled"), &FoliageSpawner3D::is_gpu_culling_enabled);
+
+	ClassDB::bind_method(D_METHOD("_get_gpu_instance_data"), &FoliageSpawner3D::_get_gpu_instance_data);
+	ClassDB::bind_method(D_METHOD("_set_gpu_instance_data", "data"), &FoliageSpawner3D::_set_gpu_instance_data);
+
 	ClassDB::bind_method(D_METHOD("set_debug_show_cells", "enabled"), &FoliageSpawner3D::set_debug_show_cells);
 	ClassDB::bind_method(D_METHOD("is_debug_show_cells_enabled"), &FoliageSpawner3D::is_debug_show_cells_enabled);
 
@@ -138,6 +146,9 @@ void FoliageSpawner3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("regenerate"), &FoliageSpawner3D::regenerate);
 	ClassDB::bind_method(D_METHOD("get_regenerate_button"), &FoliageSpawner3D::_get_regenerate_button);
+
+	ClassDB::bind_method(D_METHOD("fit_to_ground_mesh"), &FoliageSpawner3D::fit_to_ground_mesh);
+	ClassDB::bind_method(D_METHOD("get_fit_to_ground_mesh_button"), &FoliageSpawner3D::_get_fit_to_ground_mesh_button);
 
 	ClassDB::bind_method(D_METHOD("_get_cell_data"), &FoliageSpawner3D::_get_cell_data);
 	ClassDB::bind_method(D_METHOD("_set_cell_data", "data"), &FoliageSpawner3D::_set_cell_data);
@@ -148,8 +159,10 @@ void FoliageSpawner3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "volume_size", PROPERTY_HINT_RANGE, "0.01,4096,0.01,or_greater,suffix:m"), "set_volume_size", "get_volume_size");
 
 	ADD_GROUP("Chunking", "");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_culling"), "set_gpu_culling", "is_gpu_culling_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_size", PROPERTY_HINT_RANGE, "1,256,0.5,or_greater,suffix:m"), "set_cell_size", "get_cell_size");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "_cell_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_cell_data", "_get_cell_data");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "_gpu_instance_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_gpu_instance_data", "_get_gpu_instance_data");
 
 	ADD_GROUP("Distribution", "");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "density", PROPERTY_HINT_RANGE, "0.0,50.0,0.001,or_greater"), "set_density", "get_density");
@@ -197,6 +210,7 @@ void FoliageSpawner3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "instance_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_instance_count");
 
 	ADD_GROUP("", "");
+	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "fit_to_ground_mesh_button", PROPERTY_HINT_TOOL_BUTTON, "Fit To Ground Mesh", PROPERTY_USAGE_EDITOR), "", "get_fit_to_ground_mesh_button");
 	ADD_PROPERTY(PropertyInfo(Variant::CALLABLE, "regenerate_button", PROPERTY_HINT_TOOL_BUTTON, "Regenerate", PROPERTY_USAGE_EDITOR), "", "get_regenerate_button");
 }
 
@@ -241,20 +255,42 @@ void FoliageSpawner3D::_validate_property(PropertyInfo &p_property) const {
 }
 
 void FoliageSpawner3D::_notification(int p_what) {
-	if (p_what == NOTIFICATION_ENTER_TREE) {
-		// Cell MultiMeshInstance3D nodes are runtime-only (see _get_cell_data);
-		// (re-)create/sync every cell so their settings reflect this node's
-		// current cell_* properties, since those may have been deserialized
-		// after _cell_data during scene loading (GeometryInstance3D-derived
-		// FoliageSpawner3D properties are declared after this node's own).
-		for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
-			_sync_cell_lods(kv.value);
-		}
+	switch (p_what) {
+		case NOTIFICATION_ENTER_TREE: {
+			// Cell MultiMeshInstance3D nodes are runtime-only (see _get_cell_data);
+			// (re-)create/sync every cell so their settings reflect this node's
+			// current cell_* properties, since those may have been deserialized
+			// after _cell_data during scene loading (GeometryInstance3D-derived
+			// FoliageSpawner3D properties are declared after this node's own).
+			for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
+				_sync_cell_lods(kv.value);
+			}
+			// Same for the GPU path's nodes, which are not saved either. Done
+			// here rather than as the properties arrive, because which of the
+			// two representations the scene was saved in is only known once
+			// all of them have been set.
+			if (_is_gpu_culling_active() && gpu_nodes.is_empty()) {
+				if (gpu_transforms.is_empty() && !cells.is_empty()) {
+					// Saved by the cell path, opened with GPU culling on.
+					gpu_transforms = _gather_cell_transforms();
+					_clear_cells();
+				}
+				_rebuild_gpu_instances();
+			}
+		} break;
+
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			_dispatch_gpu_culling();
+		} break;
 	}
 }
 
 Callable FoliageSpawner3D::_get_regenerate_button() const {
 	return Callable(const_cast<FoliageSpawner3D *>(this), "regenerate");
+}
+
+Callable FoliageSpawner3D::_get_fit_to_ground_mesh_button() const {
+	return Callable(const_cast<FoliageSpawner3D *>(this), "fit_to_ground_mesh");
 }
 
 void FoliageSpawner3D::_clear_cells() {
@@ -356,7 +392,7 @@ void FoliageSpawner3D::_sync_cell_lods(FoliageCell &p_cell) {
 	}
 }
 
-void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level) const {
+void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level, bool p_apply_visibility_range) const {
 	// Cells mirror this node's cell_* rendering settings, the same way
 	// FoliagePainter3D's FoliageLayer settings are copied to its cell nodes.
 	// See the "Cell Rendering" comment above the cell_* fields for why these
@@ -367,7 +403,10 @@ void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node, const R
 	// simply left unchanged.
 	p_node->set_material_overlay(cell_material_overlay);
 	p_node->set_transparency(cell_transparency);
-	p_node->set_cast_shadows_setting(cell_cast_shadow);
+	// A level that opts out drops from the shadow passes entirely; one that
+	// does not still follows the spawner-wide setting, including its mode.
+	const bool level_casts = p_level.is_null() || p_level->is_casting_shadows();
+	p_node->set_cast_shadows_setting(level_casts ? cell_cast_shadow : SHADOW_CASTING_SETTING_OFF);
 	p_node->set_extra_cull_margin(cell_extra_cull_margin);
 	p_node->set_lod_bias(cell_lod_bias);
 	p_node->set_ignore_occlusion_culling(cell_ignore_occlusion_culling);
@@ -375,11 +414,13 @@ void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node, const R
 	p_node->set_gi_mode(cell_gi_mode);
 	if (p_level.is_valid()) {
 		p_node->set_material_override(p_level->get_material_override());
-		p_node->set_visibility_range_begin(p_level->get_visibility_range_begin());
-		p_node->set_visibility_range_begin_margin(p_level->get_visibility_range_begin_margin());
-		p_node->set_visibility_range_end(p_level->get_visibility_range_end());
-		p_node->set_visibility_range_end_margin(p_level->get_visibility_range_end_margin());
-		p_node->set_visibility_range_fade_mode(p_level->get_visibility_range_fade_mode());
+		if (p_apply_visibility_range) {
+			p_node->set_visibility_range_begin(p_level->get_visibility_range_begin());
+			p_node->set_visibility_range_begin_margin(p_level->get_visibility_range_begin_margin());
+			p_node->set_visibility_range_end(p_level->get_visibility_range_end());
+			p_node->set_visibility_range_end_margin(p_level->get_visibility_range_end_margin());
+			p_node->set_visibility_range_fade_mode(p_level->get_visibility_range_fade_mode());
+		}
 	}
 }
 
@@ -393,6 +434,236 @@ void FoliageSpawner3D::_sync_all_cells_settings() {
 			_configure_cell_node(kv.value.lod_nodes[i], level);
 		}
 	}
+
+	// The GPU path renders through its own nodes instead of the cells', and
+	// there are no cells at all while it is on, so without this every cell_*
+	// property would silently stop doing anything until the next Regenerate
+	// rebuilt the nodes from scratch.
+	for (uint32_t i = 0; i < gpu_nodes.size(); i++) {
+		if (gpu_nodes[i] == nullptr) {
+			continue;
+		}
+		const int level_index = i < gpu_lod_indices.size() ? gpu_lod_indices[i] : -1;
+		Ref<FoliageLODLevel> level = (level_index >= 0 && level_index < lod_levels.size()) ? Ref<FoliageLODLevel>(lod_levels[level_index]) : Ref<FoliageLODLevel>();
+		_configure_cell_node(gpu_nodes[i], level, false);
+	}
+}
+
+bool FoliageSpawner3D::_is_gpu_culling_active() const {
+	return gpu_culling && FoliageGPUCuller::is_supported();
+}
+
+LocalVector<Transform3D> FoliageSpawner3D::_gather_cell_transforms() const {
+	LocalVector<Transform3D> result;
+	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
+		if (kv.value.lod_multimeshes.is_empty() || kv.value.lod_multimeshes[0].is_null()) {
+			continue;
+		}
+		// Every LOD level of a cell holds the same transforms, so the first is
+		// as good as any.
+		for (const Transform3D &t : _read_transforms(kv.value.lod_multimeshes[0])) {
+			result.push_back(t);
+		}
+	}
+	return result;
+}
+
+void FoliageSpawner3D::_rebuild_cells_from_transforms(const LocalVector<Transform3D> &p_transforms) {
+	_clear_cells();
+
+	// Group instances by their chunking cell (see class comment) before
+	// building each cell's MultiMesh, instead of one MultiMesh for everything.
+	const float chunk_cell_size = MAX(cell_size, 0.01f);
+	HashMap<Vector2i, LocalVector<Transform3D>> cell_transforms;
+
+	for (uint32_t i = 0; i < p_transforms.size(); i++) {
+		const Vector3 &origin = p_transforms[i].origin;
+		const Vector2i cc(int(Math::floor(origin.x / chunk_cell_size)), int(Math::floor(origin.z / chunk_cell_size)));
+		cell_transforms[cc].push_back(p_transforms[i]);
+	}
+
+	for (KeyValue<Vector2i, LocalVector<Transform3D>> &kv : cell_transforms) {
+		FoliageCell &fc = _get_or_create_cell(kv.key);
+		for (const Ref<MultiMesh> &mm : fc.lod_multimeshes) {
+			_write_transforms(mm, kv.value);
+		}
+	}
+}
+
+void FoliageSpawner3D::_clear_gpu_instances() {
+	// Released first, and so queued first: its uniform sets reference the
+	// MultiMeshes' buffers, which must not be freed before them.
+	gpu_culler.release();
+
+	for (MultiMeshInstance3D *node : gpu_nodes) {
+		if (node != nullptr) {
+			remove_child(node);
+			node->queue_free();
+		}
+	}
+	gpu_nodes.clear();
+	gpu_multimeshes.clear();
+	gpu_lod_indices.clear();
+	set_process_internal(false);
+}
+
+void FoliageSpawner3D::_rebuild_gpu_instances() {
+	_clear_gpu_instances();
+
+	if (!_is_gpu_culling_active() || gpu_transforms.is_empty()) {
+		return;
+	}
+
+	const int lod_count = MIN(lod_levels.size(), FoliageGPUCuller::MAX_LOD_LEVELS);
+	if (lod_count == 0) {
+		return;
+	}
+
+	const int instance_count = (int)gpu_transforms.size();
+
+	// Taken from where the instances actually are rather than from volume_size,
+	// so that shrinking the volume after generating cannot leave the bounds too
+	// small and have the renderer cull foliage that is still there.
+	AABB bounds(gpu_transforms[0].origin, Vector3());
+	for (uint32_t i = 1; i < gpu_transforms.size(); i++) {
+		bounds.expand_to(gpu_transforms[i].origin);
+	}
+
+	LocalVector<FoliageGPUCuller::LODLevel> culler_levels;
+	float previous_range_end = 0.0f;
+
+	for (int i = 0; i < lod_count; i++) {
+		Ref<FoliageLODLevel> level = lod_levels[i];
+		if (level.is_null() || level->get_mesh().is_null()) {
+			continue;
+		}
+
+		const AABB mesh_aabb = level->get_mesh()->get_aabb();
+		// Distance from the instance origin to the farthest corner of the mesh,
+		// since a mesh is rarely centered on its origin.
+		const Vector3 farthest(
+				MAX(Math::abs(mesh_aabb.position.x), Math::abs(mesh_aabb.position.x + mesh_aabb.size.x)),
+				MAX(Math::abs(mesh_aabb.position.y), Math::abs(mesh_aabb.position.y + mesh_aabb.size.y)),
+				MAX(Math::abs(mesh_aabb.position.z), Math::abs(mesh_aabb.position.z + mesh_aabb.size.z)));
+		const float instance_radius = farthest.length();
+
+		Ref<MultiMesh> mm;
+		mm.instantiate();
+		// Order matters: the indirect flag has to be set before the buffers are
+		// allocated, and the mesh after, since that is what builds the draw
+		// command buffer the compute pass writes into.
+		mm->set_use_indirect(true);
+		mm->set_transform_format(MultiMesh::TRANSFORM_3D);
+		mm->set_instance_count(instance_count);
+		mm->set_mesh(level->get_mesh());
+		// How many instances survive culling is only known on the GPU, so the
+		// bounds are stated up front: every instance origin, plus its reach.
+		mm->set_custom_aabb(bounds.grow(instance_radius * MAX(1.0f, max_scale)));
+
+		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
+		node->set_multimesh(mm);
+		_configure_cell_node(node, level, false);
+		add_child(node, false, INTERNAL_MODE_FRONT);
+
+		FoliageGPUCuller::LODLevel culler_level;
+		culler_level.multimesh = mm->get_rid();
+		// Bands are walked forward and clamped so that an instance lands in
+		// exactly one level: overlapping ranges would otherwise draw it twice,
+		// and the GPU path has no cross-fade to blend them with.
+		culler_level.range_begin = MAX(level->get_visibility_range_begin(), previous_range_end);
+		culler_level.range_end = level->get_visibility_range_end();
+		if (culler_level.range_end > 0.0f) {
+			culler_level.range_end = MAX(culler_level.range_end, culler_level.range_begin);
+			previous_range_end = culler_level.range_end;
+		}
+		culler_level.instance_radius = instance_radius;
+		culler_level.surface_count = MAX(1, level->get_mesh()->get_surface_count());
+
+		gpu_multimeshes.push_back(mm);
+		gpu_nodes.push_back(node);
+		gpu_lod_indices.push_back(i);
+		culler_levels.push_back(culler_level);
+	}
+
+	if (culler_levels.is_empty()) {
+		return;
+	}
+
+	gpu_culler.update_instances(gpu_transforms, culler_levels);
+	set_process_internal(true);
+}
+
+void FoliageSpawner3D::_dispatch_gpu_culling() {
+	if (gpu_nodes.is_empty() || !is_inside_tree()) {
+		return;
+	}
+
+	Camera3D *camera = FoliageGPUCuller::resolve_culling_camera(this, gpu_culling_camera);
+	if (camera == nullptr) {
+		// Better to draw everything than to have the foliage vanish because
+		// there is nothing to cull against.
+		gpu_culler.draw_without_culling();
+		return;
+	}
+
+	// The compute pass works in the MultiMeshes' local space, which is this
+	// node's own space, so the frustum is brought over rather than every
+	// instance being transformed into world space.
+	const Transform3D to_local = get_global_transform().affine_inverse();
+
+	Vector<Plane> planes = camera->get_frustum();
+	for (int i = 0; i < planes.size(); i++) {
+		planes.write[i] = to_local.xform(planes[i]);
+	}
+
+	gpu_culler.cull(planes, to_local.xform(camera->get_global_position()));
+}
+
+PackedFloat32Array FoliageSpawner3D::_get_gpu_instance_data() const {
+	PackedFloat32Array result;
+	if (gpu_transforms.is_empty()) {
+		return result;
+	}
+
+	result.resize(gpu_transforms.size() * 12);
+	float *w = result.ptrw();
+	for (uint32_t i = 0; i < gpu_transforms.size(); i++) {
+		const Transform3D &t = gpu_transforms[i];
+		float *dst = w + i * 12;
+		dst[0] = t.basis.rows[0][0];
+		dst[1] = t.basis.rows[0][1];
+		dst[2] = t.basis.rows[0][2];
+		dst[3] = t.origin.x;
+		dst[4] = t.basis.rows[1][0];
+		dst[5] = t.basis.rows[1][1];
+		dst[6] = t.basis.rows[1][2];
+		dst[7] = t.origin.y;
+		dst[8] = t.basis.rows[2][0];
+		dst[9] = t.basis.rows[2][1];
+		dst[10] = t.basis.rows[2][2];
+		dst[11] = t.origin.z;
+	}
+	return result;
+}
+
+void FoliageSpawner3D::_set_gpu_instance_data(const PackedFloat32Array &p_data) {
+	gpu_transforms.clear();
+
+	const int count = p_data.size() / 12;
+	gpu_transforms.resize(count);
+	const float *r = p_data.ptr();
+	for (int i = 0; i < count; i++) {
+		const float *src = r + i * 12;
+		// The nine-scalar constructor fills the basis rows in order, matching
+		// the row-major layout a MultiMesh buffer uses.
+		gpu_transforms[i] = Transform3D(
+				Basis(src[0], src[1], src[2],
+						src[4], src[5], src[6],
+						src[8], src[9], src[10]),
+				Vector3(src[3], src[7], src[11]));
+	}
+
+	_rebuild_gpu_instances();
 }
 
 Array FoliageSpawner3D::_get_cell_data() const {
@@ -462,6 +733,7 @@ void FoliageSpawner3D::set_lod_levels(const TypedArray<FoliageLODLevel> &p_level
 	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
 		_sync_cell_lods(kv.value);
 	}
+	_rebuild_gpu_instances();
 	update_configuration_warnings();
 }
 
@@ -473,6 +745,9 @@ void FoliageSpawner3D::_on_lod_level_changed() {
 	for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
 		_sync_cell_lods(kv.value);
 	}
+	// A level's mesh or range changing moves the GPU path's band boundaries and
+	// bounding radii, both of which are baked into the culler's setup.
+	_rebuild_gpu_instances();
 	update_configuration_warnings();
 }
 
@@ -717,10 +992,17 @@ bool FoliageSpawner3D::is_debug_show_cells_enabled() const {
 }
 
 int FoliageSpawner3D::get_cell_count() const {
+	// The GPU path culls per instance instead of per cell, so it has none.
 	return cells.size();
 }
 
 int FoliageSpawner3D::get_instance_count() const {
+	if (_is_gpu_culling_active()) {
+		// How many of these survive culling is only known on the GPU; this is
+		// the number that was generated.
+		return (int)gpu_transforms.size();
+	}
+
 	int total = 0;
 	for (const KeyValue<Vector2i, FoliageCell> &kv : cells) {
 		if (!kv.value.lod_multimeshes.is_empty() && kv.value.lod_multimeshes[0].is_valid()) {
@@ -768,6 +1050,8 @@ void FoliageSpawner3D::regenerate() {
 	// clean slate of cells.
 	set_multimesh(Ref<MultiMesh>());
 	_clear_cells();
+	gpu_transforms.clear();
+	_clear_gpu_instances();
 
 	if (!has_any_mesh()) {
 		update_configuration_warnings();
@@ -1010,28 +1294,106 @@ void FoliageSpawner3D::regenerate() {
 		}
 	}
 
-	// Group instances by their chunking cell (see class comment) before
-	// building each cell's MultiMesh, instead of one MultiMesh for everything.
-	const float chunk_cell_size = MAX(cell_size, 0.01f);
-	HashMap<Vector2i, LocalVector<Transform3D>> cell_transforms;
-
-	for (uint32_t i = 0; i < transforms.size(); i++) {
-		const Vector3 &origin = transforms[i].origin;
-		const Vector2i cc(int(Math::floor(origin.x / chunk_cell_size)), int(Math::floor(origin.z / chunk_cell_size)));
-		cell_transforms[cc].push_back(transforms[i]);
-	}
-
-	for (KeyValue<Vector2i, LocalVector<Transform3D>> &kv : cell_transforms) {
-		FoliageCell &fc = _get_or_create_cell(kv.key);
-		for (const Ref<MultiMesh> &mm : fc.lod_multimeshes) {
-			_write_transforms(mm, kv.value);
-		}
+	if (_is_gpu_culling_active()) {
+		// Chunking exists to give the renderer something small to frustum-cull;
+		// with the compute pass doing that per instance, the whole spawner is
+		// one flat array feeding one MultiMesh per LOD level.
+		gpu_transforms = transforms;
+		_rebuild_gpu_instances();
+	} else {
+		_rebuild_cells_from_transforms(transforms);
 	}
 
 	update_gizmos();
 	update_configuration_warnings();
 	// Refreshes the read-only cell_count/instance_count Inspector display.
 	notify_property_list_changed();
+}
+
+void FoliageSpawner3D::set_gpu_culling(bool p_enabled) {
+	if (gpu_culling == p_enabled) {
+		return;
+	}
+	gpu_culling = p_enabled;
+
+	// The two paths hold the same instances in different shapes - flat for the
+	// GPU, chunked into cells for the renderer - so toggling converts between
+	// them instead of throwing the generated foliage away and waiting for the
+	// next Regenerate.
+	if (gpu_culling) {
+		if (gpu_transforms.is_empty()) {
+			gpu_transforms = _gather_cell_transforms();
+		}
+		_clear_cells();
+		_rebuild_gpu_instances();
+	} else {
+		if (cells.is_empty() && !gpu_transforms.is_empty()) {
+			_rebuild_cells_from_transforms(gpu_transforms);
+		}
+		_clear_gpu_instances();
+		gpu_transforms.clear();
+	}
+
+	update_gizmos();
+	update_configuration_warnings();
+	notify_property_list_changed();
+}
+
+bool FoliageSpawner3D::is_gpu_culling_enabled() const {
+	return gpu_culling;
+}
+
+void FoliageSpawner3D::fit_to_ground_mesh() {
+	Node *ground_node = is_inside_tree() ? get_node_or_null(ground_mesh_path) : nullptr;
+	MeshInstance3D *ground_mesh_instance = Object::cast_to<MeshInstance3D>(ground_node);
+	Landscape3D *ground_terrain = Object::cast_to<Landscape3D>(ground_node);
+	ERR_FAIL_COND_MSG(ground_mesh_instance == nullptr && ground_terrain == nullptr, "Ground Mesh Path does not point to a MeshInstance3D or Landscape3D, so there is nothing to fit the volume to.");
+
+	// The ground's own bounds, in the ground node's local space.
+	AABB ground_aabb;
+	Transform3D ground_global_transform;
+
+	if (ground_terrain != nullptr) {
+		Ref<TerrainData> ground_terrain_data = ground_terrain->get_terrain_data();
+		ERR_FAIL_COND_MSG(ground_terrain_data.is_null(), "The Landscape3D referenced by Ground Mesh Path has no TerrainData assigned.");
+
+		// Not Landscape3D::get_aabb(): that one pads its height by thousands of
+		// meters so it stays valid through sculpting without being recomputed,
+		// which would make for an absurdly tall volume here. The heightmap's
+		// real range is worth the one-off scan. The terrain starts at the
+		// landscape's own origin and extends towards +X/+Z from there.
+		const float terrain_size = ground_terrain_data->get_size();
+		const Vector2 height_range = ground_terrain_data->get_height_range();
+		ground_aabb = AABB(Vector3(0, height_range.x, 0), Vector3(terrain_size, height_range.y - height_range.x, terrain_size));
+		ground_global_transform = ground_terrain->get_global_transform();
+	} else {
+		Ref<Mesh> ground_mesh = ground_mesh_instance->get_mesh();
+		ERR_FAIL_COND_MSG(ground_mesh.is_null(), "The MeshInstance3D referenced by Ground Mesh Path has no Mesh assigned.");
+
+		ground_aabb = ground_mesh->get_aabb();
+		ground_global_transform = ground_mesh_instance->get_global_transform();
+	}
+
+	// Measured in this node's own space, so a rotated spawner fits the ground
+	// in its own frame rather than to an axis-aligned box around it.
+	const Transform3D global_transform = get_global_transform();
+	const Transform3D ground_to_local = global_transform.affine_inverse() * ground_global_transform;
+	AABB local_aabb = ground_to_local.xform(ground_aabb);
+
+	// A ground with no height of its own (a PlaneMesh is perfectly flat, and so
+	// is a Landscape3D that has not been sculpted yet) would leave the volume
+	// with nothing to show and nothing for a MeshInstance3D's downward
+	// projection ray to travel through, so give it a little.
+	const real_t min_height = 1.0;
+	if (local_aabb.size.y < min_height) {
+		local_aabb.position.y -= (min_height - local_aabb.size.y) * 0.5;
+		local_aabb.size.y = min_height;
+	}
+
+	// The volume is centered on this node's origin, so the node moves onto the
+	// center of the ground and the volume then only has to carry its size.
+	set_global_position(global_transform.xform(local_aabb.get_center()));
+	set_volume_size(local_aabb.size);
 }
 
 AABB FoliageSpawner3D::get_aabb() const {
@@ -1092,8 +1454,16 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 		}
 	}
 
-	if (has_any_mesh() && cells.is_empty()) {
+	if (has_any_mesh() && cells.is_empty() && gpu_transforms.is_empty()) {
 		warnings.push_back(RTR("No instances have been generated yet (or none matched the current settings). Press Regenerate after adjusting Density, Min Distance, the Distribution Mask, or the ground projection settings."));
+	}
+
+	if (gpu_culling && !FoliageGPUCuller::is_supported()) {
+		warnings.push_back(RTR("GPU Culling needs a RenderingDevice-based renderer (Forward+ or Mobile); the Compatibility renderer cannot draw indirect MultiMeshes. Falling back to cell chunking."));
+	}
+
+	if (gpu_culling && lod_levels.size() > FoliageGPUCuller::MAX_LOD_LEVELS) {
+		warnings.push_back(vformat(RTR("GPU Culling only drives the first %d LOD levels; the rest are not rendered."), FoliageGPUCuller::MAX_LOD_LEVELS));
 	}
 
 	if (volume_size.x <= 0.0f || volume_size.y <= 0.0f || volume_size.z <= 0.0f) {

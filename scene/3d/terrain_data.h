@@ -70,6 +70,13 @@ class TerrainData : public Resource {
 
 	void _init_images();
 
+	// Writes one 0-1 value per sample (resolution * resolution of them, row
+	// major) into p_layer_index's weights - the shared back half of
+	// import_layer_mask() and generate_layer_mask(), which only differ in
+	// where the mask comes from. See import_layer_mask() for what p_normalize
+	// does.
+	void _apply_layer_mask(const float *p_mask, int p_layer_index, bool p_normalize);
+
 	// Internal, storage-only representation (see FoliagePainter3D::_get_cell_data
 	// for the same pattern): keeps the Inspector from showing raw Image editors
 	// for what's really bulk terrain data.
@@ -80,6 +87,18 @@ protected:
 	static void _bind_methods();
 
 public:
+	// Which channel of an imported layer mask image holds the mask (see
+	// import_layer_mask). A grayscale mask is in the red channel; the other
+	// three matter for a packed mask image, where one RGBA file carries a
+	// separate mask per channel - the usual way terrain tools export a set of
+	// masks alongside a heightmap.
+	enum MaskChannel {
+		MASK_CHANNEL_RED,
+		MASK_CHANNEL_GREEN,
+		MASK_CHANNEL_BLUE,
+		MASK_CHANNEL_ALPHA,
+	};
+
 	static constexpr int MIN_RESOLUTION = 2;
 	static constexpr int MAX_RESOLUTION = 4097;
 
@@ -131,6 +150,47 @@ public:
 	void fill_height(float p_height);
 	void import_heightmap(const Ref<Image> &p_image, float p_height_min, float p_height_max);
 
+	// Imports a grayscale (or packed, see MaskChannel) image as where
+	// TerrainLayer p_layer_index shows, the counterpart to import_heightmap()
+	// for the texturing masks a terrain tool usually exports alongside a
+	// heightmap (slopes, peaks, hollows, roads, fields...). Unlike
+	// import_heightmap(), this never resizes the terrain - a mask says where a
+	// layer shows on terrain that already exists, so a mask authored at another
+	// resolution is resampled onto the current one instead.
+	void import_layer_mask(const Ref<Image> &p_image, int p_layer_index, MaskChannel p_channel = MASK_CHANNEL_RED, bool p_normalize = true);
+
+	// Builds a layer's mask out of the terrain's own shape instead of an image,
+	// from three bands a sample has to satisfy all of:
+	//  - height, between p_height_min and p_height_max in world units;
+	//  - slope, from p_slope_min to p_slope_max degrees (0 is flat, 90 is a
+	//    vertical wall);
+	//  - curvature, how much the ground bulges or dishes here (see
+	//    get_curvature): negative in a hollow, positive on a ridge.
+	// Each fades in and out over its own falloff rather than cutting off hard.
+	// Needing all three at once is what lets one call mean "snow on high
+	// ground, but not on cliff faces" or "mud in low hollows". Every band
+	// defaults to covering everything, so naming one criterion's numbers
+	// leaves the others unconstrained.
+	void generate_layer_mask(int p_layer_index,
+			float p_height_min = -100000.0, float p_height_max = 100000.0, float p_height_falloff = 0.0,
+			float p_slope_min = 0.0, float p_slope_max = 90.0, float p_slope_falloff = 0.0,
+			float p_curvature_min = -100000.0, float p_curvature_max = 100000.0, float p_curvature_falloff = 0.0,
+			int p_curvature_radius = 2,
+			bool p_normalize = true);
+
+	// How much the surface bulges out of (positive) or dishes into (negative)
+	// its surroundings at this sample: its height against the average of the
+	// four samples p_radius away, over the distance to them. Zero on any flat
+	// or evenly sloping ground, however steep - it is the change in slope, not
+	// the slope. Being a ratio rather than a height difference keeps the same
+	// terrain shape reading the same whatever vertex_spacing or world scale it
+	// is built at; the values still run small, so read a terrain's actual range
+	// off it rather than guessing thresholds. p_radius picks which size of
+	// feature is measured (and, with it, how much single-sample noise in an
+	// imported heightmap is ignored): 1 catches the finest bumps the grid can
+	// hold, larger radii pick out broader valleys and ridges.
+	float get_curvature(int p_x, int p_z, int p_radius = 2) const;
+
 	// Plain C++ helpers for Landscape3D's mesh building and texture upload; not
 	// bound to ClassDB, like FoliagePainter3D's own editor-only helpers.
 	Ref<Image> get_heightmap_image() const;
@@ -142,5 +202,13 @@ public:
 	// sample, no format conversion needed by the caller.
 	Vector<real_t> get_collision_heights() const;
 
+	// The lowest and highest sample in the whole heightmap, as (min, max).
+	// Scans every sample, so it is meant for one-off queries (e.g. fitting a
+	// bounding volume to the sculpted terrain) rather than per-frame use;
+	// Landscape3D::get_aabb() deliberately pads its height instead.
+	Vector2 get_height_range() const;
+
 	TerrainData();
 };
+
+VARIANT_ENUM_CAST(TerrainData::MaskChannel)

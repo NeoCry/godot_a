@@ -36,10 +36,13 @@
 
 class Button;
 class ButtonGroup;
+class CheckBox;
 class ConfirmationDialog;
 class EditorFileDialog;
 class HBoxContainer;
+class Label;
 class MenuButton;
+class OptionButton;
 class SpinBox;
 class StandardMaterial3D;
 
@@ -97,6 +100,7 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	SpinBox *brush_strength_spin = nullptr;
 	MenuButton *paint_layer_menu = nullptr;
 	Button *import_heightmap_button = nullptr;
+	Button *import_layer_mask_button = nullptr;
 
 	// Heightmap import dialogs.
 	EditorFileDialog *import_file_dialog = nullptr;
@@ -104,6 +108,32 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	SpinBox *import_height_min_spin = nullptr;
 	SpinBox *import_height_max_spin = nullptr;
 	String pending_import_path;
+
+	// Layer mask import dialogs.
+	EditorFileDialog *mask_file_dialog = nullptr;
+	ConfirmationDialog *mask_options_dialog = nullptr;
+	OptionButton *mask_layer_option = nullptr;
+	OptionButton *mask_channel_option = nullptr;
+	CheckBox *mask_normalize_check = nullptr;
+	String pending_mask_path;
+
+	// Procedural (height/slope) layer mask dialog.
+	Button *generate_layer_mask_button = nullptr;
+	ConfirmationDialog *generate_mask_dialog = nullptr;
+	OptionButton *generate_layer_option = nullptr;
+	Label *generate_range_label = nullptr;
+	SpinBox *generate_height_min_spin = nullptr;
+	SpinBox *generate_height_max_spin = nullptr;
+	SpinBox *generate_height_falloff_spin = nullptr;
+	SpinBox *generate_slope_min_spin = nullptr;
+	SpinBox *generate_slope_max_spin = nullptr;
+	SpinBox *generate_slope_falloff_spin = nullptr;
+	Label *generate_curvature_range_label = nullptr;
+	SpinBox *generate_curvature_min_spin = nullptr;
+	SpinBox *generate_curvature_max_spin = nullptr;
+	SpinBox *generate_curvature_falloff_spin = nullptr;
+	SpinBox *generate_curvature_radius_spin = nullptr;
+	CheckBox *generate_normalize_check = nullptr;
 
 	Mode mode = MODE_RAISE;
 	float brush_radius = 10.0;
@@ -134,6 +164,19 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	void _import_heightmap_pressed();
 	void _import_file_selected(const String &p_path);
 	void _do_import_heightmap();
+
+	void _import_layer_mask_pressed();
+	void _mask_file_selected(const String &p_path);
+	void _do_import_layer_mask();
+
+	void _generate_layer_mask_pressed();
+	void _do_generate_layer_mask();
+	// Curvature values have no intuitive scale, so the dialog states the range
+	// the terrain actually covers at the chosen radius (which changes it).
+	void _update_curvature_range_label(double p_unused = 0.0);
+	// Fills p_option with the terrain's current layers and preselects the one
+	// the Paint brush is on; returns false if there are none to offer.
+	bool _fill_layer_option(OptionButton *p_option);
 
 	DataKind _get_mode_data_kind() const;
 	String _get_mode_action_name() const;

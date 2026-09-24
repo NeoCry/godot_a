@@ -6,7 +6,7 @@
 	<description>
 		[TerrainData] is the actual "world" a [Landscape3D] renders and collides with: a square grid of [member resolution] × [member resolution] height samples spaced [member vertex_spacing] meters apart, plus one continuous weight per [TerrainLayer] at every sample, and a hole flag (see [method get_layer_weight] and [Landscape3D]'s description for how layer weights combine into a final blend).
 		This resource holds and serializes the data; it does not render anything or know about any particular [Landscape3D] node (several nodes could even share one [TerrainData], though editing it from one would then affect all of them). Assign it to a [Landscape3D]'s [member Landscape3D.terrain_data] to render and sculpt it.
-		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. A [Landscape3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Landscape3D] sharing it), but prefer going through [Landscape3D]'s own [method Landscape3D.sculpt], [method Landscape3D.set_height_region], and [method Landscape3D.paint_layer] instead of this resource's methods directly when a [Landscape3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Landscape3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
+		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. Layer weights work the same way: painted in the editor, set through [method set_layer_weight]/[method set_layer_weight_region], or imported from the texturing masks that usually ship alongside a heightmap with [method import_layer_mask]. A [Landscape3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Landscape3D] sharing it), but prefer going through [Landscape3D]'s own [method Landscape3D.sculpt], [method Landscape3D.set_height_region], and [method Landscape3D.paint_layer] instead of this resource's methods directly when a [Landscape3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Landscape3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -16,6 +16,42 @@
 			<param index="0" name="height" type="float" />
 			<description>
 				Sets every height sample to [param height], for example to reset the terrain to a flat plane.
+			</description>
+		</method>
+		<method name="generate_layer_mask">
+			<return type="void" />
+			<param index="0" name="layer_index" type="int" />
+			<param index="1" name="height_min" type="float" default="-100000.0" />
+			<param index="2" name="height_max" type="float" default="100000.0" />
+			<param index="3" name="height_falloff" type="float" default="0.0" />
+			<param index="4" name="slope_min" type="float" default="0.0" />
+			<param index="5" name="slope_max" type="float" default="90.0" />
+			<param index="6" name="slope_falloff" type="float" default="0.0" />
+			<param index="7" name="curvature_min" type="float" default="-100000.0" />
+			<param index="8" name="curvature_max" type="float" default="100000.0" />
+			<param index="9" name="curvature_falloff" type="float" default="0.0" />
+			<param index="10" name="curvature_radius" type="int" default="2" />
+			<param index="11" name="normalize" type="bool" default="true" />
+			<description>
+				Builds the mask for the [TerrainLayer] at [param layer_index] out of the terrain's own shape rather than an image, the procedural counterpart to [method import_layer_mask]. A sample gets weight where it satisfies all three of:
+				- [b]Height[/b], between [param height_min] and [param height_max] in world units (the scale [method get_height] returns).
+				- [b]Slope[/b], between [param slope_min] and [param slope_max] degrees, where [code]0[/code] is flat ground and [code]90[/code] is a vertical wall.
+				- [b]Curvature[/b], between [param curvature_min] and [param curvature_max] as [method get_curvature] measures it at [param curvature_radius]: negative in a hollow, positive on a rise, zero on ground that is flat or evenly sloping however steep.
+				This is the usual way to texture a terrain by its shape - rock on cliff faces, snow on peaks, sand in the low flats, mud collecting in hollows - without authoring a mask by hand.
+				Each band fades in and out over its own falloff ([param height_falloff] in world units, [param slope_falloff] in degrees, [param curvature_falloff] in curvature) instead of ending abruptly, which is what keeps a visible contour line from appearing around the result; a falloff of [code]0[/code] gives a hard edge. Every band defaults to covering everything, so a call that only sets one criterion's numbers leaves the others unconstrained.
+				Because all three criteria have to be met, one call can express a rule like "snow above 180 m, but not on anything steeper than 40 degrees", or "mud in the hollows of the low ground". Layering several such rules is a matter of calling this once per layer, in the order the layers should take precedence: each call takes what it needs from the layers already there (see [param normalize] under [method import_layer_mask], which means the same thing here).
+				[b]Note:[/b] this reads the heightmap as it stands, so it does not keep following later sculpting - run it again after reshaping the terrain. Like [method import_layer_mask], it replaces that layer's weights outright and is not undoable.
+			</description>
+		</method>
+		<method name="get_curvature" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="x" type="int" />
+			<param index="1" name="z" type="int" />
+			<param index="2" name="radius" type="int" default="2" />
+			<description>
+				Returns how much the surface bulges out of, or dishes into, its surroundings at height sample [param x], [param z]: negative in a hollow, positive on a rise or ridge, and [code]0[/code] on any ground that is flat or evenly sloping, however steep. It is the [i]change[/i] in slope, not the slope itself - see [method get_normal] for that - which is what tells a dip apart from a hillside.
+				It is measured as the sample's height against the average of the four samples [param radius] apart from it, over the distance to them. Being a ratio rather than a height difference means the same terrain shape reads the same whatever [member vertex_spacing] or world scale it was built at, but it also means the numbers run small and have no natural unit: read the range a terrain actually covers off this method rather than guessing thresholds for [method generate_layer_mask].
+				[param radius] chooses which size of feature is measured, and with it how much of the single-sample noise an imported heightmap carries gets ignored: [code]1[/code] catches the finest bumps the sample grid can hold, while larger radii pick out broad valleys and ridges and step over small detail.
 			</description>
 		</method>
 		<method name="get_height" qualifiers="const">
@@ -95,6 +131,19 @@
 				[b]Prefer an EXR or HDR source image over PNG or any lossy format (e.g. JPEG):[/b] Godot always decodes a loaded PNG (even a 16-bit one) to 8 bits per channel, i.e. only 256 distinct heights across the whole [param height_min]-[param height_max] range, and a lossy format's compression artifacts become actual bumps in the terrain surface on top of that. EXR and HDR decode to real floating-point precision instead. Check [member Image.format] after loading if you need to detect this in a script; [constant Image.FORMAT_RF], [constant Image.FORMAT_RH], and their multi-channel/[constant Image.FORMAT_RGBE9995] variants are the high-precision ones.
 			</description>
 		</method>
+		<method name="import_layer_mask">
+			<return type="void" />
+			<param index="0" name="image" type="Image" />
+			<param index="1" name="layer_index" type="int" />
+			<param index="2" name="channel" type="int" enum="TerrainData.MaskChannel" default="0" />
+			<param index="3" name="normalize" type="bool" default="true" />
+			<description>
+				Imports [param image] as where the [TerrainLayer] at [param layer_index] shows, the counterpart to [method import_heightmap] for the texturing masks a terrain tool (World Machine, Gaea, ...) usually exports alongside a heightmap: slopes, peaks, hollows, roads, fields, and so on. A white pixel means that layer fully covers that point, black means it is absent, and anything between blends. [param channel] picks which channel of [param image] to read, so one packed RGBA file can carry four masks at once.
+				[param image] must be square and uncompressed, but - unlike [method import_heightmap] - it does [i]not[/i] have to match [member resolution] and never changes it: a heightmap defines the terrain, while a mask only says where a layer shows on terrain that already exists, so a mask of a different size is resampled onto the current resolution instead.
+				With [param normalize] enabled (the default), the weight this layer gains is taken from the other layers at that point, keeping their proportions to each other - exactly what [method Landscape3D.paint_layer] does per brush stamp, so a fully white mask lands the layer where painting it at full strength would. Leave it enabled when importing masks one at a time. Disable it only when importing a complete set of masks that already adds up across every layer, in which case supply a mask for [i]every[/i] layer, including layer [code]0[/code] (which a new terrain is fully covered in) - otherwise a layer nobody masked keeps its old weight and dilutes the result.
+				[b]Note:[/b] like [method import_heightmap], this replaces data outright and is not undoable.
+			</description>
+		</method>
 		<method name="is_hole" qualifiers="const">
 			<return type="bool" />
 			<param index="0" name="x" type="int" />
@@ -168,6 +217,18 @@
 	<constants>
 		<constant name="MAX_LAYERS" value="32">
 			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Landscape3D.layers]); [param layer_index] must be less than this in every method above.
+		</constant>
+		<constant name="MASK_CHANNEL_RED" value="0" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's red channel. This is the one to use for an ordinary grayscale mask, whose value Godot reads back in every color channel.
+		</constant>
+		<constant name="MASK_CHANNEL_GREEN" value="1" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's green channel, for a packed image carrying a separate mask per channel.
+		</constant>
+		<constant name="MASK_CHANNEL_BLUE" value="2" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's blue channel, for a packed image carrying a separate mask per channel.
+		</constant>
+		<constant name="MASK_CHANNEL_ALPHA" value="3" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's alpha channel, for a packed image carrying a separate mask per channel.
 		</constant>
 	</constants>
 </class>

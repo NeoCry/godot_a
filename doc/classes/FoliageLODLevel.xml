@@ -10,6 +10,10 @@
 	<tutorials>
 	</tutorials>
 	<members>
+		<member name="cast_shadows" type="bool" setter="set_cast_shadows" getter="is_casting_shadows" default="true">
+			If [code]false[/code], this LOD level is left out of the shadow passes. It narrows its owner's shadow setting ([member FoliageLayer.cast_shadows] or [member FoliageSpawner3D.cell_cast_shadow]) rather than overriding it, so a level cannot cast where its owner casts nothing.
+			Turning this off for the distant levels is usually the cheapest way to make foliage shadows affordable: those levels cover most of the ground while contributing the least to what the shadow actually looks like. It is worth more still under [member FoliageSpawner3D.gpu_culling] / [member FoliagePainter3D.gpu_culling], where each shadow cascade otherwise rasterizes every camera-visible instance.
+		</member>
 		<member name="material_override" type="Material" setter="set_material_override" getter="get_material_override">
 			If set, overrides the material used to render this LOD level's instances (equivalent to [member GeometryInstance3D.material_override] on the level's internal [MultiMeshInstance3D]). Leave unset to use [member mesh]'s own surface material(s).
 		</member>

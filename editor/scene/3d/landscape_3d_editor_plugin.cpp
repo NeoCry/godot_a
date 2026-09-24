@@ -42,9 +42,11 @@
 #include "scene/3d/physics/static_body_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/check_box.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/label.h"
 #include "scene/gui/menu_button.h"
+#include "scene/gui/option_button.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/resources/material.h"
@@ -201,6 +203,159 @@ void Landscape3DEditorPlugin::_do_import_heightmap() {
 	}
 
 	terrain->get_terrain_data()->import_heightmap(image, height_min, height_max);
+}
+
+void Landscape3DEditorPlugin::_import_layer_mask_pressed() {
+	if (terrain == nullptr) {
+		return;
+	}
+	if (terrain->get_layers().is_empty()) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainLayers yet. Add at least one layer before importing a mask for it."));
+		return;
+	}
+	mask_file_dialog->popup_file_dialog();
+}
+
+bool Landscape3DEditorPlugin::_fill_layer_option(OptionButton *p_option) {
+	// The layer list is whatever the terrain holds right now, so it is filled
+	// in on every popup rather than once at startup (same reason
+	// _rebuild_paint_layer_menu runs on every popup).
+	p_option->clear();
+	if (terrain == nullptr) {
+		return false;
+	}
+	const TypedArray<TerrainLayer> layers = terrain->get_layers();
+	if (layers.is_empty()) {
+		return false;
+	}
+	for (int i = 0; i < layers.size(); i++) {
+		Ref<TerrainLayer> layer = layers[i];
+		const String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
+		p_option->add_item(vformat("%d: %s", i, name), i);
+	}
+	p_option->select(CLAMP(paint_layer_index, 0, layers.size() - 1));
+	return true;
+}
+
+void Landscape3DEditorPlugin::_mask_file_selected(const String &p_path) {
+	// The file dialog is its own window, so the selected node (and its layers)
+	// can change while it is open.
+	if (!_fill_layer_option(mask_layer_option)) {
+		return;
+	}
+	pending_mask_path = p_path;
+	mask_options_dialog->popup_centered();
+}
+
+void Landscape3DEditorPlugin::_do_import_layer_mask() {
+	if (terrain == nullptr || pending_mask_path.is_empty()) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainData to import a mask into. Import a heightmap first, or assign a TerrainData resource."));
+		return;
+	}
+
+	Ref<Image> image = Image::load_from_file(pending_mask_path);
+	if (image.is_null()) {
+		EditorNode::get_singleton()->show_warning(vformat(TTR("Could not load \"%s\" as an image."), pending_mask_path));
+		return;
+	}
+	if (image->get_width() != image->get_height()) {
+		EditorNode::get_singleton()->show_warning(TTR("The mask image must be square (its width must equal its height)."));
+		return;
+	}
+
+	const int layer_index = mask_layer_option->get_selected_id();
+	if (layer_index < 0 || layer_index >= terrain->get_layers().size()) {
+		return;
+	}
+
+	data->import_layer_mask(image, layer_index,
+			(TerrainData::MaskChannel)mask_channel_option->get_selected_id(),
+			mask_normalize_check->is_pressed());
+}
+
+void Landscape3DEditorPlugin::_generate_layer_mask_pressed() {
+	if (terrain == nullptr) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainData to generate a mask from. Import or sculpt a heightmap first."));
+		return;
+	}
+	if (!_fill_layer_option(generate_layer_option)) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainLayers yet. Add at least one layer before generating a mask for it."));
+		return;
+	}
+
+	// The height band is meaningless without knowing what the terrain actually
+	// spans, and nothing else in the editor shows that, so the dialog states it
+	// and starts the band on it rather than on numbers picked out of the air.
+	const int resolution = data->get_resolution();
+	const PackedFloat32Array heights = data->get_height_region(Rect2i(0, 0, resolution, resolution));
+	float lowest = 0.0f;
+	float highest = 0.0f;
+	if (!heights.is_empty()) {
+		lowest = heights[0];
+		highest = heights[0];
+		for (int i = 1; i < heights.size(); i++) {
+			lowest = MIN(lowest, heights[i]);
+			highest = MAX(highest, heights[i]);
+		}
+	}
+	generate_range_label->set_text(vformat(TTR("This terrain spans %.2f m to %.2f m."), lowest, highest));
+	generate_height_min_spin->set_value(lowest);
+	generate_height_max_spin->set_value(highest);
+	_update_curvature_range_label();
+
+	generate_mask_dialog->popup_centered();
+}
+
+void Landscape3DEditorPlugin::_update_curvature_range_label(double p_unused) {
+	if (terrain == nullptr) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		return;
+	}
+
+	const int resolution = data->get_resolution();
+	const int radius = (int)generate_curvature_radius_spin->get_value();
+	float most_hollow = 0.0f;
+	float most_raised = 0.0f;
+	for (int z = 0; z < resolution; z++) {
+		for (int x = 0; x < resolution; x++) {
+			const float c = data->get_curvature(x, z, radius);
+			most_hollow = MIN(most_hollow, c);
+			most_raised = MAX(most_raised, c);
+		}
+	}
+	generate_curvature_range_label->set_text(vformat(TTR("At this radius the terrain runs %.4f (deepest hollow) to %.4f (sharpest rise)."), most_hollow, most_raised));
+}
+
+void Landscape3DEditorPlugin::_do_generate_layer_mask() {
+	if (terrain == nullptr) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		return;
+	}
+	const int layer_index = generate_layer_option->get_selected_id();
+	if (layer_index < 0 || layer_index >= terrain->get_layers().size()) {
+		return;
+	}
+
+	data->generate_layer_mask(layer_index,
+			generate_height_min_spin->get_value(), generate_height_max_spin->get_value(), generate_height_falloff_spin->get_value(),
+			generate_slope_min_spin->get_value(), generate_slope_max_spin->get_value(), generate_slope_falloff_spin->get_value(),
+			generate_curvature_min_spin->get_value(), generate_curvature_max_spin->get_value(), generate_curvature_falloff_spin->get_value(),
+			(int)generate_curvature_radius_spin->get_value(),
+			generate_normalize_check->is_pressed());
 }
 
 Landscape3DEditorPlugin::DataKind Landscape3DEditorPlugin::_get_mode_data_kind() const {
@@ -676,6 +831,18 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	toolbar->add_child(import_heightmap_button);
 	import_heightmap_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_import_heightmap_pressed));
 
+	import_layer_mask_button = memnew(Button);
+	import_layer_mask_button->set_text(TTR("Import Layer Mask..."));
+	import_layer_mask_button->set_tooltip_text(TTR("Import a grayscale image as where one TerrainLayer shows, for the texturing masks (slopes, peaks, hollows, roads, fields...) a terrain tool usually exports alongside a heightmap. Unlike a heightmap, a mask never resizes the terrain: one authored at a different resolution is resampled to fit."));
+	toolbar->add_child(import_layer_mask_button);
+	import_layer_mask_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_import_layer_mask_pressed));
+
+	generate_layer_mask_button = memnew(Button);
+	generate_layer_mask_button->set_text(TTR("Generate Layer Mask..."));
+	generate_layer_mask_button->set_tooltip_text(TTR("Build a layer's mask from the terrain's own shape instead of an image: where it sits within a height range and how steep it is there. This is how a terrain gets textured by what it is - rock on cliff faces, snow on peaks, sand in the low flats - without painting or authoring a mask by hand."));
+	toolbar->add_child(generate_layer_mask_button);
+	generate_layer_mask_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_generate_layer_mask_pressed));
+
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
 
 	import_file_dialog = memnew(EditorFileDialog);
@@ -714,6 +881,146 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	import_height_max_spin->set_step(0.01);
 	import_height_max_spin->set_value(100.0);
 	import_vbc->add_margin_child(TTR("Height Max (meters):"), import_height_max_spin);
+
+	mask_file_dialog = memnew(EditorFileDialog);
+	mask_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+	mask_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+	mask_file_dialog->set_title(TTR("Import Layer Mask"));
+	// Masks are far less precision-sensitive than a heightmap (8 bits is 256
+	// blend steps between layers, which is plenty), so this accepts the ordinary
+	// image formats terrain tools export masks in, PNG included.
+	mask_file_dialog->add_filter("*.png,*.exr,*.hdr,*.tga,*.webp", TTR("Mask Image"));
+	mask_file_dialog->connect("file_selected", callable_mp(this, &Landscape3DEditorPlugin::_mask_file_selected));
+	EditorInterface::get_singleton()->get_base_control()->add_child(mask_file_dialog);
+
+	mask_options_dialog = memnew(ConfirmationDialog);
+	mask_options_dialog->set_title(TTR("Import Layer Mask"));
+	mask_options_dialog->set_ok_button_text(TTR("Import"));
+	mask_options_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Landscape3DEditorPlugin::_do_import_layer_mask));
+	EditorInterface::get_singleton()->get_base_control()->add_child(mask_options_dialog);
+
+	VBoxContainer *mask_vbc = memnew(VBoxContainer);
+	mask_options_dialog->add_child(mask_vbc);
+
+	mask_layer_option = memnew(OptionButton);
+	mask_vbc->add_margin_child(TTR("Apply To Layer:"), mask_layer_option);
+
+	mask_channel_option = memnew(OptionButton);
+	mask_channel_option->add_item(TTR("Red (grayscale masks)"), TerrainData::MASK_CHANNEL_RED);
+	mask_channel_option->add_item(TTR("Green"), TerrainData::MASK_CHANNEL_GREEN);
+	mask_channel_option->add_item(TTR("Blue"), TerrainData::MASK_CHANNEL_BLUE);
+	mask_channel_option->add_item(TTR("Alpha"), TerrainData::MASK_CHANNEL_ALPHA);
+	mask_channel_option->select(0);
+	mask_vbc->add_margin_child(TTR("Read Mask From Channel:"), mask_channel_option);
+
+	mask_normalize_check = memnew(CheckBox);
+	mask_normalize_check->set_text(TTR("Take the weight from the other layers"));
+	mask_normalize_check->set_pressed(true);
+	mask_normalize_check->set_tooltip_text(TTR("On (recommended when importing one mask at a time): where the mask is white this layer replaces whatever else is painted there, the same as painting it at full strength. Turn it off when importing a complete set of masks that already add up across all layers - then supply a mask for every layer, including the first one, so nothing keeps stale weight."));
+	mask_vbc->add_margin_child(TTR("Blending:"), mask_normalize_check);
+
+	generate_mask_dialog = memnew(ConfirmationDialog);
+	generate_mask_dialog->set_title(TTR("Generate Layer Mask"));
+	generate_mask_dialog->set_ok_button_text(TTR("Generate"));
+	generate_mask_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Landscape3DEditorPlugin::_do_generate_layer_mask));
+	EditorInterface::get_singleton()->get_base_control()->add_child(generate_mask_dialog);
+
+	VBoxContainer *generate_vbc = memnew(VBoxContainer);
+	generate_mask_dialog->add_child(generate_vbc);
+
+	generate_layer_option = memnew(OptionButton);
+	generate_vbc->add_margin_child(TTR("Apply To Layer:"), generate_layer_option);
+
+	generate_range_label = memnew(Label);
+	generate_vbc->add_child(generate_range_label);
+
+	generate_height_min_spin = memnew(SpinBox);
+	generate_height_min_spin->set_min(-100000.0);
+	generate_height_min_spin->set_max(100000.0);
+	generate_height_min_spin->set_step(0.01);
+	generate_height_min_spin->set_tooltip_text(TTR("The layer only shows at or above this height."));
+	generate_vbc->add_margin_child(TTR("Height From (meters):"), generate_height_min_spin);
+
+	generate_height_max_spin = memnew(SpinBox);
+	generate_height_max_spin->set_min(-100000.0);
+	generate_height_max_spin->set_max(100000.0);
+	generate_height_max_spin->set_step(0.01);
+	generate_height_max_spin->set_tooltip_text(TTR("The layer only shows at or below this height."));
+	generate_vbc->add_margin_child(TTR("Height To (meters):"), generate_height_max_spin);
+
+	generate_height_falloff_spin = memnew(SpinBox);
+	generate_height_falloff_spin->set_min(0.0);
+	generate_height_falloff_spin->set_max(100000.0);
+	generate_height_falloff_spin->set_step(0.01);
+	generate_height_falloff_spin->set_value(5.0);
+	generate_height_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the height range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
+	generate_vbc->add_margin_child(TTR("Height Falloff (meters):"), generate_height_falloff_spin);
+
+	generate_slope_min_spin = memnew(SpinBox);
+	generate_slope_min_spin->set_min(0.0);
+	generate_slope_min_spin->set_max(90.0);
+	generate_slope_min_spin->set_step(0.1);
+	generate_slope_min_spin->set_value(0.0);
+	generate_slope_min_spin->set_tooltip_text(TTR("The layer only shows on ground at least this steep. 0 is flat ground, 90 is a vertical wall."));
+	generate_vbc->add_margin_child(TTR("Slope From (degrees):"), generate_slope_min_spin);
+
+	generate_slope_max_spin = memnew(SpinBox);
+	generate_slope_max_spin->set_min(0.0);
+	generate_slope_max_spin->set_max(90.0);
+	generate_slope_max_spin->set_step(0.1);
+	generate_slope_max_spin->set_value(90.0);
+	generate_slope_max_spin->set_tooltip_text(TTR("The layer only shows on ground at most this steep. Leave at 90 to put no upper limit on steepness."));
+	generate_vbc->add_margin_child(TTR("Slope To (degrees):"), generate_slope_max_spin);
+
+	generate_slope_falloff_spin = memnew(SpinBox);
+	generate_slope_falloff_spin->set_min(0.0);
+	generate_slope_falloff_spin->set_max(90.0);
+	generate_slope_falloff_spin->set_step(0.1);
+	generate_slope_falloff_spin->set_value(5.0);
+	generate_slope_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the slope range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
+	generate_vbc->add_margin_child(TTR("Slope Falloff (degrees):"), generate_slope_falloff_spin);
+
+	generate_curvature_radius_spin = memnew(SpinBox);
+	generate_curvature_radius_spin->set_min(1.0);
+	generate_curvature_radius_spin->set_max(64.0);
+	generate_curvature_radius_spin->set_step(1.0);
+	generate_curvature_radius_spin->set_value(2.0);
+	generate_curvature_radius_spin->set_tooltip_text(TTR("How far apart, in height samples, the ground is compared against itself to tell a hollow from a rise. Small values catch fine bumps (and the single-sample noise an imported heightmap carries); larger ones pick out broad valleys and ridges."));
+	generate_vbc->add_margin_child(TTR("Curvature Radius (samples):"), generate_curvature_radius_spin);
+	generate_curvature_radius_spin->connect(SceneStringName(value_changed), callable_mp(this, &Landscape3DEditorPlugin::_update_curvature_range_label));
+
+	generate_curvature_range_label = memnew(Label);
+	generate_vbc->add_child(generate_curvature_range_label);
+
+	generate_curvature_min_spin = memnew(SpinBox);
+	generate_curvature_min_spin->set_min(-100000.0);
+	generate_curvature_min_spin->set_max(100000.0);
+	generate_curvature_min_spin->set_step(0.0001);
+	generate_curvature_min_spin->set_value(-100000.0);
+	generate_curvature_min_spin->set_tooltip_text(TTR("The layer only shows where the ground is at least this curved. Negative is a hollow, 0 is flat or evenly sloping however steep, positive is a rise. Leave at the minimum to put no lower limit on it."));
+	generate_vbc->add_margin_child(TTR("Curvature From (hollow ... rise):"), generate_curvature_min_spin);
+
+	generate_curvature_max_spin = memnew(SpinBox);
+	generate_curvature_max_spin->set_min(-100000.0);
+	generate_curvature_max_spin->set_max(100000.0);
+	generate_curvature_max_spin->set_step(0.0001);
+	generate_curvature_max_spin->set_value(100000.0);
+	generate_curvature_max_spin->set_tooltip_text(TTR("The layer only shows where the ground is at most this curved. Set this negative to catch hollows alone; leave at the maximum to put no upper limit on it."));
+	generate_vbc->add_margin_child(TTR("Curvature To (hollow ... rise):"), generate_curvature_max_spin);
+
+	generate_curvature_falloff_spin = memnew(SpinBox);
+	generate_curvature_falloff_spin->set_min(0.0);
+	generate_curvature_falloff_spin->set_max(100000.0);
+	generate_curvature_falloff_spin->set_step(0.0001);
+	generate_curvature_falloff_spin->set_value(0.0);
+	generate_curvature_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the curvature range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
+	generate_vbc->add_margin_child(TTR("Curvature Falloff:"), generate_curvature_falloff_spin);
+
+	generate_normalize_check = memnew(CheckBox);
+	generate_normalize_check->set_text(TTR("Take the weight from the other layers"));
+	generate_normalize_check->set_pressed(true);
+	generate_normalize_check->set_tooltip_text(TTR("On (recommended): where the rule matches fully, this layer replaces whatever else is there, so generating one rule per layer in order of precedence builds up the whole terrain. Turn it off to set this layer's weights on their own, leaving the other layers untouched."));
+	generate_vbc->add_margin_child(TTR("Blending:"), generate_normalize_check);
 }
 
 Landscape3DEditorPlugin::~Landscape3DEditorPlugin() {
