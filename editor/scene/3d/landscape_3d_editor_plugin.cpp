@@ -42,9 +42,11 @@
 #include "scene/3d/physics/static_body_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/check_box.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/label.h"
 #include "scene/gui/menu_button.h"
+#include "scene/gui/option_button.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/resources/material.h"
@@ -201,6 +203,70 @@ void Landscape3DEditorPlugin::_do_import_heightmap() {
 	}
 
 	terrain->get_terrain_data()->import_heightmap(image, height_min, height_max);
+}
+
+void Landscape3DEditorPlugin::_import_layer_mask_pressed() {
+	if (terrain == nullptr) {
+		return;
+	}
+	if (terrain->get_layers().is_empty()) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainLayers yet. Add at least one layer before importing a mask for it."));
+		return;
+	}
+	mask_file_dialog->popup_file_dialog();
+}
+
+void Landscape3DEditorPlugin::_mask_file_selected(const String &p_path) {
+	// The file dialog is its own window, so the selected node (and its layers)
+	// can change while it is open.
+	if (terrain == nullptr || terrain->get_layers().is_empty()) {
+		return;
+	}
+	pending_mask_path = p_path;
+
+	// The layer list is whatever the terrain holds right now, so it is filled
+	// in here rather than once at startup (same reason _rebuild_paint_layer_menu
+	// runs on every popup).
+	mask_layer_option->clear();
+	const TypedArray<TerrainLayer> layers = terrain->get_layers();
+	for (int i = 0; i < layers.size(); i++) {
+		Ref<TerrainLayer> layer = layers[i];
+		const String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
+		mask_layer_option->add_item(vformat("%d: %s", i, name), i);
+	}
+	mask_layer_option->select(CLAMP(paint_layer_index, 0, layers.size() - 1));
+
+	mask_options_dialog->popup_centered();
+}
+
+void Landscape3DEditorPlugin::_do_import_layer_mask() {
+	if (terrain == nullptr || pending_mask_path.is_empty()) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainData to import a mask into. Import a heightmap first, or assign a TerrainData resource."));
+		return;
+	}
+
+	Ref<Image> image = Image::load_from_file(pending_mask_path);
+	if (image.is_null()) {
+		EditorNode::get_singleton()->show_warning(vformat(TTR("Could not load \"%s\" as an image."), pending_mask_path));
+		return;
+	}
+	if (image->get_width() != image->get_height()) {
+		EditorNode::get_singleton()->show_warning(TTR("The mask image must be square (its width must equal its height)."));
+		return;
+	}
+
+	const int layer_index = mask_layer_option->get_selected_id();
+	if (layer_index < 0 || layer_index >= terrain->get_layers().size()) {
+		return;
+	}
+
+	data->import_layer_mask(image, layer_index,
+			(TerrainData::MaskChannel)mask_channel_option->get_selected_id(),
+			mask_normalize_check->is_pressed());
 }
 
 Landscape3DEditorPlugin::DataKind Landscape3DEditorPlugin::_get_mode_data_kind() const {
@@ -676,6 +742,12 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	toolbar->add_child(import_heightmap_button);
 	import_heightmap_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_import_heightmap_pressed));
 
+	import_layer_mask_button = memnew(Button);
+	import_layer_mask_button->set_text(TTR("Import Layer Mask..."));
+	import_layer_mask_button->set_tooltip_text(TTR("Import a grayscale image as where one TerrainLayer shows, for the texturing masks (slopes, peaks, hollows, roads, fields...) a terrain tool usually exports alongside a heightmap. Unlike a heightmap, a mask never resizes the terrain: one authored at a different resolution is resampled to fit."));
+	toolbar->add_child(import_layer_mask_button);
+	import_layer_mask_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_import_layer_mask_pressed));
+
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
 
 	import_file_dialog = memnew(EditorFileDialog);
@@ -714,6 +786,43 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	import_height_max_spin->set_step(0.01);
 	import_height_max_spin->set_value(100.0);
 	import_vbc->add_margin_child(TTR("Height Max (meters):"), import_height_max_spin);
+
+	mask_file_dialog = memnew(EditorFileDialog);
+	mask_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+	mask_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+	mask_file_dialog->set_title(TTR("Import Layer Mask"));
+	// Masks are far less precision-sensitive than a heightmap (8 bits is 256
+	// blend steps between layers, which is plenty), so this accepts the ordinary
+	// image formats terrain tools export masks in, PNG included.
+	mask_file_dialog->add_filter("*.png,*.exr,*.hdr,*.tga,*.webp", TTR("Mask Image"));
+	mask_file_dialog->connect("file_selected", callable_mp(this, &Landscape3DEditorPlugin::_mask_file_selected));
+	EditorInterface::get_singleton()->get_base_control()->add_child(mask_file_dialog);
+
+	mask_options_dialog = memnew(ConfirmationDialog);
+	mask_options_dialog->set_title(TTR("Import Layer Mask"));
+	mask_options_dialog->set_ok_button_text(TTR("Import"));
+	mask_options_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Landscape3DEditorPlugin::_do_import_layer_mask));
+	EditorInterface::get_singleton()->get_base_control()->add_child(mask_options_dialog);
+
+	VBoxContainer *mask_vbc = memnew(VBoxContainer);
+	mask_options_dialog->add_child(mask_vbc);
+
+	mask_layer_option = memnew(OptionButton);
+	mask_vbc->add_margin_child(TTR("Apply To Layer:"), mask_layer_option);
+
+	mask_channel_option = memnew(OptionButton);
+	mask_channel_option->add_item(TTR("Red (grayscale masks)"), TerrainData::MASK_CHANNEL_RED);
+	mask_channel_option->add_item(TTR("Green"), TerrainData::MASK_CHANNEL_GREEN);
+	mask_channel_option->add_item(TTR("Blue"), TerrainData::MASK_CHANNEL_BLUE);
+	mask_channel_option->add_item(TTR("Alpha"), TerrainData::MASK_CHANNEL_ALPHA);
+	mask_channel_option->select(0);
+	mask_vbc->add_margin_child(TTR("Read Mask From Channel:"), mask_channel_option);
+
+	mask_normalize_check = memnew(CheckBox);
+	mask_normalize_check->set_text(TTR("Take the weight from the other layers"));
+	mask_normalize_check->set_pressed(true);
+	mask_normalize_check->set_tooltip_text(TTR("On (recommended when importing one mask at a time): where the mask is white this layer replaces whatever else is painted there, the same as painting it at full strength. Turn it off when importing a complete set of masks that already add up across all layers - then supply a mask for every layer, including the first one, so nothing keeps stale weight."));
+	mask_vbc->add_margin_child(TTR("Blending:"), mask_normalize_check);
 }
 
 Landscape3DEditorPlugin::~Landscape3DEditorPlugin() {

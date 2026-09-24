@@ -6,7 +6,7 @@
 	<description>
 		[TerrainData] is the actual "world" a [Landscape3D] renders and collides with: a square grid of [member resolution] × [member resolution] height samples spaced [member vertex_spacing] meters apart, plus one continuous weight per [TerrainLayer] at every sample, and a hole flag (see [method get_layer_weight] and [Landscape3D]'s description for how layer weights combine into a final blend).
 		This resource holds and serializes the data; it does not render anything or know about any particular [Landscape3D] node (several nodes could even share one [TerrainData], though editing it from one would then affect all of them). Assign it to a [Landscape3D]'s [member Landscape3D.terrain_data] to render and sculpt it.
-		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. A [Landscape3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Landscape3D] sharing it), but prefer going through [Landscape3D]'s own [method Landscape3D.sculpt], [method Landscape3D.set_height_region], and [method Landscape3D.paint_layer] instead of this resource's methods directly when a [Landscape3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Landscape3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
+		Heights can be authored by hand with [method set_height]/[method set_height_region], generated procedurally with those same methods, or imported from a grayscale [Image] with [method import_heightmap]. Layer weights work the same way: painted in the editor, set through [method set_layer_weight]/[method set_layer_weight_region], or imported from the texturing masks that usually ship alongside a heightmap with [method import_layer_mask]. A [Landscape3D] using this resource stays in sync either way (it also notices edits made directly through this resource, e.g. from a script, or from another [Landscape3D] sharing it), but prefer going through [Landscape3D]'s own [method Landscape3D.sculpt], [method Landscape3D.set_height_region], and [method Landscape3D.paint_layer] instead of this resource's methods directly when a [Landscape3D] is already using it: those know exactly which region changed and only rebuild that, while an edit made directly through this resource makes every [Landscape3D] using it rebuild its rendered chunks, texture, and collision shape from scratch.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -95,6 +95,19 @@
 				[b]Prefer an EXR or HDR source image over PNG or any lossy format (e.g. JPEG):[/b] Godot always decodes a loaded PNG (even a 16-bit one) to 8 bits per channel, i.e. only 256 distinct heights across the whole [param height_min]-[param height_max] range, and a lossy format's compression artifacts become actual bumps in the terrain surface on top of that. EXR and HDR decode to real floating-point precision instead. Check [member Image.format] after loading if you need to detect this in a script; [constant Image.FORMAT_RF], [constant Image.FORMAT_RH], and their multi-channel/[constant Image.FORMAT_RGBE9995] variants are the high-precision ones.
 			</description>
 		</method>
+		<method name="import_layer_mask">
+			<return type="void" />
+			<param index="0" name="image" type="Image" />
+			<param index="1" name="layer_index" type="int" />
+			<param index="2" name="channel" type="int" enum="TerrainData.MaskChannel" default="0" />
+			<param index="3" name="normalize" type="bool" default="true" />
+			<description>
+				Imports [param image] as where the [TerrainLayer] at [param layer_index] shows, the counterpart to [method import_heightmap] for the texturing masks a terrain tool (World Machine, Gaea, ...) usually exports alongside a heightmap: slopes, peaks, hollows, roads, fields, and so on. A white pixel means that layer fully covers that point, black means it is absent, and anything between blends. [param channel] picks which channel of [param image] to read, so one packed RGBA file can carry four masks at once.
+				[param image] must be square and uncompressed, but - unlike [method import_heightmap] - it does [i]not[/i] have to match [member resolution] and never changes it: a heightmap defines the terrain, while a mask only says where a layer shows on terrain that already exists, so a mask of a different size is resampled onto the current resolution instead.
+				With [param normalize] enabled (the default), the weight this layer gains is taken from the other layers at that point, keeping their proportions to each other - exactly what [method Landscape3D.paint_layer] does per brush stamp, so a fully white mask lands the layer where painting it at full strength would. Leave it enabled when importing masks one at a time. Disable it only when importing a complete set of masks that already adds up across every layer, in which case supply a mask for [i]every[/i] layer, including layer [code]0[/code] (which a new terrain is fully covered in) - otherwise a layer nobody masked keeps its old weight and dilutes the result.
+				[b]Note:[/b] like [method import_heightmap], this replaces data outright and is not undoable.
+			</description>
+		</method>
 		<method name="is_hole" qualifiers="const">
 			<return type="bool" />
 			<param index="0" name="x" type="int" />
@@ -168,6 +181,18 @@
 	<constants>
 		<constant name="MAX_LAYERS" value="32">
 			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Landscape3D.layers]); [param layer_index] must be less than this in every method above.
+		</constant>
+		<constant name="MASK_CHANNEL_RED" value="0" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's red channel. This is the one to use for an ordinary grayscale mask, whose value Godot reads back in every color channel.
+		</constant>
+		<constant name="MASK_CHANNEL_GREEN" value="1" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's green channel, for a packed image carrying a separate mask per channel.
+		</constant>
+		<constant name="MASK_CHANNEL_BLUE" value="2" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's blue channel, for a packed image carrying a separate mask per channel.
+		</constant>
+		<constant name="MASK_CHANNEL_ALPHA" value="3" enum="MaskChannel">
+			Read [method import_layer_mask]'s mask from the image's alpha channel, for a packed image carrying a separate mask per channel.
 		</constant>
 	</constants>
 </class>

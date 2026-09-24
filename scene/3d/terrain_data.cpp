@@ -144,6 +144,7 @@ void TerrainData::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("fill_height", "height"), &TerrainData::fill_height);
 	ClassDB::bind_method(D_METHOD("import_heightmap", "image", "height_min", "height_max"), &TerrainData::import_heightmap);
+	ClassDB::bind_method(D_METHOD("import_layer_mask", "image", "layer_index", "channel", "normalize"), &TerrainData::import_layer_mask, DEFVAL(MASK_CHANNEL_RED), DEFVAL(true));
 
 	ClassDB::bind_method(D_METHOD("_get_storage_data"), &TerrainData::_get_storage_data);
 	ClassDB::bind_method(D_METHOD("_set_storage_data", "data"), &TerrainData::_set_storage_data);
@@ -153,6 +154,11 @@ void TerrainData::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "_storage_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_storage_data", "_get_storage_data");
 
 	BIND_CONSTANT(MAX_LAYERS);
+
+	BIND_ENUM_CONSTANT(MASK_CHANNEL_RED);
+	BIND_ENUM_CONSTANT(MASK_CHANNEL_GREEN);
+	BIND_ENUM_CONSTANT(MASK_CHANNEL_BLUE);
+	BIND_ENUM_CONSTANT(MASK_CHANNEL_ALPHA);
 }
 
 void TerrainData::set_resolution(int p_resolution) {
@@ -492,6 +498,109 @@ void TerrainData::import_heightmap(const Ref<Image> &p_image, float p_height_min
 		}
 	}
 	set_height_region(Rect2i(0, 0, resolution, resolution), heights);
+}
+
+void TerrainData::import_layer_mask(const Ref<Image> &p_image, int p_layer_index, MaskChannel p_channel, bool p_normalize) {
+	ERR_FAIL_COND_MSG(p_image.is_null(), "Cannot import a null layer mask image.");
+	ERR_FAIL_INDEX(p_layer_index, MAX_LAYERS);
+	ERR_FAIL_INDEX(p_channel, LAYERS_PER_WEIGHT_MAP);
+	ERR_FAIL_COND_MSG(p_image->get_width() != p_image->get_height(), "Layer mask image must be square.");
+	ERR_FAIL_COND_MSG(Image::is_format_compressed(p_image->get_format()), "Layer mask image must not use a compressed format.");
+
+	// A mask authored at a different size than this terrain is resampled onto
+	// it, rather than resizing the terrain the way import_heightmap() does:
+	// the heightmap defines the terrain, but a mask only says where a layer
+	// shows on it, so it is the mask that has to give.
+	Ref<Image> mask = p_image;
+	if (mask->get_width() != resolution) {
+		Ref<Image> resized;
+		resized.instantiate();
+		resized->copy_from(p_image);
+		resized->resize(resolution, resolution, Image::INTERPOLATE_BILINEAR);
+		mask = resized;
+	}
+
+	const int target_group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
+	const int target_channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
+
+	// Every layer's weight at a sample sits in one of these maps, and
+	// normalizing has to read all of them, so this walks all the raw buffers
+	// at once and commits each exactly once at the end - rather than going
+	// through set_layer_weight_region() per layer, which copies a whole map
+	// per call (see the note above get_height()).
+	Vector<uint8_t> raws[WEIGHT_MAP_COUNT];
+	uint8_t *dst[WEIGHT_MAP_COUNT];
+	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+		raws[g] = weight_maps[g]->get_data();
+		dst[g] = raws[g].ptrw();
+	}
+
+	for (int z = 0; z < resolution; z++) {
+		for (int x = 0; x < resolution; x++) {
+			const Color c = mask->get_pixel(x, z);
+			float m;
+			switch (p_channel) {
+				case MASK_CHANNEL_GREEN:
+					m = c.g;
+					break;
+				case MASK_CHANNEL_BLUE:
+					m = c.b;
+					break;
+				case MASK_CHANNEL_ALPHA:
+					m = c.a;
+					break;
+				default:
+					m = c.r;
+					break;
+			}
+			m = CLAMP(m, 0.0f, 1.0f);
+
+			const int i = (z * resolution + x) * LAYERS_PER_WEIGHT_MAP;
+			if (p_normalize) {
+				// Take what this layer gains out of the others, keeping their
+				// proportions to each other - the same bookkeeping
+				// Landscape3D::paint_layer() does per brush stamp. Without it,
+				// a mask at full white would only tie with whatever is already
+				// painted there (a 50/50 blend) instead of replacing it, which
+				// is never what a "this is where the road goes" mask means.
+				float others_sum = 0.0f;
+				for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+					for (int ch = 0; ch < LAYERS_PER_WEIGHT_MAP; ch++) {
+						if (g != target_group || ch != target_channel) {
+							others_sum += dst[g][i + ch];
+						}
+					}
+				}
+				others_sum /= 255.0f;
+
+				if (others_sum > 0.00001f) {
+					const float scale = (1.0f - m) / others_sum;
+					for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+						for (int ch = 0; ch < LAYERS_PER_WEIGHT_MAP; ch++) {
+							if (g != target_group || ch != target_channel) {
+								dst[g][i + ch] = (uint8_t)CLAMP(Math::round(dst[g][i + ch] * scale), 0.0f, 255.0f);
+							}
+						}
+					}
+				} else if (p_layer_index != 0) {
+					// This layer held every bit of weight here and the mask now
+					// gives some of it back, but no other layer holds a
+					// proportion to hand it to. Layer 0 is what a terrain is
+					// fully covered in before anything is painted, so it takes
+					// the remainder - otherwise the sample would end up holding
+					// no weight at all, which renders as black rather than as
+					// any layer.
+					dst[0][i] = (uint8_t)CLAMP(Math::round((1.0f - m) * 255.0f), 0.0f, 255.0f);
+				}
+			}
+			dst[target_group][i + target_channel] = (uint8_t)CLAMP(Math::round(m * 255.0f), 0.0f, 255.0f);
+		}
+	}
+
+	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+		weight_maps.write[g]->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raws[g]);
+	}
+	emit_changed();
 }
 
 Ref<Image> TerrainData::get_heightmap_image() const {

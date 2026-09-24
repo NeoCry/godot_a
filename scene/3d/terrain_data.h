@@ -80,6 +80,18 @@ protected:
 	static void _bind_methods();
 
 public:
+	// Which channel of an imported layer mask image holds the mask (see
+	// import_layer_mask). A grayscale mask is in the red channel; the other
+	// three matter for a packed mask image, where one RGBA file carries a
+	// separate mask per channel - the usual way terrain tools export a set of
+	// masks alongside a heightmap.
+	enum MaskChannel {
+		MASK_CHANNEL_RED,
+		MASK_CHANNEL_GREEN,
+		MASK_CHANNEL_BLUE,
+		MASK_CHANNEL_ALPHA,
+	};
+
 	static constexpr int MIN_RESOLUTION = 2;
 	static constexpr int MAX_RESOLUTION = 4097;
 
@@ -131,6 +143,15 @@ public:
 	void fill_height(float p_height);
 	void import_heightmap(const Ref<Image> &p_image, float p_height_min, float p_height_max);
 
+	// Imports a grayscale (or packed, see MaskChannel) image as where
+	// TerrainLayer p_layer_index shows, the counterpart to import_heightmap()
+	// for the texturing masks a terrain tool usually exports alongside a
+	// heightmap (slopes, peaks, hollows, roads, fields...). Unlike
+	// import_heightmap(), this never resizes the terrain - a mask says where a
+	// layer shows on terrain that already exists, so a mask authored at another
+	// resolution is resampled onto the current one instead.
+	void import_layer_mask(const Ref<Image> &p_image, int p_layer_index, MaskChannel p_channel = MASK_CHANNEL_RED, bool p_normalize = true);
+
 	// Plain C++ helpers for Landscape3D's mesh building and texture upload; not
 	// bound to ClassDB, like FoliagePainter3D's own editor-only helpers.
 	Ref<Image> get_heightmap_image() const;
@@ -144,3 +165,5 @@ public:
 
 	TerrainData();
 };
+
+VARIANT_ENUM_CAST(TerrainData::MaskChannel)
