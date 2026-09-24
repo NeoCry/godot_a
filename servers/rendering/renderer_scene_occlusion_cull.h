@@ -60,6 +60,15 @@ public:
 		uint64_t occlusion_frame = 0;
 		Size2i occlusion_buffer_size;
 
+		// The camera the depth pyramid was last filled from. Depth only means
+		// anything together with the view it was rendered from, so anything
+		// testing the pyramid outside of the frame that produced it (see
+		// get_depth_data(), used by GPU-driven culling) has to use this camera
+		// rather than the one it is culling for.
+		Transform3D camera_transform;
+		Projection camera_projection;
+		bool camera_orthogonal = false;
+
 		_FORCE_INLINE_ bool _is_occluded(const real_t p_bounds[6], const Vector3 &p_cam_position, const Transform3D &p_cam_inv_transform, const Projection &p_cam_projection, real_t p_near, bool p_is_orthogonal) const {
 			if (is_empty()) {
 				return false;
@@ -205,6 +214,30 @@ public:
 
 		RID get_debug_texture();
 		const Size2i &get_occlusion_buffer_size() const { return occlusion_buffer_size; }
+
+		// Called by every backend right after it has filled the buffer.
+		void set_camera(const Transform3D &p_transform, const Projection &p_projection, bool p_orthogonal) {
+			camera_transform = p_transform;
+			camera_projection = p_projection;
+			camera_orthogonal = p_orthogonal;
+		}
+		const Transform3D &get_camera_transform() const { return camera_transform; }
+		const Projection &get_camera_projection() const { return camera_projection; }
+		bool is_camera_orthogonal() const { return camera_orthogonal; }
+
+		// The depth pyramid itself, for consumers that do their own occlusion
+		// test instead of calling is_occluded() (GPU-driven culling uploads it
+		// and tests in a compute shader, see FoliageGPUCuller). The mips are
+		// laid out one after another in a single allocation, coarsest last, so
+		// the whole pyramid uploads in one go and a mip's first texel is the
+		// sum of the sizes before it.
+		//
+		// Only safe to read on the thread that fills the buffer, which is the
+		// rendering thread.
+		_FORCE_INLINE_ uint32_t get_mip_count() const { return mips.size(); }
+		_FORCE_INLINE_ Size2i get_mip_size(uint32_t p_mip) const { return sizes[p_mip]; }
+		_FORCE_INLINE_ const float *get_depth_data() const { return data.ptr(); }
+		_FORCE_INLINE_ uint32_t get_depth_data_size() const { return data.size(); }
 
 		virtual ~HZBuffer() {}
 	};

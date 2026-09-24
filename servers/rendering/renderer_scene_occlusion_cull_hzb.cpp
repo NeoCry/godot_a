@@ -858,5 +858,6 @@ void HZBOcclusionCull::RasterHZBuffer::render(const LocalVector<RenderItem> &p_i
 
 	debug_tex_range = p_cam_projection.get_z_far();
 
+	set_camera(p_cam_transform, p_cam_projection, p_cam_orthogonal);
 	update_mips();
 }

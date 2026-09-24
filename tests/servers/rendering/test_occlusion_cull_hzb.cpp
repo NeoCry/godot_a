@@ -105,6 +105,10 @@ public:
 		cull.buffer_update(buffer, camera_transform, camera_projection, orthogonal);
 	}
 
+	RendererSceneOcclusionCull::HZBuffer *get_buffer() {
+		return cull.buffer_get_ptr(buffer);
+	}
+
 	bool is_occluded(const AABB &p_aabb) {
 		const Vector3 end = p_aabb.position + p_aabb.size;
 		const real_t bounds[6] = { p_aabb.position.x, p_aabb.position.y, p_aabb.position.z, end.x, end.y, end.z };
@@ -345,6 +349,66 @@ TEST_CASE("[HZBOcclusionCull] The closest surface is the one that occludes") {
 	CHECK(scene.is_occluded(box_at(Vector3(0, 0, -20))));
 	// In front of both.
 	CHECK_FALSE(scene.is_occluded(box_at(Vector3(0, 0, -5))));
+}
+
+TEST_CASE("[HZBOcclusionCull] The depth pyramid is laid out for other consumers to read") {
+	// GPU-driven culling (see FoliageGPUCuller) uploads the pyramid as one
+	// block and addresses a level by the sum of the sizes before it, so the
+	// layout and the camera that goes with it are part of the contract, not
+	// just an implementation detail of is_occluded().
+	OcclusionTestScene scene(Size2i(64, 64));
+
+	PackedVector3Array vertices;
+	PackedInt32Array indices;
+	make_wall(-10.0f, 4.0f, vertices, indices);
+	scene.add_occluder(vertices, indices);
+	scene.draw();
+
+	RendererSceneOcclusionCull::HZBuffer *hzb = scene.get_buffer();
+	REQUIRE(hzb != nullptr);
+	REQUIRE(hzb->get_mip_count() > 1);
+
+	CHECK(hzb->get_mip_size(0) == Size2i(64, 64));
+	CHECK(hzb->get_mip_size(hzb->get_mip_count() - 1) == Size2i(1, 1));
+	CHECK(hzb->get_camera_transform() == scene.camera_transform);
+	CHECK(hzb->get_camera_projection() == scene.camera_projection);
+	CHECK_FALSE(hzb->is_camera_orthogonal());
+
+	uint32_t total = 0;
+	for (uint32_t mip = 0; mip < hzb->get_mip_count(); mip++) {
+		const Size2i size = hzb->get_mip_size(mip);
+		if (mip > 0) {
+			const Size2i previous = hzb->get_mip_size(mip - 1);
+			CHECK(size == Size2i(MAX(1, previous.x >> 1), MAX(1, previous.y >> 1)));
+		}
+		total += size.x * size.y;
+	}
+	CHECK(total == hzb->get_depth_data_size());
+
+	// Every level holds the farthest depth of the one below, which is what
+	// lets one coarse sample stand in for the finer ones it covers.
+	const float *depth = hzb->get_depth_data();
+	uint32_t offset = 0;
+	for (uint32_t mip = 1; mip < hzb->get_mip_count(); mip++) {
+		const Size2i previous = hzb->get_mip_size(mip - 1);
+		const Size2i size = hzb->get_mip_size(mip);
+		const uint32_t previous_offset = offset;
+		offset += previous.x * previous.y;
+
+		for (int y = 0; y < size.y; y++) {
+			for (int x = 0; x < size.x; x++) {
+				float farthest_child = -FLT_MAX;
+				for (int dy = 0; dy < 2; dy++) {
+					for (int dx = 0; dx < 2; dx++) {
+						const int cx = MIN(x * 2 + dx, previous.x - 1);
+						const int cy = MIN(y * 2 + dy, previous.y - 1);
+						farthest_child = MAX(farthest_child, depth[previous_offset + cy * previous.x + cx]);
+					}
+				}
+				CHECK(depth[offset + y * size.x + x] >= farthest_child);
+			}
+		}
+	}
 }
 
 } // namespace TestOcclusionCullHZB

@@ -710,9 +710,16 @@ void FoliagePainter3D::_dispatch_gpu_culling() {
 	}
 	const Vector3 camera_position = to_local.xform(camera->get_global_position());
 
+	// Occlusion culling runs per viewport, so the one to test against is the
+	// viewport the culling camera draws into (in the editor, that is the
+	// editor's own viewport rather than this node's).
+	const Viewport *camera_viewport = camera->get_viewport();
+	const RID occlusion_viewport = camera_viewport != nullptr ? camera_viewport->get_viewport_rid() : RID();
+	const Transform3D global_transform = get_global_transform();
+
 	for (GPULayer *gpu_layer : gpu_layers) {
 		if (gpu_layer != nullptr && gpu_layer->culler != nullptr) {
-			gpu_layer->culler->cull(planes, camera_position);
+			gpu_layer->culler->cull(planes, camera_position, occlusion_viewport, global_transform, true);
 		}
 	}
 }

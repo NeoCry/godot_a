@@ -137,7 +137,7 @@
 		<member name="occluder_enabled" type="bool" setter="set_occluder_enabled" getter="is_occluder_enabled" default="true">
 			If [code]true[/code], the terrain feeds the renderer's occlusion culling a simplified copy of its surface (see [member occluder_detail]), so that objects standing behind hills are culled before they are drawn - vegetation especially, which is usually the densest thing a terrain carries.
 			This only does anything while occlusion culling is on ([member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling], or [member Viewport.use_occlusion_culling] for a custom viewport); until then it costs nothing but the memory of the simplified surface. Holes in the terrain (see [method set_hole]) never occlude, since they can be seen through.
-			[b]Note:[/b] Individual objects can opt out of being culled this way with [member GeometryInstance3D.ignore_occlusion_culling], or [member FoliageSpawner3D.cell_ignore_occlusion_culling] for a whole spawner's cells.
+			[b]Note:[/b] Individual objects can opt out of being culled this way with [member GeometryInstance3D.ignore_occlusion_culling], or [member FoliageSpawner3D.cell_ignore_occlusion_culling] for a whole spawner's foliage.
 		</member>
 		<member name="pom_enabled" type="bool" setter="set_pom_enabled" getter="is_pom_enabled" default="false">
 			Master switch for Parallax Occlusion Mapping (see the class description): a [TerrainLayer] also needs its own [member TerrainLayer.pom_enabled] set for POM to apply to it. Off by default: the ray-marching this adds to every fragment covered by a layer that has it isn't free.

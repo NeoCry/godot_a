@@ -616,7 +616,13 @@ void FoliageSpawner3D::_dispatch_gpu_culling() {
 		planes.write[i] = to_local.xform(planes[i]);
 	}
 
-	gpu_culler.cull(planes, to_local.xform(camera->get_global_position()));
+	// Occlusion culling runs per viewport, so the one to test against is the
+	// viewport the culling camera draws into (in the editor, that is the
+	// editor's own viewport rather than this node's).
+	const Viewport *camera_viewport = camera->get_viewport();
+	const RID occlusion_viewport = camera_viewport != nullptr ? camera_viewport->get_viewport_rid() : RID();
+
+	gpu_culler.cull(planes, to_local.xform(camera->get_global_position()), occlusion_viewport, get_global_transform(), !cell_ignore_occlusion_culling);
 }
 
 PackedFloat32Array FoliageSpawner3D::_get_gpu_instance_data() const {
