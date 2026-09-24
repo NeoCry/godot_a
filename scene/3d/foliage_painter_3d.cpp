@@ -219,7 +219,9 @@ void FoliagePainter3D::_sync_cell_lods(int p_layer, FoliageCell &p_cell) {
 
 		node->set_multimesh(mm);
 		node->set_material_override(level->get_material_override());
-		node->set_cast_shadows_setting(layer->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		// A level that opts out drops from the shadow passes entirely; one that
+		// does not still follows the layer-wide setting.
+		node->set_cast_shadows_setting(layer->is_casting_shadows() && level->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 		node->set_ignore_screen_space_shadows(layer->is_ignoring_screen_space_shadows());
 		node->set_lod_bias(layer->get_lod_bias());
 		// Per-layer, like FoliageSpawner3D's cell_gi_mode: defaults to disabled
@@ -634,7 +636,9 @@ void FoliagePainter3D::_rebuild_gpu_layer(int p_layer) {
 		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
 		node->set_multimesh(mm);
 		node->set_material_override(level->get_material_override());
-		node->set_cast_shadows_setting(layer->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		// A level that opts out drops from the shadow passes entirely; one that
+		// does not still follows the layer-wide setting.
+		node->set_cast_shadows_setting(layer->is_casting_shadows() && level->is_casting_shadows() ? GeometryInstance3D::SHADOW_CASTING_SETTING_ON : GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 		node->set_ignore_screen_space_shadows(layer->is_ignoring_screen_space_shadows());
 		node->set_lod_bias(layer->get_lod_bias());
 		node->set_gi_mode(layer->get_gi_mode());

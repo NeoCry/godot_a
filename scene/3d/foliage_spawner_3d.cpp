@@ -395,7 +395,10 @@ void FoliageSpawner3D::_configure_cell_node(MultiMeshInstance3D *p_node, const R
 	// simply left unchanged.
 	p_node->set_material_overlay(cell_material_overlay);
 	p_node->set_transparency(cell_transparency);
-	p_node->set_cast_shadows_setting(cell_cast_shadow);
+	// A level that opts out drops from the shadow passes entirely; one that
+	// does not still follows the spawner-wide setting, including its mode.
+	const bool level_casts = p_level.is_null() || p_level->is_casting_shadows();
+	p_node->set_cast_shadows_setting(level_casts ? cell_cast_shadow : SHADOW_CASTING_SETTING_OFF);
 	p_node->set_extra_cull_margin(cell_extra_cull_margin);
 	p_node->set_lod_bias(cell_lod_bias);
 	p_node->set_ignore_occlusion_culling(cell_ignore_occlusion_culling);

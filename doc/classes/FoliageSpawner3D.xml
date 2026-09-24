@@ -37,7 +37,7 @@
 			Blends each instance's up axis between world up ([code]0.0[/code]) and the surface normal ([code]1.0[/code]) when [member align_to_normal] is enabled.
 		</member>
 		<member name="cell_cast_shadow" type="int" setter="set_cell_cast_shadow" getter="get_cell_cast_shadow" enum="GeometryInstance3D.ShadowCastingSetting" default="1">
-			The shadow casting mode applied to every cell. See [b]Cell rendering[/b] in the class description.
+			The shadow casting mode applied to every cell. See [b]Cell rendering[/b] in the class description. An individual LOD level can still drop out of the shadow passes through [member FoliageLODLevel.cast_shadows], which is the usual way to keep shadows on nearby foliage only.
 		</member>
 		<member name="cell_count" type="int" setter="" getter="get_cell_count" default="0">
 			Read-only. The number of non-empty cells created by the last [method regenerate] call. See [b]Cell chunking[/b] in the class description. Always [code]0[/code] while [member gpu_culling] is enabled, which does not use cells.
