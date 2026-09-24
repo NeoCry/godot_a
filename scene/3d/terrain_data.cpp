@@ -145,6 +145,7 @@ void TerrainData::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("fill_height", "height"), &TerrainData::fill_height);
 	ClassDB::bind_method(D_METHOD("import_heightmap", "image", "height_min", "height_max"), &TerrainData::import_heightmap);
 	ClassDB::bind_method(D_METHOD("import_layer_mask", "image", "layer_index", "channel", "normalize"), &TerrainData::import_layer_mask, DEFVAL(MASK_CHANNEL_RED), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("generate_layer_mask", "layer_index", "height_min", "height_max", "height_falloff", "slope_min", "slope_max", "slope_falloff", "normalize"), &TerrainData::generate_layer_mask, DEFVAL(-100000.0), DEFVAL(100000.0), DEFVAL(0.0), DEFVAL(0.0), DEFVAL(90.0), DEFVAL(0.0), DEFVAL(true));
 
 	ClassDB::bind_method(D_METHOD("_get_storage_data"), &TerrainData::_get_storage_data);
 	ClassDB::bind_method(D_METHOD("_set_storage_data", "data"), &TerrainData::_set_storage_data);
@@ -520,21 +521,9 @@ void TerrainData::import_layer_mask(const Ref<Image> &p_image, int p_layer_index
 		mask = resized;
 	}
 
-	const int target_group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
-	const int target_channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
-
-	// Every layer's weight at a sample sits in one of these maps, and
-	// normalizing has to read all of them, so this walks all the raw buffers
-	// at once and commits each exactly once at the end - rather than going
-	// through set_layer_weight_region() per layer, which copies a whole map
-	// per call (see the note above get_height()).
-	Vector<uint8_t> raws[WEIGHT_MAP_COUNT];
-	uint8_t *dst[WEIGHT_MAP_COUNT];
-	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
-		raws[g] = weight_maps[g]->get_data();
-		dst[g] = raws[g].ptrw();
-	}
-
+	PackedFloat32Array values;
+	values.resize(resolution * resolution);
+	float *values_w = values.ptrw();
 	for (int z = 0; z < resolution; z++) {
 		for (int x = 0; x < resolution; x++) {
 			const Color c = mask->get_pixel(x, z);
@@ -553,7 +542,72 @@ void TerrainData::import_layer_mask(const Ref<Image> &p_image, int p_layer_index
 					m = c.r;
 					break;
 			}
-			m = CLAMP(m, 0.0f, 1.0f);
+			values_w[z * resolution + x] = m;
+		}
+	}
+
+	_apply_layer_mask(values.ptr(), p_layer_index, p_normalize);
+}
+
+// Fades to 0 over p_falloff on either side of the p_lo..p_hi band, instead of
+// cutting off at its edges - the difference between a usable generated mask and
+// one with a visible contour line around it. MIN() of the two edges (rather
+// than a product) keeps a band narrower than its own falloff behaving sanely.
+static float _mask_band(float p_value, float p_lo, float p_hi, float p_falloff) {
+	if (p_falloff <= 0.0f) {
+		return (p_value >= p_lo && p_value <= p_hi) ? 1.0f : 0.0f;
+	}
+	const float rising = Math::smoothstep(p_lo - p_falloff, p_lo, p_value);
+	const float falling = 1.0f - Math::smoothstep(p_hi, p_hi + p_falloff, p_value);
+	return MIN(rising, falling);
+}
+
+void TerrainData::generate_layer_mask(int p_layer_index,
+		float p_height_min, float p_height_max, float p_height_falloff,
+		float p_slope_min, float p_slope_max, float p_slope_falloff,
+		bool p_normalize) {
+	ERR_FAIL_INDEX(p_layer_index, MAX_LAYERS);
+
+	PackedFloat32Array values;
+	values.resize(resolution * resolution);
+	float *values_w = values.ptrw();
+
+	for (int z = 0; z < resolution; z++) {
+		for (int x = 0; x < resolution; x++) {
+			float m = _mask_band(get_height(x, z), p_height_min, p_height_max, p_height_falloff);
+			if (m > 0.0f) {
+				// Only worth the normal (four more height reads) once the
+				// height band has already let this sample through.
+				const Vector3 n = get_normal(x, z);
+				const float slope_deg = Math::rad_to_deg(Math::acos(CLAMP(n.y, -1.0f, 1.0f)));
+				m *= _mask_band(slope_deg, p_slope_min, p_slope_max, p_slope_falloff);
+			}
+			values_w[z * resolution + x] = m;
+		}
+	}
+
+	_apply_layer_mask(values.ptr(), p_layer_index, p_normalize);
+}
+
+void TerrainData::_apply_layer_mask(const float *p_mask, int p_layer_index, bool p_normalize) {
+	const int target_group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
+	const int target_channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
+
+	// Every layer's weight at a sample sits in one of these maps, and
+	// normalizing has to read all of them, so this walks all the raw buffers
+	// at once and commits each exactly once at the end - rather than going
+	// through set_layer_weight_region() per layer, which copies a whole map
+	// per call (see the note above get_height()).
+	Vector<uint8_t> raws[WEIGHT_MAP_COUNT];
+	uint8_t *dst[WEIGHT_MAP_COUNT];
+	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {
+		raws[g] = weight_maps[g]->get_data();
+		dst[g] = raws[g].ptrw();
+	}
+
+	for (int z = 0; z < resolution; z++) {
+		for (int x = 0; x < resolution; x++) {
+			const float m = CLAMP(p_mask[z * resolution + x], 0.0f, 1.0f);
 
 			const int i = (z * resolution + x) * LAYERS_PER_WEIGHT_MAP;
 			if (p_normalize) {

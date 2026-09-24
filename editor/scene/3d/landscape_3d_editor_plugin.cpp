@@ -216,26 +216,34 @@ void Landscape3DEditorPlugin::_import_layer_mask_pressed() {
 	mask_file_dialog->popup_file_dialog();
 }
 
-void Landscape3DEditorPlugin::_mask_file_selected(const String &p_path) {
-	// The file dialog is its own window, so the selected node (and its layers)
-	// can change while it is open.
-	if (terrain == nullptr || terrain->get_layers().is_empty()) {
-		return;
-	}
-	pending_mask_path = p_path;
-
+bool Landscape3DEditorPlugin::_fill_layer_option(OptionButton *p_option) {
 	// The layer list is whatever the terrain holds right now, so it is filled
-	// in here rather than once at startup (same reason _rebuild_paint_layer_menu
-	// runs on every popup).
-	mask_layer_option->clear();
+	// in on every popup rather than once at startup (same reason
+	// _rebuild_paint_layer_menu runs on every popup).
+	p_option->clear();
+	if (terrain == nullptr) {
+		return false;
+	}
 	const TypedArray<TerrainLayer> layers = terrain->get_layers();
+	if (layers.is_empty()) {
+		return false;
+	}
 	for (int i = 0; i < layers.size(); i++) {
 		Ref<TerrainLayer> layer = layers[i];
 		const String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
-		mask_layer_option->add_item(vformat("%d: %s", i, name), i);
+		p_option->add_item(vformat("%d: %s", i, name), i);
 	}
-	mask_layer_option->select(CLAMP(paint_layer_index, 0, layers.size() - 1));
+	p_option->select(CLAMP(paint_layer_index, 0, layers.size() - 1));
+	return true;
+}
 
+void Landscape3DEditorPlugin::_mask_file_selected(const String &p_path) {
+	// The file dialog is its own window, so the selected node (and its layers)
+	// can change while it is open.
+	if (!_fill_layer_option(mask_layer_option)) {
+		return;
+	}
+	pending_mask_path = p_path;
 	mask_options_dialog->popup_centered();
 }
 
@@ -267,6 +275,61 @@ void Landscape3DEditorPlugin::_do_import_layer_mask() {
 	data->import_layer_mask(image, layer_index,
 			(TerrainData::MaskChannel)mask_channel_option->get_selected_id(),
 			mask_normalize_check->is_pressed());
+}
+
+void Landscape3DEditorPlugin::_generate_layer_mask_pressed() {
+	if (terrain == nullptr) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainData to generate a mask from. Import or sculpt a heightmap first."));
+		return;
+	}
+	if (!_fill_layer_option(generate_layer_option)) {
+		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainLayers yet. Add at least one layer before generating a mask for it."));
+		return;
+	}
+
+	// The height band is meaningless without knowing what the terrain actually
+	// spans, and nothing else in the editor shows that, so the dialog states it
+	// and starts the band on it rather than on numbers picked out of the air.
+	const int resolution = data->get_resolution();
+	const PackedFloat32Array heights = data->get_height_region(Rect2i(0, 0, resolution, resolution));
+	float lowest = 0.0f;
+	float highest = 0.0f;
+	if (!heights.is_empty()) {
+		lowest = heights[0];
+		highest = heights[0];
+		for (int i = 1; i < heights.size(); i++) {
+			lowest = MIN(lowest, heights[i]);
+			highest = MAX(highest, heights[i]);
+		}
+	}
+	generate_range_label->set_text(vformat(TTR("This terrain spans %.2f m to %.2f m."), lowest, highest));
+	generate_height_min_spin->set_value(lowest);
+	generate_height_max_spin->set_value(highest);
+
+	generate_mask_dialog->popup_centered();
+}
+
+void Landscape3DEditorPlugin::_do_generate_layer_mask() {
+	if (terrain == nullptr) {
+		return;
+	}
+	Ref<TerrainData> data = terrain->get_terrain_data();
+	if (data.is_null()) {
+		return;
+	}
+	const int layer_index = generate_layer_option->get_selected_id();
+	if (layer_index < 0 || layer_index >= terrain->get_layers().size()) {
+		return;
+	}
+
+	data->generate_layer_mask(layer_index,
+			generate_height_min_spin->get_value(), generate_height_max_spin->get_value(), generate_height_falloff_spin->get_value(),
+			generate_slope_min_spin->get_value(), generate_slope_max_spin->get_value(), generate_slope_falloff_spin->get_value(),
+			generate_normalize_check->is_pressed());
 }
 
 Landscape3DEditorPlugin::DataKind Landscape3DEditorPlugin::_get_mode_data_kind() const {
@@ -748,6 +811,12 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	toolbar->add_child(import_layer_mask_button);
 	import_layer_mask_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_import_layer_mask_pressed));
 
+	generate_layer_mask_button = memnew(Button);
+	generate_layer_mask_button->set_text(TTR("Generate Layer Mask..."));
+	generate_layer_mask_button->set_tooltip_text(TTR("Build a layer's mask from the terrain's own shape instead of an image: where it sits within a height range and how steep it is there. This is how a terrain gets textured by what it is - rock on cliff faces, snow on peaks, sand in the low flats - without painting or authoring a mask by hand."));
+	toolbar->add_child(generate_layer_mask_button);
+	generate_layer_mask_button->connect(SceneStringName(pressed), callable_mp(this, &Landscape3DEditorPlugin::_generate_layer_mask_pressed));
+
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
 
 	import_file_dialog = memnew(EditorFileDialog);
@@ -823,6 +892,73 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	mask_normalize_check->set_pressed(true);
 	mask_normalize_check->set_tooltip_text(TTR("On (recommended when importing one mask at a time): where the mask is white this layer replaces whatever else is painted there, the same as painting it at full strength. Turn it off when importing a complete set of masks that already add up across all layers - then supply a mask for every layer, including the first one, so nothing keeps stale weight."));
 	mask_vbc->add_margin_child(TTR("Blending:"), mask_normalize_check);
+
+	generate_mask_dialog = memnew(ConfirmationDialog);
+	generate_mask_dialog->set_title(TTR("Generate Layer Mask"));
+	generate_mask_dialog->set_ok_button_text(TTR("Generate"));
+	generate_mask_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Landscape3DEditorPlugin::_do_generate_layer_mask));
+	EditorInterface::get_singleton()->get_base_control()->add_child(generate_mask_dialog);
+
+	VBoxContainer *generate_vbc = memnew(VBoxContainer);
+	generate_mask_dialog->add_child(generate_vbc);
+
+	generate_layer_option = memnew(OptionButton);
+	generate_vbc->add_margin_child(TTR("Apply To Layer:"), generate_layer_option);
+
+	generate_range_label = memnew(Label);
+	generate_vbc->add_child(generate_range_label);
+
+	generate_height_min_spin = memnew(SpinBox);
+	generate_height_min_spin->set_min(-100000.0);
+	generate_height_min_spin->set_max(100000.0);
+	generate_height_min_spin->set_step(0.01);
+	generate_height_min_spin->set_tooltip_text(TTR("The layer only shows at or above this height."));
+	generate_vbc->add_margin_child(TTR("Height From (meters):"), generate_height_min_spin);
+
+	generate_height_max_spin = memnew(SpinBox);
+	generate_height_max_spin->set_min(-100000.0);
+	generate_height_max_spin->set_max(100000.0);
+	generate_height_max_spin->set_step(0.01);
+	generate_height_max_spin->set_tooltip_text(TTR("The layer only shows at or below this height."));
+	generate_vbc->add_margin_child(TTR("Height To (meters):"), generate_height_max_spin);
+
+	generate_height_falloff_spin = memnew(SpinBox);
+	generate_height_falloff_spin->set_min(0.0);
+	generate_height_falloff_spin->set_max(100000.0);
+	generate_height_falloff_spin->set_step(0.01);
+	generate_height_falloff_spin->set_value(5.0);
+	generate_height_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the height range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
+	generate_vbc->add_margin_child(TTR("Height Falloff (meters):"), generate_height_falloff_spin);
+
+	generate_slope_min_spin = memnew(SpinBox);
+	generate_slope_min_spin->set_min(0.0);
+	generate_slope_min_spin->set_max(90.0);
+	generate_slope_min_spin->set_step(0.1);
+	generate_slope_min_spin->set_value(0.0);
+	generate_slope_min_spin->set_tooltip_text(TTR("The layer only shows on ground at least this steep. 0 is flat ground, 90 is a vertical wall."));
+	generate_vbc->add_margin_child(TTR("Slope From (degrees):"), generate_slope_min_spin);
+
+	generate_slope_max_spin = memnew(SpinBox);
+	generate_slope_max_spin->set_min(0.0);
+	generate_slope_max_spin->set_max(90.0);
+	generate_slope_max_spin->set_step(0.1);
+	generate_slope_max_spin->set_value(90.0);
+	generate_slope_max_spin->set_tooltip_text(TTR("The layer only shows on ground at most this steep. Leave at 90 to put no upper limit on steepness."));
+	generate_vbc->add_margin_child(TTR("Slope To (degrees):"), generate_slope_max_spin);
+
+	generate_slope_falloff_spin = memnew(SpinBox);
+	generate_slope_falloff_spin->set_min(0.0);
+	generate_slope_falloff_spin->set_max(90.0);
+	generate_slope_falloff_spin->set_step(0.1);
+	generate_slope_falloff_spin->set_value(5.0);
+	generate_slope_falloff_spin->set_tooltip_text(TTR("How far beyond each end of the slope range the layer fades out over, instead of stopping at a hard line. 0 gives a hard edge."));
+	generate_vbc->add_margin_child(TTR("Slope Falloff (degrees):"), generate_slope_falloff_spin);
+
+	generate_normalize_check = memnew(CheckBox);
+	generate_normalize_check->set_text(TTR("Take the weight from the other layers"));
+	generate_normalize_check->set_pressed(true);
+	generate_normalize_check->set_tooltip_text(TTR("On (recommended): where the rule matches fully, this layer replaces whatever else is there, so generating one rule per layer in order of precedence builds up the whole terrain. Turn it off to set this layer's weights on their own, leaving the other layers untouched."));
+	generate_vbc->add_margin_child(TTR("Blending:"), generate_normalize_check);
 }
 
 Landscape3DEditorPlugin::~Landscape3DEditorPlugin() {

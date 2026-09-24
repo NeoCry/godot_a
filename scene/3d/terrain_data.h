@@ -70,6 +70,13 @@ class TerrainData : public Resource {
 
 	void _init_images();
 
+	// Writes one 0-1 value per sample (resolution * resolution of them, row
+	// major) into p_layer_index's weights - the shared back half of
+	// import_layer_mask() and generate_layer_mask(), which only differ in
+	// where the mask comes from. See import_layer_mask() for what p_normalize
+	// does.
+	void _apply_layer_mask(const float *p_mask, int p_layer_index, bool p_normalize);
+
 	// Internal, storage-only representation (see FoliagePainter3D::_get_cell_data
 	// for the same pattern): keeps the Inspector from showing raw Image editors
 	// for what's really bulk terrain data.
@@ -151,6 +158,20 @@ public:
 	// layer shows on terrain that already exists, so a mask authored at another
 	// resolution is resampled onto the current one instead.
 	void import_layer_mask(const Ref<Image> &p_image, int p_layer_index, MaskChannel p_channel = MASK_CHANNEL_RED, bool p_normalize = true);
+
+	// Builds a layer's mask out of the terrain's own shape instead of an image:
+	// where it sits between p_height_min and p_height_max (in world units) and
+	// how steep it is there, from p_slope_min to p_slope_max degrees (0 is
+	// flat, 90 is a vertical wall). Both bands fade in and out over their
+	// falloff (meters and degrees respectively) rather than cutting off hard,
+	// and a sample has to satisfy both to get any weight - which is what lets
+	// one call mean "snow on high ground, but not on cliff faces". The default
+	// bands cover every height and every slope, so passing only one criterion's
+	// numbers leaves the other unconstrained.
+	void generate_layer_mask(int p_layer_index,
+			float p_height_min = -100000.0, float p_height_max = 100000.0, float p_height_falloff = 0.0,
+			float p_slope_min = 0.0, float p_slope_max = 90.0, float p_slope_falloff = 0.0,
+			bool p_normalize = true);
 
 	// Plain C++ helpers for Landscape3D's mesh building and texture upload; not
 	// bound to ClassDB, like FoliagePainter3D's own editor-only helpers.
