@@ -32,6 +32,7 @@
 
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
+#include "scene/3d/foliage_gpu_culler.h"
 #include "scene/3d/foliage_lod_level.h"
 #include "scene/3d/multimesh_instance_3d.h"
 
@@ -115,14 +116,42 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	bool cell_ignore_screen_space_shadows = false;
 	GIMode cell_gi_mode = GI_MODE_DISABLED;
 
+	// GPU-driven culling. When enabled, cells are not used at all: every
+	// generated instance lives in one flat array that is uploaded once, and a
+	// compute pass picks the visible ones per frame (see FoliageGPUCuller).
+	// Each LOD level then owns a single indirect MultiMesh sized for the worst
+	// case, instead of one small MultiMesh per cell.
+	bool gpu_culling = false;
+	LocalVector<Transform3D> gpu_transforms;
+	LocalVector<Ref<MultiMesh>> gpu_multimeshes;
+	LocalVector<MultiMeshInstance3D *> gpu_nodes;
+	// Which lod_levels entry each of the nodes above was built from. Levels
+	// without a mesh are skipped, so the indices are not one to one.
+	LocalVector<int> gpu_lod_indices;
+	FoliageGPUCuller gpu_culler;
+	ObjectID gpu_culling_camera;
+
 	// Debug.
 	bool debug_show_cells = false;
 
 	void _on_lod_level_changed();
 
+	bool _is_gpu_culling_active() const;
+	void _clear_gpu_instances();
+	void _rebuild_gpu_instances();
+	void _dispatch_gpu_culling();
+	// Both paths store the same instances, just differently: flat for the GPU,
+	// chunked into cells for the renderer. These convert between the two so
+	// that toggling gpu_culling keeps whatever was generated.
+	LocalVector<Transform3D> _gather_cell_transforms() const;
+	void _rebuild_cells_from_transforms(const LocalVector<Transform3D> &p_transforms);
+	PackedFloat32Array _get_gpu_instance_data() const;
+	void _set_gpu_instance_data(const PackedFloat32Array &p_data);
+
 	Ref<Image> _get_mask_image() const;
 	bool _sample_mask(const Ref<Image> &p_image, const Vector2 &p_uv, RandomPCG &p_rng) const;
 	Callable _get_regenerate_button() const;
+	Callable _get_fit_to_ground_mesh_button() const;
 
 	void _clear_cells();
 	FoliageCell &_get_or_create_cell(const Vector2i &p_cell);
@@ -131,7 +160,9 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	// lod_levels. Safe to call at any time: creates/frees MultiMeshInstance3D
 	// children and copies existing transforms into any newly added LOD level.
 	void _sync_cell_lods(FoliageCell &p_cell);
-	void _configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level) const;
+	// The GPU path leaves the visibility range off: one node covers the whole
+	// volume there, so the distance banding is the compute pass's job instead.
+	void _configure_cell_node(MultiMeshInstance3D *p_node, const Ref<FoliageLODLevel> &p_level, bool p_apply_visibility_range = true) const;
 	void _sync_all_cells_settings();
 
 	static LocalVector<Transform3D> _read_transforms(const Ref<MultiMesh> &p_multimesh);
@@ -235,6 +266,9 @@ public:
 	void set_cell_gi_mode(GIMode p_mode);
 	GIMode get_cell_gi_mode() const;
 
+	void set_gpu_culling(bool p_enabled);
+	bool is_gpu_culling_enabled() const;
+
 	void set_debug_show_cells(bool p_enabled);
 	bool is_debug_show_cells_enabled() const;
 
@@ -246,6 +280,11 @@ public:
 	Vector<AABB> get_cell_local_aabbs() const;
 
 	void regenerate();
+
+	// Moves this node onto the center of the ground (a MeshInstance3D's Mesh or
+	// a Landscape3D's height field) and resizes the volume to enclose it, so
+	// the volume does not have to be dialed in by hand.
+	void fit_to_ground_mesh();
 
 	virtual AABB get_aabb() const override;
 	PackedStringArray get_configuration_warnings() const override;

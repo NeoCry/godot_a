@@ -55,6 +55,7 @@ private:
 	AABB custom_aabb;
 	bool use_colors = false;
 	bool use_custom_data = false;
+	bool use_indirect = false;
 	int instance_count = 0;
 	int visible_instance_count = -1;
 	PhysicsInterpolationQuality _physics_interpolation_quality = INTERP_QUALITY_FAST;
@@ -90,6 +91,12 @@ public:
 
 	void set_use_custom_data(bool p_enable);
 	bool is_using_custom_data() const;
+
+	// Draws through an indirect command buffer whose instance count is written
+	// by the GPU (see RenderingServer.multimesh_get_command_buffer_rd_rid),
+	// instead of the CPU-side instance count. RenderingDevice backends only.
+	void set_use_indirect(bool p_enable);
+	bool is_using_indirect() const;
 
 	void set_transform_format(TransformFormat p_transform_format);
 	TransformFormat get_transform_format() const;

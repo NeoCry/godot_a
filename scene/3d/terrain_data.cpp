@@ -507,6 +507,20 @@ Ref<Image> TerrainData::get_hole_map_image() const {
 	return hole_map;
 }
 
+Vector2 TerrainData::get_height_range() const {
+	const Vector<uint8_t> &raw = heightmap->get_data();
+	const float *src = reinterpret_cast<const float *>(raw.ptr());
+	const int count = resolution * resolution;
+
+	float min_height = src[0];
+	float max_height = src[0];
+	for (int i = 1; i < count; i++) {
+		min_height = MIN(min_height, src[i]);
+		max_height = MAX(max_height, src[i]);
+	}
+	return Vector2(min_height, max_height);
+}
+
 Vector<real_t> TerrainData::get_collision_heights() const {
 	Vector<real_t> result;
 	result.resize(resolution * resolution);
