@@ -98,6 +98,7 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	Button *mode_unhole_button = nullptr;
 	SpinBox *brush_radius_spin = nullptr;
 	SpinBox *brush_strength_spin = nullptr;
+	SpinBox *brush_falloff_spin = nullptr;
 	MenuButton *paint_layer_menu = nullptr;
 	Button *import_heightmap_button = nullptr;
 	Button *import_layer_mask_button = nullptr;
@@ -138,6 +139,7 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	Mode mode = MODE_RAISE;
 	float brush_radius = 10.0;
 	float brush_strength = 2.0;
+	float brush_falloff = 1.0;
 	int paint_layer_index = 0;
 
 	// Brush cursor overlay (drawn directly through RenderingServer, like
@@ -157,6 +159,7 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	void _mode_pressed(int p_mode);
 	void _set_brush_radius(double p_value);
 	void _set_brush_strength(double p_value);
+	void _set_brush_falloff(double p_value);
 
 	void _rebuild_paint_layer_menu();
 	void _paint_layer_menu_id_pressed(int p_id);

@@ -100,6 +100,10 @@ void Landscape3DEditorPlugin::_set_brush_strength(double p_value) {
 	brush_strength = MAX(0.001f, (float)p_value);
 }
 
+void Landscape3DEditorPlugin::_set_brush_falloff(double p_value) {
+	brush_falloff = CLAMP((float)p_value, 0.0f, 1.0f);
+}
+
 void Landscape3DEditorPlugin::_rebuild_paint_layer_menu() {
 	PopupMenu *popup = paint_layer_menu->get_popup();
 	popup->clear();
@@ -558,19 +562,19 @@ void Landscape3DEditorPlugin::_stamp(const Vector3 &p_local_position) {
 
 	switch (mode) {
 		case MODE_RAISE: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_RAISE, 0.0f, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_RAISE, brush_falloff, 0.0f, false);
 		} break;
 		case MODE_LOWER: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_LOWER, 0.0f, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_LOWER, brush_falloff, 0.0f, false);
 		} break;
 		case MODE_SMOOTH: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_SMOOTH, 0.0f, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_SMOOTH, brush_falloff, 0.0f, false);
 		} break;
 		case MODE_FLATTEN: {
-			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_FLATTEN, stroke_flatten_height, false);
+			terrain->sculpt(p_local_position, brush_radius, brush_strength, Landscape3D::SCULPT_FLATTEN, brush_falloff, stroke_flatten_height, false);
 		} break;
 		case MODE_PAINT: {
-			terrain->paint_layer(p_local_position, brush_radius, brush_strength, paint_layer_index);
+			terrain->paint_layer(p_local_position, brush_radius, brush_strength, paint_layer_index, brush_falloff);
 		} break;
 		case MODE_HOLE: {
 			terrain->set_hole(p_local_position, brush_radius, true, false);
@@ -810,9 +814,19 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	brush_strength_spin->set_max(1000.0);
 	brush_strength_spin->set_step(0.001);
 	brush_strength_spin->set_value(brush_strength);
-	brush_strength_spin->set_tooltip_text(TTR("Effect applied per brush stamp: meters of height change for Raise/Lower/Smooth/Flatten, or blend amount (0-1 is typical) for Paint/Hole/Unhole."));
+	brush_strength_spin->set_tooltip_text(TTR("Effect applied per brush stamp: meters of height change for Raise/Lower/Flatten, blend amount (0-1 is typical) for Paint, and for Smooth the number of averaging passes - 1 takes the edge off, higher values flatten out progressively larger bumps."));
 	toolbar->add_child(brush_strength_spin);
 	brush_strength_spin->connect(SceneStringName(value_changed), callable_mp(this, &Landscape3DEditorPlugin::_set_brush_strength));
+
+	toolbar->add_child(memnew(Label(TTR("Falloff:"))));
+	brush_falloff_spin = memnew(SpinBox);
+	brush_falloff_spin->set_min(0.0);
+	brush_falloff_spin->set_max(1.0);
+	brush_falloff_spin->set_step(0.01);
+	brush_falloff_spin->set_value(brush_falloff);
+	brush_falloff_spin->set_tooltip_text(TTR("How much of the brush fades out towards its rim. 1 tapers across the whole radius (softest); lower values hold an inner core at full strength and fade only the outside of it; 0 applies at full strength right up to the rim, leaving a hard edge."));
+	toolbar->add_child(brush_falloff_spin);
+	brush_falloff_spin->connect(SceneStringName(value_changed), callable_mp(this, &Landscape3DEditorPlugin::_set_brush_falloff));
 
 	toolbar->add_child(memnew(VSeparator));
 

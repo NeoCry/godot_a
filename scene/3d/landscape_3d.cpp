@@ -44,12 +44,121 @@
 #include "servers/rendering/rendering_server.h"
 
 namespace {
-// Every layer texture is resampled to this size and stacked into a shared
-// Texture2DArray (GPU texture arrays require every layer to share one size),
-// so this also bounds how much a single terrain's splat textures can cost:
-// up to (layer count) * LAYER_TEXTURE_SIZE^2 * 4 channels, times 3 arrays
-// (albedo/normal/orm).
-constexpr int LAYER_TEXTURE_SIZE = 512;
+// How much of a brush stamp lands at p_dist from its centre: 1 at the centre,
+// tapering to 0 at the rim. p_falloff is how much of the radius that taper
+// takes up - 0 stamps at full strength right up to the rim and stops dead
+// (a hard edge), 1 tapers across the whole radius, and anything between keeps
+// an inner core at full strength and fades only the outside of it.
+float brush_falloff_weight(float p_dist, float p_radius, float p_falloff) {
+	const float falloff = CLAMP(p_falloff, 0.0f, 1.0f);
+	if (falloff <= 0.0f) {
+		return 1.0f;
+	}
+	const float inner = p_radius * (1.0f - falloff);
+	if (p_dist <= inner) {
+		return 1.0f;
+	}
+	const float t = 1.0f - (p_dist - inner) / MAX(p_radius - inner, 0.00001f);
+	return t * t * (3.0f - 2.0f * t);
+}
+
+// Used only when a layer has no texture of its own to say how big its stand-in
+// should be, and as a floor under the size the real ones settle on.
+constexpr int MIN_LAYER_TEXTURE_SIZE = 4;
+
+// A set of layer images can be handed to the GPU exactly as it is - nothing
+// decompressed, resized or converted - when every layer supplies one and they
+// already agree on size, format and having mipmaps. This is the only way a set
+// of 4K textures is affordable, because it keeps whatever VRAM compression they
+// were imported with: expanding a 4096x4096 texture to RGBA8 costs about 67 MB
+// per layer per array before mipmaps, against roughly 11-22 MB compressed.
+bool can_upload_layer_images_directly(const Vector<Ref<Image>> &p_images) {
+	if (p_images.is_empty() || p_images[0].is_null()) {
+		return false;
+	}
+	const Ref<Image> &first = p_images[0];
+	if (!first->is_compressed() || !first->has_mipmaps()) {
+		return false;
+	}
+	for (int i = 1; i < p_images.size(); i++) {
+		const Ref<Image> &img = p_images[i];
+		if (img.is_null() || !img->has_mipmaps() ||
+				img->get_format() != first->get_format() ||
+				img->get_width() != first->get_width() ||
+				img->get_height() != first->get_height()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// What size a set is resampled to when it cannot go up as it is: the largest
+// source in it, so a high-resolution texture is not thrown away just because
+// another layer's is smaller, but never past the terrain's own limit.
+int common_layer_texture_size(const Vector<Ref<Image>> &p_images, int p_limit) {
+	int size = 0;
+	for (int i = 0; i < p_images.size(); i++) {
+		if (p_images[i].is_valid()) {
+			size = MAX(size, MAX(p_images[i]->get_width(), p_images[i]->get_height()));
+		}
+	}
+	return CLAMP(size, MIN_LAYER_TEXTURE_SIZE, MAX(p_limit, MIN_LAYER_TEXTURE_SIZE));
+}
+
+// Stacks one texture per layer into the shared Texture2DArray the shader samples
+// (GPU texture arrays require every layer to share one size and format), filling
+// in p_default_color for any layer that has no texture of this kind.
+Ref<Texture2DArray> build_layer_texture_array(const Vector<Ref<Image>> &p_sources, const Color &p_default_color, Image::Format p_format, bool p_renormalize_mipmaps, int p_size_limit) {
+	Vector<Ref<Image>> images;
+	if (can_upload_layer_images_directly(p_sources)) {
+		images = p_sources;
+	} else {
+		images.resize(p_sources.size());
+		const int size = common_layer_texture_size(p_sources, p_size_limit);
+		for (int i = 0; i < p_sources.size(); i++) {
+			Ref<Image> img;
+			img.instantiate();
+			if (p_sources[i].is_valid()) {
+				img->copy_internals_from(p_sources[i]);
+				if (img->is_compressed()) {
+					img->decompress();
+				}
+				if (img->has_mipmaps()) {
+					// The source's chain describes the source's size; a fresh
+					// one is generated below once this is at its final size.
+					img->clear_mipmaps();
+				}
+				if (img->get_format() != p_format) {
+					img->convert(p_format);
+				}
+				if (img->get_width() != size || img->get_height() != size) {
+					// Lanczos rather than resize()'s default bilinear: bilinear
+					// reads four texels wherever it lands, so shrinking a large
+					// texture by more than half throws away most of it and
+					// keeps whichever few texels it happened to hit, which
+					// looks like noise rather than a smaller version.
+					img->resize(size, size, Image::INTERPOLATE_LANCZOS);
+				}
+			} else {
+				img->initialize_data(size, size, false, p_format);
+				img->fill(p_default_color);
+			}
+			// The shader samples these with filter_linear_mipmap_anisotropic,
+			// so without a mip chain there is nothing for it to filter between:
+			// every fragment reads full-resolution texels, and anywhere the
+			// texture is minified (which on a terrain is most of the view) that
+			// samples far below its own detail and aliases into a shimmering,
+			// blocky mess.
+			img->generate_mipmaps(p_renormalize_mipmaps);
+			images.write[i] = img;
+		}
+	}
+
+	Ref<Texture2DArray> array;
+	array.instantiate();
+	array->create_from_images(images);
+	return array;
+}
 } // namespace
 
 // TerrainData::MAX_LAYERS (see its declaration) must match the shader
@@ -446,6 +555,9 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_collision_mask", "mask"), &Landscape3D::set_collision_mask);
 	ClassDB::bind_method(D_METHOD("get_collision_mask"), &Landscape3D::get_collision_mask);
 
+	ClassDB::bind_method(D_METHOD("set_layer_texture_size_limit", "size"), &Landscape3D::set_layer_texture_size_limit);
+	ClassDB::bind_method(D_METHOD("get_layer_texture_size_limit"), &Landscape3D::get_layer_texture_size_limit);
+
 	ClassDB::bind_method(D_METHOD("set_debug_draw_chunks", "enable"), &Landscape3D::set_debug_draw_chunks);
 	ClassDB::bind_method(D_METHOD("is_debug_draw_chunks_enabled"), &Landscape3D::is_debug_draw_chunks_enabled);
 
@@ -482,8 +594,8 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_pom_fade_end", "distance"), &Landscape3D::set_pom_fade_end);
 	ClassDB::bind_method(D_METHOD("get_pom_fade_end"), &Landscape3D::get_pom_fade_end);
 
-	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(0.0f), DEFVAL(true));
-	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index"), &Landscape3D::paint_layer);
+	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "falloff", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(1.0f), DEFVAL(0.0f), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index", "falloff"), &Landscape3D::paint_layer, DEFVAL(1.0f));
 	ClassDB::bind_method(D_METHOD("set_hole", "local_position", "radius", "hole", "update_collision"), &Landscape3D::set_hole, DEFVAL(true));
 
 	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &Landscape3D::get_height_region);
@@ -507,6 +619,7 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_bias", PROPERTY_HINT_RANGE, "0.01,16.0,0.01,or_greater"), "set_lod_bias", "get_lod_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "cast_shadow", PROPERTY_HINT_ENUM, "Off,On,Double-Sided,Shadows Only"), "set_cast_shadow", "get_cast_shadow");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "layer_texture_size_limit", PROPERTY_HINT_RANGE, "16,8192,1"), "set_layer_texture_size_limit", "get_layer_texture_size_limit");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw_chunks"), "set_debug_draw_chunks", "is_debug_draw_chunks_enabled");
 
 	ADD_GROUP("Occlusion Culling", "occluder_");
@@ -674,66 +787,9 @@ void Landscape3D::_rebuild_textures() {
 		triplanar_sharpness_values.write[i] = 1.0f;
 	}
 
-	auto normalize_image = [](const Ref<Image> &p_src) -> Ref<Image> {
-		Ref<Image> img;
-		img.instantiate();
-		img->copy_internals_from(p_src);
-		if (img->is_compressed()) {
-			img->decompress();
-		}
-		if (img->has_mipmaps()) {
-			img->clear_mipmaps();
-		}
-		if (img->get_format() != Image::FORMAT_RGBA8) {
-			img->convert(Image::FORMAT_RGBA8);
-		}
-		if (img->get_width() != LAYER_TEXTURE_SIZE || img->get_height() != LAYER_TEXTURE_SIZE) {
-			img->resize(LAYER_TEXTURE_SIZE, LAYER_TEXTURE_SIZE);
-		}
-		return img;
+	auto source_image = [](const Ref<Texture2D> &p_texture) -> Ref<Image> {
+		return p_texture.is_valid() ? p_texture->get_image() : Ref<Image>();
 	};
-	auto default_image = [](const Color &p_color) -> Ref<Image> {
-		Ref<Image> img;
-		img.instantiate();
-		img->initialize_data(LAYER_TEXTURE_SIZE, LAYER_TEXTURE_SIZE, false, Image::FORMAT_RGBA8);
-		img->fill(p_color);
-		return img;
-	};
-	// Single-channel, unlike the other three arrays: POM only ever reads one
-	// value per sample, so this halves the format's storage cost. Height
-	// textures are quite loose about which channel actually carries the
-	// data, so this converts most incoming formats via just their overall
-	// grayscale weighting, but for a texture authored specifically for this
-	// (e.g. a raw heightmap) the red channel dominates anyway.
-	auto normalize_height_image = [](const Ref<Image> &p_src) -> Ref<Image> {
-		Ref<Image> img;
-		img.instantiate();
-		img->copy_internals_from(p_src);
-		if (img->is_compressed()) {
-			img->decompress();
-		}
-		if (img->has_mipmaps()) {
-			img->clear_mipmaps();
-		}
-		if (img->get_format() != Image::FORMAT_R8) {
-			img->convert(Image::FORMAT_R8);
-		}
-		if (img->get_width() != LAYER_TEXTURE_SIZE || img->get_height() != LAYER_TEXTURE_SIZE) {
-			img->resize(LAYER_TEXTURE_SIZE, LAYER_TEXTURE_SIZE);
-		}
-		return img;
-	};
-	// White = a height of 1.0 = zero parallax depth (see pom_offset()), so a
-	// layer with no height_texture assigned is unaffected by POM even while
-	// it's enabled on the node.
-	auto default_height_image = []() -> Ref<Image> {
-		Ref<Image> img;
-		img.instantiate();
-		img->initialize_data(LAYER_TEXTURE_SIZE, LAYER_TEXTURE_SIZE, false, Image::FORMAT_R8);
-		img->fill(Color(1, 1, 1));
-		return img;
-	};
-
 	for (int i = 0; i < array_layers; i++) {
 		Ref<TerrainLayer> layer;
 		if (i < layers.size()) {
@@ -745,10 +801,10 @@ void Landscape3D::_rebuild_textures() {
 		Ref<Texture2D> orm_tex = layer.is_valid() ? layer->get_orm_texture() : Ref<Texture2D>();
 		Ref<Texture2D> height_tex = layer.is_valid() ? layer->get_height_texture() : Ref<Texture2D>();
 
-		albedo_images.write[i] = (albedo_tex.is_valid() && albedo_tex->get_image().is_valid()) ? normalize_image(albedo_tex->get_image()) : default_image(Color(0.6, 0.6, 0.6, 1.0));
-		normal_images.write[i] = (normal_tex.is_valid() && normal_tex->get_image().is_valid()) ? normalize_image(normal_tex->get_image()) : default_image(Color(0.5, 0.5, 1.0, 1.0));
-		orm_images.write[i] = (orm_tex.is_valid() && orm_tex->get_image().is_valid()) ? normalize_image(orm_tex->get_image()) : default_image(Color(1.0, 0.5, 0.0, 1.0));
-		height_images.write[i] = (height_tex.is_valid() && height_tex->get_image().is_valid()) ? normalize_height_image(height_tex->get_image()) : default_height_image();
+		albedo_images.write[i] = source_image(albedo_tex);
+		normal_images.write[i] = source_image(normal_tex);
+		orm_images.write[i] = source_image(orm_tex);
+		height_images.write[i] = source_image(height_tex);
 
 		if (i < TerrainData::MAX_LAYERS) {
 			uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
@@ -766,14 +822,17 @@ void Landscape3D::_rebuild_textures() {
 		}
 	}
 
-	albedo_array.instantiate();
-	albedo_array->create_from_images(albedo_images);
-	normal_array.instantiate();
-	normal_array->create_from_images(normal_images);
-	orm_array.instantiate();
-	orm_array->create_from_images(orm_images);
-	height_array.instantiate();
-	height_array->create_from_images(height_images);
+	albedo_array = build_layer_texture_array(albedo_images, Color(0.6, 0.6, 0.6, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
+	// Mipmaps are renormalized: averaging two normals shortens the result, and
+	// a normal map whose vectors are not unit length reads as a flattened,
+	// washed-out surface at distance.
+	normal_array = build_layer_texture_array(normal_images, Color(0.5, 0.5, 1.0, 1.0), Image::FORMAT_RGBA8, true, layer_texture_size_limit);
+	orm_array = build_layer_texture_array(orm_images, Color(1.0, 0.5, 0.0, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
+	// Single-channel, unlike the other three: POM only ever reads one value per
+	// sample, so this quarters what the array costs. White = a height of 1.0 =
+	// zero parallax depth (see pom_offset()), so a layer with no height_texture
+	// is unaffected by POM even while it is enabled on the node.
+	height_array = build_layer_texture_array(height_images, Color(1, 1, 1), Image::FORMAT_R8, false, layer_texture_size_limit);
 
 	material->set_shader_parameter("weight_array", weight_array);
 	material->set_shader_parameter("albedo_array", albedo_array);
@@ -1430,6 +1489,15 @@ uint32_t Landscape3D::get_collision_mask() const {
 	return collision_mask;
 }
 
+void Landscape3D::set_layer_texture_size_limit(int p_size) {
+	layer_texture_size_limit = CLAMP(p_size, 16, 8192);
+	_rebuild_textures();
+}
+
+int Landscape3D::get_layer_texture_size_limit() const {
+	return layer_texture_size_limit;
+}
+
 void Landscape3D::set_debug_draw_chunks(bool p_enable) {
 	debug_draw_chunks = p_enable;
 	update_gizmos();
@@ -1538,7 +1606,7 @@ float Landscape3D::get_pom_fade_end() const {
 	return pom_fade_end;
 }
 
-void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height, bool p_update_collision) {
+void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_falloff, float p_flatten_height, bool p_update_collision) {
 	ERR_FAIL_COND(terrain_data.is_null());
 
 	const float spacing = terrain_data->get_vertex_spacing();
@@ -1563,18 +1631,49 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	PackedFloat32Array heights = terrain_data->get_height_region(region);
 	const int region_w = region.size.x;
 
-	// SMOOTH averages each vertex with its neighbors; it needs to read from an
-	// unmodified snapshot of the touched (padded by one ring) region rather
-	// than sampling this same stamp's own in-progress writes.
-	const Rect2i snapshot_region(x0 - 1, z0 - 1, x1 - x0 + 3, z1 - z0 + 3);
+	// Smoothing is the one operation strength cannot simply scale: averaging a
+	// vertex with its neighbours is one pass whatever fraction of it is applied,
+	// so once the blend reaches that average there is nothing left for more
+	// strength to do - which is why the brush used to feel stuck on weak however
+	// high it was set. Strength is the number of averaging passes here, run over
+	// the snapshot before any of it is blended in, so the result keeps getting
+	// smoother as it rises. Each pass reads one ring further out, hence the
+	// matching padding.
+	const int smooth_passes = (p_operation == SCULPT_SMOOTH) ? CLAMP((int)Math::round(p_strength), 1, 32) : 1;
+	const Rect2i snapshot_region(x0 - smooth_passes, z0 - smooth_passes,
+			(x1 - x0 + 1) + smooth_passes * 2, (z1 - z0 + 1) + smooth_passes * 2);
+	const int snapshot_w = snapshot_region.size.x;
+	const int snapshot_h = snapshot_region.size.y;
 	PackedFloat32Array before;
 	if (p_operation == SCULPT_SMOOTH) {
+		// get_height_region() clamps its reads to the terrain, so the padding
+		// beyond an edge repeats that edge rather than reading as a cliff down
+		// to zero.
 		before = terrain_data->get_height_region(snapshot_region);
+		PackedFloat32Array next;
+		next.resize(before.size());
+		for (int pass = 0; pass < smooth_passes; pass++) {
+			const float *src = before.ptr();
+			float *dst = next.ptrw();
+			for (int z = 0; z < snapshot_h; z++) {
+				for (int x = 0; x < snapshot_w; x++) {
+					float sum = 0.0f;
+					for (int nz = -1; nz <= 1; nz++) {
+						for (int nx = -1; nx <= 1; nx++) {
+							const int sx = CLAMP(x + nx, 0, snapshot_w - 1);
+							const int sz = CLAMP(z + nz, 0, snapshot_h - 1);
+							sum += src[sz * snapshot_w + sx];
+						}
+					}
+					dst[z * snapshot_w + x] = sum / 9.0f;
+				}
+			}
+			SWAP(before, next);
+		}
 	}
-	const int snapshot_w = snapshot_region.size.x;
 	auto sample_before = [&](int x, int z) -> float {
-		x = CLAMP(x, snapshot_region.position.x, snapshot_region.position.x + snapshot_region.size.x - 1);
-		z = CLAMP(z, snapshot_region.position.y, snapshot_region.position.y + snapshot_region.size.y - 1);
+		x = CLAMP(x, snapshot_region.position.x, snapshot_region.position.x + snapshot_w - 1);
+		z = CLAMP(z, snapshot_region.position.y, snapshot_region.position.y + snapshot_h - 1);
 		return before[(z - snapshot_region.position.y) * snapshot_w + (x - snapshot_region.position.x)];
 	};
 
@@ -1586,8 +1685,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 			if (dist > radius) {
 				continue;
 			}
-			const float t = 1.0f - dist / radius;
-			const float falloff = t * t * (3.0f - 2.0f * t);
+			const float falloff = brush_falloff_weight(dist, radius, p_falloff);
 			const float amount = p_strength * falloff;
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
@@ -1603,13 +1701,11 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 					h = Math::lerp(h, p_flatten_height, CLAMP(amount, 0.0f, 1.0f));
 				} break;
 				case SCULPT_SMOOTH: {
-					float sum = 0.0f;
-					for (int nz = -1; nz <= 1; nz++) {
-						for (int nx = -1; nx <= 1; nx++) {
-							sum += sample_before(x + nx, z + nz);
-						}
-					}
-					h = Math::lerp(h, sum / 9.0f, CLAMP(amount, 0.0f, 1.0f));
+					// Strength already went into how smooth sample_before() is
+					// (see smooth_passes above), so here it only decides how
+					// much of that to take below full strength - past 1 the
+					// passes carry it, not the blend.
+					h = Math::lerp(h, sample_before(x, z), CLAMP(p_strength, 0.0f, 1.0f) * falloff);
 				} break;
 			}
 			heights.set(local_idx, h);
@@ -1625,7 +1721,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	}
 }
 
-void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index) {
+void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff) {
 	ERR_FAIL_COND(terrain_data.is_null());
 	ERR_FAIL_INDEX(p_layer_index, layers.size());
 	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
@@ -1666,8 +1762,7 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 			if (dist > radius) {
 				continue;
 			}
-			const float t = 1.0f - dist / radius;
-			const float amount = p_strength * t * t * (3.0f - 2.0f * t);
+			const float amount = p_strength * brush_falloff_weight(dist, radius, p_falloff);
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
 			PackedFloat32Array &target = layer_weights.write[p_layer_index];

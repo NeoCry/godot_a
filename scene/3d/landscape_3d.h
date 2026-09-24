@@ -158,6 +158,14 @@ private:
 	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
 
+	// The largest a layer texture is kept at when it has to be resampled into
+	// the shared Texture2DArray (see _rebuild_textures): anything bigger is
+	// scaled down to this, anything smaller is left alone. A set of textures
+	// that already agree on size and format and carry mipmaps skips resampling
+	// altogether and ignores this, keeping whatever VRAM compression it has -
+	// which is what makes 4K layers affordable at all.
+	int layer_texture_size_limit = 2048;
+
 	bool debug_draw_chunks = false;
 
 	StaticBody3D *collision_body = nullptr;
@@ -243,6 +251,9 @@ public:
 	void set_collision_mask(uint32_t p_mask);
 	uint32_t get_collision_mask() const;
 
+	void set_layer_texture_size_limit(int p_size);
+	int get_layer_texture_size_limit() const;
+
 	void set_debug_draw_chunks(bool p_enable);
 	bool is_debug_draw_chunks_enabled() const;
 
@@ -282,8 +293,12 @@ public:
 	// Sculpting/painting API. Positions are in this node's local space
 	// (XZ plane, Y up). Also directly usable at runtime (e.g. for explosion
 	// craters), not just from the editor brush.
-	void sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_flatten_height = 0.0, bool p_update_collision = true);
-	void paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index);
+	// p_falloff shapes the stamp from its centre to its rim: 0 is a hard edge,
+	// 1 tapers across the whole radius. For SCULPT_SMOOTH, p_strength is how
+	// many averaging passes to smooth by rather than a per-stamp amount - see
+	// the comment in sculpt() for why that operation cannot use one.
+	void sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_falloff = 1.0, float p_flatten_height = 0.0, bool p_update_collision = true);
+	void paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff = 1.0);
 	void set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision = true);
 
 	PackedFloat32Array get_height_region(const Rect2i &p_region) const;

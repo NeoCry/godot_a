@@ -49,8 +49,9 @@
 			<param index="1" name="radius" type="float" />
 			<param index="2" name="strength" type="float" />
 			<param index="3" name="layer_index" type="int" />
+			<param index="4" name="falloff" type="float" default="1.0" />
 			<description>
-				Raises the weight of the [TerrainLayer] at [param layer_index] in [member layers] within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), falling off smoothly towards the edge of the brush. Every other layer's weight at each affected point is lowered proportionally so the total stays roughly constant (see [TerrainData]'s description), so repeatedly painting one layer converges on it fully replacing whatever was there rather than just capping out at an even split with it. Re-uploads the affected layer weight textures, but does not need to rebuild any chunk mesh or collision shape, since painting never changes geometry.
+				Raises the weight of the [TerrainLayer] at [param layer_index] in [member layers] within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), tapering towards the edge of the brush as [param falloff] says (see [method sculpt]). Every other layer's weight at each affected point is lowered proportionally so the total stays roughly constant (see [TerrainData]'s description), so repeatedly painting one layer converges on it fully replacing whatever was there rather than just capping out at an even split with it. Re-uploads the affected layer weight textures, but does not need to rebuild any chunk mesh or collision shape, since painting never changes geometry.
 			</description>
 		</method>
 		<method name="sculpt">
@@ -59,10 +60,13 @@
 			<param index="1" name="radius" type="float" />
 			<param index="2" name="strength" type="float" />
 			<param index="3" name="operation" type="int" enum="Landscape3D.SculptOperation" />
-			<param index="4" name="flatten_height" type="float" default="0.0" />
-			<param index="5" name="update_collision" type="bool" default="true" />
+			<param index="4" name="falloff" type="float" default="1.0" />
+			<param index="5" name="flatten_height" type="float" default="0.0" />
+			<param index="6" name="update_collision" type="bool" default="true" />
 			<description>
-				Sculpts [member terrain_data]'s heightmap within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), falling off smoothly towards the edge of the brush. [param strength] is the maximum height change, in meters, applied at the center of the brush per call, except for [constant SCULPT_FLATTEN] where it is instead how far each height moves towards [param flatten_height] (as a 0-1 fraction; values at or above 1 snap immediately). Rebuilds the chunks the brush touches and, unless [param update_collision] is [code]false[/code], also updates the collision shape immediately; pass [code]false[/code] while repeatedly sculpting in a tight loop (e.g. dragging a brush) and call [method update_collision] once afterwards instead, since rebuilding the collision shape from the whole heightmap on every call is comparatively expensive.
+				Sculpts [member terrain_data]'s heightmap within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter).
+				[param falloff] shapes the stamp from its center to its rim: [code]1[/code] (the default) tapers across the whole radius, [code]0[/code] applies at full strength right up to the rim and stops dead, leaving a hard edge, and values between hold an inner core at full strength and fade only the outside of it.
+				[param strength] is the maximum height change, in meters, applied at the center of the brush per call, with two exceptions. For [constant SCULPT_FLATTEN] it is how far each height moves towards [param flatten_height] (as a 0-1 fraction; values at or above 1 snap immediately). For [constant SCULPT_SMOOTH] it is the number of averaging passes to smooth by, because smoothing has no per-stamp amount to scale: averaging a vertex with its neighbours is one pass however hard it is applied, so beyond a full blend to that average there is nothing more for strength to do. [code]1[/code] takes the edge off, and higher values flatten out progressively larger bumps (below [code]1[/code], it is one pass applied partially). Rebuilds the chunks the brush touches and, unless [param update_collision] is [code]false[/code], also updates the collision shape immediately; pass [code]false[/code] while repeatedly sculpting in a tight loop (e.g. dragging a brush) and call [method update_collision] once afterwards instead, since rebuilding the collision shape from the whole heightmap on every call is comparatively expensive.
 			</description>
 		</method>
 		<method name="set_height_region">
@@ -126,6 +130,11 @@
 		</member>
 		<member name="layers" type="TerrainLayer[]" setter="set_layers" getter="get_layers" default="[]">
 			The ground materials this terrain can be painted with, in the order the Paint brush's layer picker lists them. See [TerrainLayer] and the class description; up to 32 entries are supported.
+		</member>
+		<member name="layer_texture_size_limit" type="int" setter="set_layer_texture_size_limit" getter="get_layer_texture_size_limit" default="2048">
+			The largest a [TerrainLayer]'s textures are kept at when they have to be resampled to build the shared texture arrays this terrain renders from. A GPU texture array needs every layer to share one size and format, so a set that does not already agree is resampled to the largest source in it, capped here; a texture smaller than the cap is never enlarged.
+			Raising this keeps more of a high-resolution texture at the cost of memory, which is considerable: a resampled set is uncompressed, so each 4096×4096 layer costs roughly 67 MB per array (there are four) before mipmaps.
+			[b]This is skipped entirely, and ignored, when a set needs no resampling:[/b] if every layer supplies that texture and they already share a size and format and carry mipmaps, they go to the GPU untouched, keeping whatever VRAM compression they were imported with. That is the only practical way to use 4K layer textures - compressed, they cost a small fraction of the above - so for large textures it is worth making the set uniform and importing it as VRAM Compressed rather than raising this.
 		</member>
 		<member name="lod_bias" type="float" setter="set_lod_bias" getter="get_lod_bias" default="1.0">
 			Scales how aggressively chunks switch to a lower level of detail with distance. Values above [code]1.0[/code] switch to a lower level of detail sooner (closer to the camera); values below [code]1.0[/code] delay switching, keeping more chunks at full detail for longer at the cost of performance.
