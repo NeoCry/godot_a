@@ -40,8 +40,8 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/camera_3d.h"
-#include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/landscape_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/material.h"
@@ -1344,21 +1344,46 @@ bool FoliageSpawner3D::is_gpu_culling_enabled() const {
 }
 
 void FoliageSpawner3D::fit_to_ground_mesh() {
-	MeshInstance3D *ground = Object::cast_to<MeshInstance3D>(is_inside_tree() ? get_node_or_null(ground_mesh_path) : nullptr);
-	ERR_FAIL_NULL_MSG(ground, "Ground Mesh Path does not point to a MeshInstance3D, so there is nothing to fit the volume to.");
+	Node *ground_node = is_inside_tree() ? get_node_or_null(ground_mesh_path) : nullptr;
+	MeshInstance3D *ground_mesh_instance = Object::cast_to<MeshInstance3D>(ground_node);
+	Landscape3D *ground_terrain = Object::cast_to<Landscape3D>(ground_node);
+	ERR_FAIL_COND_MSG(ground_mesh_instance == nullptr && ground_terrain == nullptr, "Ground Mesh Path does not point to a MeshInstance3D or Landscape3D, so there is nothing to fit the volume to.");
 
-	Ref<Mesh> ground_mesh = ground->get_mesh();
-	ERR_FAIL_COND_MSG(ground_mesh.is_null(), "The MeshInstance3D referenced by Ground Mesh Path has no Mesh assigned.");
+	// The ground's own bounds, in the ground node's local space.
+	AABB ground_aabb;
+	Transform3D ground_global_transform;
+
+	if (ground_terrain != nullptr) {
+		Ref<TerrainData> ground_terrain_data = ground_terrain->get_terrain_data();
+		ERR_FAIL_COND_MSG(ground_terrain_data.is_null(), "The Landscape3D referenced by Ground Mesh Path has no TerrainData assigned.");
+
+		// Not Landscape3D::get_aabb(): that one pads its height by thousands of
+		// meters so it stays valid through sculpting without being recomputed,
+		// which would make for an absurdly tall volume here. The heightmap's
+		// real range is worth the one-off scan. The terrain starts at the
+		// landscape's own origin and extends towards +X/+Z from there.
+		const float terrain_size = ground_terrain_data->get_size();
+		const Vector2 height_range = ground_terrain_data->get_height_range();
+		ground_aabb = AABB(Vector3(0, height_range.x, 0), Vector3(terrain_size, height_range.y - height_range.x, terrain_size));
+		ground_global_transform = ground_terrain->get_global_transform();
+	} else {
+		Ref<Mesh> ground_mesh = ground_mesh_instance->get_mesh();
+		ERR_FAIL_COND_MSG(ground_mesh.is_null(), "The MeshInstance3D referenced by Ground Mesh Path has no Mesh assigned.");
+
+		ground_aabb = ground_mesh->get_aabb();
+		ground_global_transform = ground_mesh_instance->get_global_transform();
+	}
 
 	// Measured in this node's own space, so a rotated spawner fits the ground
 	// in its own frame rather than to an axis-aligned box around it.
 	const Transform3D global_transform = get_global_transform();
-	const Transform3D ground_to_local = global_transform.affine_inverse() * ground->get_global_transform();
-	AABB local_aabb = ground_to_local.xform(ground_mesh->get_aabb());
+	const Transform3D ground_to_local = global_transform.affine_inverse() * ground_global_transform;
+	AABB local_aabb = ground_to_local.xform(ground_aabb);
 
-	// Instances are placed by casting a ray from the top of the volume straight
-	// down to its bottom, so a ground with no height of its own (a PlaneMesh is
-	// perfectly flat) needs some room for that ray to exist in.
+	// A ground with no height of its own (a PlaneMesh is perfectly flat, and so
+	// is a Landscape3D that has not been sculpted yet) would leave the volume
+	// with nothing to show and nothing for a MeshInstance3D's downward
+	// projection ray to travel through, so give it a little.
 	const real_t min_height = 1.0;
 	if (local_aabb.size.y < min_height) {
 		local_aabb.position.y -= (min_height - local_aabb.size.y) * 0.5;

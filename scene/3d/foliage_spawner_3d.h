@@ -281,8 +281,9 @@ public:
 
 	void regenerate();
 
-	// Moves this node onto the center of the ground mesh and resizes the volume
-	// to enclose it, so the volume does not have to be dialed in by hand.
+	// Moves this node onto the center of the ground (a MeshInstance3D's Mesh or
+	// a Landscape3D's height field) and resizes the volume to enclose it, so
+	// the volume does not have to be dialed in by hand.
 	void fit_to_ground_mesh();
 
 	virtual AABB get_aabb() const override;

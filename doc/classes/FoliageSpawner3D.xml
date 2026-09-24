@@ -19,8 +19,8 @@
 		<method name="fit_to_ground_mesh">
 			<return type="void" />
 			<description>
-				Moves this node onto the center of the [Mesh] of the [MeshInstance3D] referenced by [member ground_mesh_path], and sets [member volume_size] so that the volume encloses it. Saves dialing the volume in by hand to match the terrain it scatters over.
-				The mesh is measured in this node's own space, so a rotated spawner is fitted in its own frame rather than to an axis-aligned box around the ground. A ground with no height of its own (a [PlaneMesh] is perfectly flat) is given a little, since instances are placed by casting a ray from the top of the volume down to its bottom and that ray needs room to exist in.
+				Moves this node onto the center of the ground referenced by [member ground_mesh_path] - the [Mesh] of a [MeshInstance3D], or the whole height field of a [Landscape3D] - and sets [member volume_size] so that the volume encloses it. Saves dialing the volume in by hand to match the terrain it scatters over.
+				The ground is measured in this node's own space, so a rotated spawner is fitted in its own frame rather than to an axis-aligned box around the ground. A [Landscape3D] is measured against the real range of its heightmap, not against [method Landscape3D.get_aabb], whose height is padded by thousands of meters so that it survives sculpting. A ground with no height of its own (a [PlaneMesh] is perfectly flat, and so is a [Landscape3D] that has not been sculpted yet) is given a little, since instances are placed over a [MeshInstance3D] by casting a ray from the top of the volume down to its bottom and that ray needs room to exist in.
 				This only changes the volume; call [method regenerate] afterwards to scatter into it. It also moves the node, which cannot be undone with [b]Undo[/b].
 			</description>
 		</method>

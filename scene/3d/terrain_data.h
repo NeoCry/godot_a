@@ -142,5 +142,11 @@ public:
 	// sample, no format conversion needed by the caller.
 	Vector<real_t> get_collision_heights() const;
 
+	// The lowest and highest sample in the whole heightmap, as (min, max).
+	// Scans every sample, so it is meant for one-off queries (e.g. fitting a
+	// bounding volume to the sculpted terrain) rather than per-frame use;
+	// Landscape3D::get_aabb() deliberately pads its height instead.
+	Vector2 get_height_range() const;
+
 	TerrainData();
 };
