@@ -32,6 +32,7 @@
 
 #include "core/config/engine.h"
 #include "core/object/callable_mp.h"
+#include "core/object/class_db.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/world_environment.h"
 #include "scene/resources/sky.h"

@@ -39,6 +39,7 @@ TEST_FORCE_LINK(test_time_of_day)
 #include "scene/3d/time_of_day.h"
 #include "scene/3d/time_of_day_profile.h"
 #include "scene/3d/world_environment.h"
+#include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 #include "scene/resources/3d/sky_material.h"
 #include "scene/resources/environment.h"
