@@ -1515,7 +1515,7 @@ RSE::ReflectionProbeUpdateMode LightStorage::reflection_probe_get_update_mode(RI
 
 int LightStorage::reflection_probe_get_update_interval(RID p_probe) const {
 	const ReflectionProbe *reflection_probe = reflection_probe_owner.get_or_null(p_probe);
-	ERR_FAIL_NULL_V(reflection_probe, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN);
+	ERR_FAIL_NULL_V(reflection_probe, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_DEFAULT);
 
 	return reflection_probe->update_interval;
 }
@@ -1817,9 +1817,9 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 
 	RD::get_singleton()->draw_command_begin_label("Reflection Probe Render");
 
-	const bool update_realtime = RSE::reflection_probe_update_mode_is_realtime(LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe));
-	if (update_realtime && atlas->reflection.is_valid() && atlas->size != 256) {
-		WARN_PRINT("ReflectionProbes set to UPDATE_ALWAYS or UPDATE_INTERVAL must have an atlas size of 256. Please update the atlas size in the ProjectSettings.");
+	const bool update_always = LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe) == RSE::REFLECTION_PROBE_UPDATE_ALWAYS;
+	if (update_always && atlas->reflection.is_valid() && atlas->size != 256) {
+		WARN_PRINT("ReflectionProbes set to UPDATE_ALWAYS must have an atlas size of 256. Please update the atlas size in the ProjectSettings.");
 		reflection_atlas_set_size(p_reflection_atlas, 256, atlas->count);
 	}
 
@@ -1828,8 +1828,8 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 	// even if no real-time probes are present. This is intentional behavior until a future solution can accommodate for both
 	// quality levels being used simultaneously.
 	const int required_real_time_mipmaps = 7;
-	const bool switched_to_real_time = !atlas->update_realtime && update_realtime && atlas->reflection.is_valid();
-	const bool real_time_mipmaps_different = update_realtime && atlas->reflection.is_valid() && atlas->reflections[0].data.layers[0].mipmaps.size() != required_real_time_mipmaps;
+	const bool switched_to_real_time = !atlas->update_always && update_always && atlas->reflection.is_valid();
+	const bool real_time_mipmaps_different = update_always && atlas->reflection.is_valid() && atlas->reflections[0].data.layers[0].mipmaps.size() != required_real_time_mipmaps;
 	if (switched_to_real_time || real_time_mipmaps_different) {
 		_reflection_atlas_clear(atlas);
 	}
@@ -1839,7 +1839,7 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 		ERR_FAIL_NULL_V_MSG(copy_effects, false, "Effects haven't been initialized");
 
 		int mipmaps = MIN(RendererSceneRenderRD::get_singleton()->get_sky()->roughness_layers, Image::get_image_required_mipmaps(atlas->size, atlas->size, Image::FORMAT_RGBAH) + 1);
-		mipmaps = update_realtime ? required_real_time_mipmaps : mipmaps;
+		mipmaps = update_always ? required_real_time_mipmaps : mipmaps;
 
 		// Double size to approximate texel density of cubemaps + add border for proper filtering/mipmapping.
 		uint32_t padding_pixels = (1 << (mipmaps - 1));
@@ -1878,7 +1878,7 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 		}
 		atlas->reflections.resize(atlas->count);
 		for (int i = 0; i < atlas->count; i++) {
-			atlas->reflections.write[i].data.update_reflection_data(atlas->reflection_texture_size, mipmaps, false, atlas->reflection, i, update_realtime, RendererSceneRenderRD::get_singleton()->get_sky()->roughness_layers, RendererSceneRenderRD::get_singleton()->_render_buffers_get_preferred_color_format(), atlas->uv_border_size);
+			atlas->reflections.write[i].data.update_reflection_data(atlas->reflection_texture_size, mipmaps, false, atlas->reflection, i, update_always, RendererSceneRenderRD::get_singleton()->get_sky()->roughness_layers, RendererSceneRenderRD::get_singleton()->_render_buffers_get_preferred_color_format(), atlas->uv_border_size);
 		}
 
 		for (int i = 0; i < 6; i++) {
@@ -1891,7 +1891,7 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 		atlas->depth_fb = RD::get_singleton()->framebuffer_create(fbs);
 
 		atlas->render_buffers->configure_for_reflections(Size2i(atlas->size, atlas->size));
-		atlas->update_realtime = update_realtime;
+		atlas->update_always = update_always;
 	}
 
 	if (rpi->atlas_index == -1) {
@@ -1966,7 +1966,7 @@ bool LightStorage::reflection_probe_instance_postprocess_step(RID p_instance) {
 		return false;
 	}
 
-	if (RSE::reflection_probe_update_mode_is_realtime(LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe))) {
+	if (LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe) == RSE::REFLECTION_PROBE_UPDATE_ALWAYS) {
 		// Using real time reflections, all roughness is done in one step
 		atlas->reflections.write[rpi->atlas_index].data.create_reflection_fast_filter(false);
 		rpi->rendering = false;

@@ -333,16 +333,15 @@ enum ReflectionProbeUpdateMode {
 };
 
 constexpr int REFLECTION_PROBE_UPDATE_INTERVAL_MIN = 2;
-constexpr int REFLECTION_PROBE_UPDATE_INTERVAL_MAX = 10;
+constexpr int REFLECTION_PROBE_UPDATE_INTERVAL_MAX = 120;
+// A refresh already takes several frames, so the default leaves the probe idle for a while between
+// refreshes rather than starting the next one the moment the previous one finished.
+constexpr int REFLECTION_PROBE_UPDATE_INTERVAL_DEFAULT = 10;
 
-// Probes that keep refreshing themselves (every frame, or once every few frames) share the same
-// real-time rendering path, which is cheaper but lower quality than the one used by update-once probes.
-constexpr bool reflection_probe_update_mode_is_realtime(ReflectionProbeUpdateMode p_mode) {
-	return p_mode == REFLECTION_PROBE_UPDATE_ALWAYS || p_mode == REFLECTION_PROBE_UPDATE_INTERVAL;
-}
-
-// Tells whether an interval probe is due for a refresh on the given frame. Probes sharing an interval
-// are spread over different frames, using a phase derived from the probe so that it stays stable.
+// Tells whether an interval probe may start a new refresh on the given frame. Probes sharing an
+// interval are spread over different frames, using a phase derived from the probe so that it stays
+// stable. A refresh itself is rendered step by step over the following frames, exactly like an
+// update-once probe, so intervals shorter than that simply keep the probe refreshing back to back.
 constexpr bool reflection_probe_update_interval_is_due(uint64_t p_probe_id, int p_interval, uint64_t p_frame) {
 	const uint64_t interval = p_interval > REFLECTION_PROBE_UPDATE_INTERVAL_MIN ? uint64_t(p_interval) : uint64_t(REFLECTION_PROBE_UPDATE_INTERVAL_MIN);
 	return ((p_frame + p_probe_id % interval) % interval) == 0;

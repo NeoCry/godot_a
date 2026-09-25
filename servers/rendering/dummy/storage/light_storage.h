@@ -156,7 +156,7 @@ public:
 
 	virtual AABB reflection_probe_get_aabb(RID p_probe) const override { return AABB(); }
 	virtual RSE::ReflectionProbeUpdateMode reflection_probe_get_update_mode(RID p_probe) const override { return RSE::REFLECTION_PROBE_UPDATE_ONCE; }
-	virtual int reflection_probe_get_update_interval(RID p_probe) const override { return RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN; }
+	virtual int reflection_probe_get_update_interval(RID p_probe) const override { return RSE::REFLECTION_PROBE_UPDATE_INTERVAL_DEFAULT; }
 	virtual uint32_t reflection_probe_get_cull_mask(RID p_probe) const override { return 0; }
 	virtual uint32_t reflection_probe_get_reflection_mask(RID p_probe) const override { return 0; }
 	virtual Vector3 reflection_probe_get_size(RID p_probe) const override { return Vector3(); }
