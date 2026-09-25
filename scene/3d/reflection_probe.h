@@ -65,7 +65,7 @@ private:
 	uint32_t cull_mask = (1 << 20) - 1;
 	uint32_t reflection_mask = (1 << 20) - 1;
 	UpdateMode update_mode = UPDATE_ONCE;
-	int update_interval = RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN;
+	int update_interval = RSE::REFLECTION_PROBE_UPDATE_INTERVAL_DEFAULT;
 
 protected:
 	static void _bind_methods();

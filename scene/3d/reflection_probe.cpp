@@ -279,7 +279,7 @@ void ReflectionProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_update_interval", "frames"), &ReflectionProbe::set_update_interval);
 	ClassDB::bind_method(D_METHOD("get_update_interval"), &ReflectionProbe::get_update_interval);
 
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "update_mode", PROPERTY_HINT_ENUM, "Once (Fast),Always (Slow),Interval (Balanced)"), "set_update_mode", "get_update_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "update_mode", PROPERTY_HINT_ENUM, "Once (Fast),Always (Slow),Interval (Once, Repeating)"), "set_update_mode", "get_update_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "update_interval", PROPERTY_HINT_RANGE, itos(RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN) + "," + itos(RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MAX) + ",1"), "set_update_interval", "get_update_interval");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "intensity", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_intensity", "get_intensity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "blend_distance", PROPERTY_HINT_RANGE, "0,8,0.01,or_greater,suffix:m"), "set_blend_distance", "get_blend_distance");
