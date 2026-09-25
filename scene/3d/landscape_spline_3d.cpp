@@ -189,6 +189,12 @@ render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_sc
 // ripples and tinted by how much water the view passes through, and foam
 // gathers in the shallows and where the water runs fast. Vertex COLOR.a is the
 // spline's edge and end fade.
+//
+// The renderer's own screen-space reflections only cover opaque surfaces, and
+// water has to be drawn after them to see what is under it, so it traces its
+// own against the depth buffer; where a ray finds nothing on screen, the sky
+// and reflection probes show instead, as they would with the renderer's. (A
+// ReflectionProbe's box takes precedence over what is traced, inside it.)
 
 group_uniforms surface;
 // What the water looks like where it is too deep to see through.
@@ -234,6 +240,18 @@ uniform float shore_foam_depth : hint_range(0.01, 5.0, 0.01) = 0.35;
 uniform float rapids_foam : hint_range(0.0, 1.0, 0.01) = 0.0;
 // Speed of the current, in meters per second, at which it starts to foam.
 uniform float rapids_speed : hint_range(0.0, 20.0, 0.01) = 1.5;
+
+group_uniforms reflections;
+// Reflect what is on screen: the banks, trees and anything else around the
+// water, not just the sky.
+uniform bool screen_space_reflections = true;
+// Samples taken along each reflected ray; fewer is cheaper, more misses less.
+uniform int reflection_steps : hint_range(4, 64, 1) = 32;
+// How far, in meters, a reflected ray is followed.
+uniform float reflection_distance : hint_range(1.0, 2000.0, 0.1) = 400.0;
+// How far, in meters, something on screen is assumed to extend behind its
+// visible surface, for a ray passing behind it to count as hitting it.
+uniform float reflection_thickness : hint_range(0.01, 20.0, 0.01) = 2.0;
 
 group_uniforms;
 uniform float depth_offset : hint_range(0.0, 0.01, 0.0001) = 0.0002;
@@ -313,6 +331,68 @@ vec3 scene_position(vec2 p_uv, mat4 p_inv_projection) {
 #endif
 	vec4 view = p_inv_projection * vec4(ndc, 1.0);
 	return view.xyz / view.w;
+}
+
+vec2 view_to_screen(vec3 p_view, mat4 p_projection) {
+	vec4 clip = p_projection * vec4(p_view, 1.0);
+	return clip.xy / clip.w * 0.5 + 0.5;
+}
+
+// What the view-space ray from p_origin along p_direction first passes
+// behind on screen, as (color, confidence): screen-space steps whose depth is
+// interpolated in perspective, then halved in on the crossing. Confidence
+// fades out towards the screen's edges and the end of the ray, where what it
+// found is least likely to be what it would really see.
+vec4 trace_reflection(vec3 p_origin, vec3 p_direction, float p_jitter, float p_lod, mat4 p_projection, mat4 p_inv_projection) {
+	float ray_length = reflection_distance;
+	if (p_direction.z > 0.0) {
+		// Turning back towards the camera: stop short of passing it.
+		ray_length = min(ray_length, (-p_origin.z - 0.1) / p_direction.z);
+	}
+	if (ray_length <= 0.0) {
+		return vec4(0.0);
+	}
+	vec3 end = p_origin + p_direction * ray_length;
+	vec2 uv_start = view_to_screen(p_origin, p_projection);
+	vec2 uv_end = view_to_screen(end, p_projection);
+	float inv_z_start = 1.0 / p_origin.z;
+	float inv_z_end = 1.0 / end.z;
+	int steps = max(reflection_steps, 1);
+
+	float previous = 0.0;
+	float previous_z = p_origin.z;
+	for (int i = 1; i <= steps; i++) {
+		float t = (float(i) - p_jitter) / float(steps);
+		vec2 uv = mix(uv_start, uv_end, t);
+		if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+			break;
+		}
+		float ray_z = 1.0 / mix(inv_z_start, inv_z_end, t);
+		float behind = ray_z - scene_position(uv, p_inv_projection).z;
+		// ray_z and scene z are negative, further is more negative. A step
+		// towards the horizon can cover many meters of depth at once, so it
+		// counts as a hit anywhere within the depth the step itself spanned.
+		if (behind < 0.0 && -behind < max(reflection_thickness, abs(ray_z - previous_z))) {
+			float lo = previous;
+			float hi = t;
+			for (int j = 0; j < 5; j++) {
+				float mid = (lo + hi) * 0.5;
+				vec2 mid_uv = mix(uv_start, uv_end, mid);
+				if (1.0 / mix(inv_z_start, inv_z_end, mid) < scene_position(mid_uv, p_inv_projection).z) {
+					hi = mid;
+				} else {
+					lo = mid;
+				}
+			}
+			vec2 hit_uv = mix(uv_start, uv_end, hi);
+			vec2 edge = smoothstep(vec2(0.0), vec2(0.06), hit_uv) * (1.0 - smoothstep(vec2(0.94), vec2(1.0), hit_uv));
+			float confidence = edge.x * edge.y * (1.0 - smoothstep(0.75, 1.0, hi));
+			return vec4(textureLod(screen_texture, hit_uv, p_lod).rgb, confidence);
+		}
+		previous = t;
+		previous_z = ray_z;
+	}
+	return vec4(0.0);
 }
 
 void vertex() {
@@ -397,6 +477,17 @@ void fragment() {
 	ALBEDO = mix(deep_color * murk, foam_color, foam);
 	EMISSION = under * transmittance * (1.0 - foam);
 	ROUGHNESS = mix(roughness, 0.6, foam);
+
+	if (screen_space_reflections) {
+		// Handed over as the light arriving from the reflected direction, so
+		// the renderer weighs it by Fresnel and roughness exactly as it does
+		// the sky's, which it replaces wherever the ray found something.
+		// Where each pixel starts stepping, so the gaps between steps come
+		// out as fine noise rather than bands.
+		float jitter = fract(52.9829189 * fract(dot(FRAGCOORD.xy, vec2(0.06711056, 0.00583715))));
+		vec4 reflected = trace_reflection(VERTEX, reflect(-view, NORMAL), jitter, roughness * 8.0, PROJECTION_MATRIX, INV_PROJECTION_MATRIX);
+		RADIANCE = vec4(reflected.rgb, reflected.a * (1.0 - foam));
+	}
 	METALLIC = 0.0;
 	SPECULAR = 0.5;
 	ALPHA = smoothstep(0.0, max(shore_fade, 0.0001), depth) * COLOR.a;
