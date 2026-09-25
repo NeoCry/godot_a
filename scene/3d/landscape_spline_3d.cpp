@@ -2183,6 +2183,51 @@ TypedArray<Rect2i> LandscapeSpline3D::get_landscape_footprint() const {
 	return regions;
 }
 
+bool LandscapeSpline3D::get_ground_coverage(GroundCoverage &r_coverage) {
+	r_coverage = GroundCoverage();
+	if (!is_inside_tree()) {
+		return false;
+	}
+	// The rings have to describe the curve as it is now, not as of the last
+	// frame's update.
+	if (pending_update & UPDATE_RINGS) {
+		_update();
+	}
+	if (rings.size() < 2) {
+		return false;
+	}
+
+	const Transform3D xform = get_global_transform();
+	const Vector3 up = xform.basis.xform(rings_up);
+	r_coverage.up = up.length_squared() > CMP_EPSILON2 ? up.normalized() : Vector3(0, 1, 0);
+	r_coverage.filled = _is_filled();
+	// A closed curve's last ring repeats its first: a strip needs it to close
+	// its loop, a shoreline is closed without it.
+	const uint32_t count = (r_coverage.filled && rings_closed) ? rings.size() - 1 : rings.size();
+	r_coverage.points.resize(count);
+	if (!r_coverage.filled) {
+		r_coverage.half_widths.resize(count);
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		r_coverage.points[i] = xform.xform(rings[i].center);
+		if (!r_coverage.filled) {
+			// Measured through the transform (flat_right is level and of unit
+			// length here), so a scaled spline's width comes out in global
+			// units too.
+			r_coverage.half_widths[i] = rings[i].half_width * xform.basis.xform(rings[i].flat_right).length();
+		}
+	}
+	if (r_coverage.filled) {
+		// The level the surface is built at (see _update()), which is along
+		// this node's up axis; carried over through a point on the surface.
+		TerrainSampler sampler;
+		const bool use_terrain = height_mode != HEIGHT_MODE_SPLINE && _make_terrain_sampler(sampler);
+		const float level = _get_fill_level(sampler, use_terrain, true);
+		r_coverage.level = r_coverage.up.dot(xform.xform(rings_up * level));
+	}
+	return true;
+}
+
 void LandscapeSpline3D::_compute_fill_footprint(Landscape3D *p_landscape, float &r_level, LocalVector<FootprintBlock> &r_blocks) const {
 	r_blocks.clear();
 	r_level = 0.0f;
@@ -2808,6 +2853,8 @@ PackedStringArray LandscapeSpline3D::get_configuration_warnings() const {
 LandscapeSpline3D::LandscapeSpline3D() {
 	set_notify_transform(true);
 	connect(SNAME("curve_changed"), callable_mp(this, &LandscapeSpline3D::_on_curve_changed));
+	// Not persistent: every spline joins it by itself.
+	add_to_group(get_group_name());
 }
 
 LandscapeSpline3D::~LandscapeSpline3D() {

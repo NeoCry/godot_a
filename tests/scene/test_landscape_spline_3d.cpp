@@ -520,6 +520,58 @@ TEST_CASE("[SceneTree][LandscapeSpline3D] Applying a lake digs its bed and paint
 	CHECK(data->get_layer_weight(75, 125, 1) == doctest::Approx(0.0f));
 }
 
+TEST_CASE("[SceneTree][LandscapeSpline3D] What a spline covers on the ground") {
+	SplineScene scene(make_terrain());
+	LandscapeSpline3D::GroundCoverage coverage;
+
+	SUBCASE("A strip: its centerline, and how wide it is along it, in global space") {
+		scene.spline->set_curve(make_line(Vector3(8, 3, 256), Vector3(504, 3, 256)));
+		scene.spline->set_width(6.0f);
+		// Before its first update: the coverage has to be up to date anyway.
+		REQUIRE(scene.spline->get_ground_coverage(coverage));
+		CHECK_FALSE(coverage.filled);
+		CHECK(coverage.up.is_equal_approx(Vector3(0, 1, 0)));
+		REQUIRE(coverage.points.size() > 2);
+		CHECK(coverage.half_widths.size() == coverage.points.size());
+		CHECK(coverage.points[0].is_equal_approx(Vector3(8, 3, 256)));
+		CHECK(coverage.points[coverage.points.size() - 1].is_equal_approx(Vector3(504, 3, 256)));
+		for (const float half_width : coverage.half_widths) {
+			CHECK(half_width == doctest::Approx(3.0f));
+		}
+
+		// Moved and scaled up: all of it, the width included.
+		scene.spline->set_position(Vector3(0, 0, 10));
+		scene.spline->set_scale(Vector3(2, 2, 2));
+		REQUIRE(scene.spline->get_ground_coverage(coverage));
+		CHECK(coverage.points[0].is_equal_approx(Vector3(16, 6, 522)));
+		for (const float half_width : coverage.half_widths) {
+			CHECK(half_width == doctest::Approx(6.0f));
+		}
+	}
+
+	SUBCASE("A filled area: its shoreline and the level of its surface") {
+		scene.spline->apply_preset(LandscapeSpline3D::TYPE_LAKE);
+		scene.spline->set_smooth(false);
+		scene.spline->set_height_mode(LandscapeSpline3D::HEIGHT_MODE_SPLINE);
+		scene.spline->set_height_offset(0.5f);
+		scene.spline->set_curve(make_square(Vector2(200, 200), Vector2(300, 300), Vector4(9, 7, 11, 13)));
+		REQUIRE(scene.spline->get_ground_coverage(coverage));
+		CHECK(coverage.filled);
+		CHECK(coverage.half_widths.is_empty());
+		// About 400 m of shoreline, a point a meter, without the closed curve's
+		// repeat of its first point.
+		CHECK(coverage.points.size() >= 399);
+		CHECK(coverage.points.size() <= 401);
+		CHECK_FALSE(coverage.points[0].is_equal_approx(coverage.points[coverage.points.size() - 1]));
+		CHECK(coverage.level == doctest::Approx(7.5f).epsilon(0.001));
+	}
+
+	SUBCASE("Nothing to cover yet") {
+		CHECK_FALSE(scene.spline->get_ground_coverage(coverage));
+		CHECK(coverage.points.is_empty());
+	}
+}
+
 TEST_CASE("[LandscapeSpline3D] The built-in materials' shaders compile") {
 	// No GPU here to build them for, but the shader language front end
 	// catches everything short of driver-specific trouble.

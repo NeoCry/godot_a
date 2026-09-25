@@ -41,13 +41,435 @@
 #include "core/templates/local_vector.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/landscape_3d.h"
+#include "scene/3d/landscape_spline_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/terrain_data.h"
+#include "scene/3d/terrain_layer.h"
+#include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/multimesh.h"
 #include "scene/resources/texture.h"
+
+namespace {
+
+// Where a Landscape3D has ground to stand on: within its edges, and not over a
+// hole, which Landscape3D cuts as every quad with a hole sample at any of its
+// corners. Reads TerrainData's hole map directly rather than sample by sample.
+struct TerrainGroundSampler {
+	Vector<uint8_t> holes; // Keeps the buffer alive and unchanged.
+	const uint8_t *hole_data = nullptr;
+	int resolution = 0;
+	float spacing = 1.0f;
+
+	bool setup(const Ref<TerrainData> &p_data) {
+		resolution = p_data->get_resolution();
+		spacing = p_data->get_vertex_spacing();
+		const Ref<Image> hole_map = p_data->get_hole_map_image();
+		if (resolution < 2 || hole_map.is_null()) {
+			return false;
+		}
+		holes = hole_map->get_data();
+		if (holes.size() < (int64_t)resolution * resolution) {
+			return false;
+		}
+		hole_data = holes.ptr();
+		return true;
+	}
+
+	// p_xz in the landscape's local space.
+	bool has_ground_at(const Vector2 &p_xz) const {
+		const float fx = p_xz.x / spacing;
+		const float fz = p_xz.y / spacing;
+		// A sliver of tolerance, so that a volume fitted to the terrain (see
+		// fit_to_ground_mesh()) does not lose candidates on its very edge to
+		// rounding.
+		const float last = (float)(resolution - 1) + 0.001f;
+		if (!(fx >= -0.001f && fz >= -0.001f && fx <= last && fz <= last)) {
+			return false;
+		}
+		const int ix = CLAMP((int)fx, 0, resolution - 2);
+		const int iz = CLAMP((int)fz, 0, resolution - 2);
+		const uint8_t *quad = hole_data + (size_t)iz * resolution + ix;
+		return quad[0] == 0 && quad[1] == 0 && quad[resolution] == 0 && quad[resolution + 1] == 0;
+	}
+};
+
+// How much of the ground the chosen TerrainLayers cover at a point: their
+// share of the weight every layer the Landscape3D renders holds there. Filtered
+// between samples the way Landscape3D's shader filters its weight maps (each
+// weight bilinearly, then shared out), so foliage follows what the ground
+// looks like. Reads TerrainData's weight maps directly rather than sample by
+// sample.
+struct TerrainLayerSampler {
+	Vector<uint8_t> maps[TerrainData::WEIGHT_MAP_COUNT]; // Keep the buffers alive and unchanged.
+	const uint8_t *map_data[TerrainData::WEIGHT_MAP_COUNT] = {};
+	// Per channel of each weight map: whether its layer is one the landscape
+	// renders, and whether it is one of the chosen ones.
+	bool rendered[TerrainData::WEIGHT_MAP_COUNT][TerrainData::LAYERS_PER_WEIGHT_MAP] = {};
+	bool chosen[TerrainData::WEIGHT_MAP_COUNT][TerrainData::LAYERS_PER_WEIGHT_MAP] = {};
+	int map_count = 0;
+	int resolution = 0;
+	float spacing = 1.0f;
+
+	bool setup(const Ref<TerrainData> &p_data, int p_layer_count, uint32_t p_mask) {
+		resolution = p_data->get_resolution();
+		spacing = p_data->get_vertex_spacing();
+		// Only the layers the landscape has are rendered; weight painted for
+		// any past those never shows, so it has no say here either.
+		const int layer_count = CLAMP(p_layer_count, 0, TerrainData::MAX_LAYERS);
+		map_count = (layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP;
+		if (map_count == 0 || resolution < 2) {
+			return false;
+		}
+		for (int g = 0; g < map_count; g++) {
+			const Ref<Image> image = p_data->get_weight_map_image(g);
+			if (image.is_null()) {
+				return false;
+			}
+			maps[g] = image->get_data();
+			if (maps[g].size() < (int64_t)resolution * resolution * TerrainData::LAYERS_PER_WEIGHT_MAP) {
+				return false;
+			}
+			map_data[g] = maps[g].ptr();
+			for (int c = 0; c < TerrainData::LAYERS_PER_WEIGHT_MAP; c++) {
+				const int layer = g * TerrainData::LAYERS_PER_WEIGHT_MAP + c;
+				rendered[g][c] = layer < layer_count;
+				chosen[g][c] = layer < layer_count && (p_mask & (1u << layer)) != 0;
+			}
+		}
+		return true;
+	}
+
+	// p_xz in the landscape's local space. 0 where no layer holds any weight.
+	float share_at(const Vector2 &p_xz) const {
+		const float fx = CLAMP(p_xz.x / spacing, 0.0f, (float)(resolution - 1));
+		const float fz = CLAMP(p_xz.y / spacing, 0.0f, (float)(resolution - 1));
+		const int ix = MIN((int)fx, resolution - 2);
+		const int iz = MIN((int)fz, resolution - 2);
+		const float tx = fx - ix;
+		const float tz = fz - iz;
+
+		// At each corner of the quad the point is in: the chosen layers'
+		// weight, and every rendered layer's.
+		const size_t row = (size_t)resolution * TerrainData::LAYERS_PER_WEIGHT_MAP;
+		const size_t corner_offsets[4] = { 0, TerrainData::LAYERS_PER_WEIGHT_MAP, row, row + TerrainData::LAYERS_PER_WEIGHT_MAP };
+		float chosen_weight[4] = {};
+		float total_weight[4] = {};
+		for (int g = 0; g < map_count; g++) {
+			const uint8_t *quad = map_data[g] + ((size_t)iz * resolution + ix) * TerrainData::LAYERS_PER_WEIGHT_MAP;
+			for (int corner = 0; corner < 4; corner++) {
+				const uint8_t *weights = quad + corner_offsets[corner];
+				for (int c = 0; c < TerrainData::LAYERS_PER_WEIGHT_MAP; c++) {
+					if (rendered[g][c]) {
+						total_weight[corner] += weights[c];
+						if (chosen[g][c]) {
+							chosen_weight[corner] += weights[c];
+						}
+					}
+				}
+			}
+		}
+
+		const float chosen_here = Math::lerp(Math::lerp(chosen_weight[0], chosen_weight[1], tx), Math::lerp(chosen_weight[2], chosen_weight[3], tx), tz);
+		const float total_here = Math::lerp(Math::lerp(total_weight[0], total_weight[1], tx), Math::lerp(total_weight[2], total_weight[3], tx), tz);
+		return total_here > 0.0f ? chosen_here / total_here : 0.0f;
+	}
+};
+
+// Whether the segment from p_from to p_to crosses the one from p_a to p_b.
+// Half-open about which side of a line a point exactly on it counts as being
+// on, so that where a path passes exactly through a vertex of an outline it
+// crosses one of the outline's two edges there, never both or neither.
+bool segments_cross(const Vector2 &p_from, const Vector2 &p_to, const Vector2 &p_a, const Vector2 &p_b) {
+	const Vector2 path = p_to - p_from;
+	if ((path.cross(p_a - p_from) > 0.0f) == (path.cross(p_b - p_from) > 0.0f)) {
+		return false;
+	}
+	const Vector2 edge = p_b - p_a;
+	return (edge.cross(p_from - p_a) > 0.0f) != (edge.cross(p_to - p_a) > 0.0f);
+}
+
+// A LandscapeSpline3D's ground coverage (see LandscapeSpline3D::GroundCoverage),
+// set up for testing a great many points against: flattened onto the plane
+// square to the spline's up axis, and its edges sorted into a grid of cells
+// there, so each point is measured against the few edges near it instead of the
+// whole spline.
+struct SplineKeepOut {
+	Vector3 up;
+	Vector3 axis_x;
+	Vector3 axis_y;
+	bool filled = false;
+	// Fills only: the water's surface, along up.
+	float level = 0.0f;
+	float margin = 0.0f;
+	LocalVector<Vector2> points;
+	// Strips only: how far from the centerline to keep off at each point, the
+	// strip's half width plus the margin.
+	LocalVector<float> reach;
+
+	// The grid covers the part of the coverage (grown by its reach) that lies
+	// within the volume. For each cell, the edges within reach of it - each by
+	// the index of the point it starts at - lie in cell_edges from
+	// cell_starts[cell] up to cell_starts[cell + 1].
+	float cell_size = 1.0f;
+	Vector2i grid_origin;
+	Vector2i grid_size;
+	LocalVector<uint32_t> cell_starts;
+	LocalVector<uint32_t> cell_edges;
+	// Fills only: whether the center of each cell lies within the shoreline. A
+	// point then only has to count the edges between it and its cell's center
+	// to know whether it does too.
+	LocalVector<uint8_t> inside;
+	// One bit per cell: whether anything in it can be covered at all, i.e.
+	// whether any edge reaches into it or, for a fill, its center is inside.
+	// Most points are nowhere near the spline, and this turns them away
+	// without reading anything as big as cell_starts, which a great many
+	// points scattered over a whole terrain would each miss the cache on.
+	LocalVector<uint64_t> occupied;
+
+	Vector2 flatten(const Vector3 &p_global) const {
+		return Vector2(axis_x.dot(p_global), axis_y.dot(p_global));
+	}
+
+	uint32_t get_edge_count() const {
+		// A shoreline closes back on its first point; a strip does not.
+		return filled ? points.size() : points.size() - 1;
+	}
+
+	const Vector2 &get_edge_end(uint32_t p_edge) const {
+		return points[p_edge + 1 < points.size() ? p_edge + 1 : 0];
+	}
+
+	Vector2i get_cell(const Vector2 &p_point) const {
+		return Vector2i((int)Math::floor(p_point.x / cell_size), (int)Math::floor(p_point.y / cell_size));
+	}
+
+	float get_distance_squared_to_edge(const Vector2 &p_point, uint32_t p_edge, float &r_t) const {
+		const Vector2 &a = points[p_edge];
+		const Vector2 along = get_edge_end(p_edge) - a;
+		const float length_squared = along.length_squared();
+		r_t = length_squared > CMP_EPSILON2 ? CLAMP((p_point - a).dot(along) / length_squared, 0.0f, 1.0f) : 0.0f;
+		return p_point.distance_squared_to(a + along * r_t);
+	}
+
+	// p_volume_corners: the eight global corners of the volume to fill, which
+	// nothing is tested outside of.
+	bool setup(const LandscapeSpline3D::GroundCoverage &p_coverage, float p_margin, const Vector3 *p_volume_corners) {
+		up = p_coverage.up;
+		// The same plane axes LandscapeSpline3D lays a filled area out on.
+		axis_x = Vector3(1, 0, 0) - up * up.x;
+		if (axis_x.length_squared() < 0.0001f) {
+			axis_x = Vector3(0, 0, 1) - up * up.z;
+		}
+		axis_x.normalize();
+		axis_y = axis_x.cross(up).normalized();
+		filled = p_coverage.filled;
+		level = p_coverage.level;
+		margin = MAX(p_margin, 0.0f);
+
+		const uint32_t count = p_coverage.points.size();
+		if (count < (filled ? 3u : 2u)) {
+			return false;
+		}
+		points.resize(count);
+		for (uint32_t i = 0; i < count; i++) {
+			points[i] = flatten(p_coverage.points[i]);
+		}
+		float widest = margin;
+		if (!filled) {
+			reach.resize(count);
+			for (uint32_t i = 0; i < count; i++) {
+				reach[i] = MAX(p_coverage.half_widths[i], 0.0f) + margin;
+				widest = MAX(widest, reach[i]);
+			}
+		}
+		const uint32_t edge_count = get_edge_count();
+		float longest = 0.0f;
+		for (uint32_t e = 0; e < edge_count; e++) {
+			longest = MAX(longest, points[e].distance_to(get_edge_end(e)));
+		}
+
+		Rect2 bounds(points[0], Vector2());
+		for (const Vector2 &point : points) {
+			bounds.expand_to(point);
+		}
+		bounds = bounds.grow(widest);
+		Rect2 volume(flatten(p_volume_corners[0]), Vector2());
+		for (int i = 1; i < 8; i++) {
+			volume.expand_to(flatten(p_volume_corners[i]));
+		}
+		if (!bounds.intersects(volume, true)) {
+			return false;
+		}
+		const Rect2 area = bounds.intersection(volume);
+
+		// Cells about as wide as what one edge reaches, so an edge lands in a
+		// handful of them and a cell holds a handful of edges. Wider when that
+		// would make many more cells than there are edges to fill them (a
+		// winding road spread over a whole terrain), with enough of them left to
+		// tell a filled area's inside from its outside at a useful resolution.
+		const double max_cells = MAX(4.0 * edge_count, 65536.0);
+		cell_size = MAX(MAX(widest, longest) * 2.0f, 0.5f);
+		cell_size = MAX(cell_size, (float)Math::sqrt((double)area.size.x * (double)area.size.y / max_cells));
+		grid_origin = get_cell(area.position);
+		grid_size = get_cell(area.get_end()) - grid_origin + Vector2i(1, 1);
+		const uint32_t cell_count = grid_size.x * grid_size.y;
+
+		// Twice over the edges: once to count how many land in each cell, and
+		// once to put them there.
+		cell_starts.resize_initialized(cell_count + 1);
+		LocalVector<uint32_t> cell_ends;
+		for (int pass = 0; pass < 2; pass++) {
+			for (uint32_t e = 0; e < edge_count; e++) {
+				const float edge_reach = filled ? margin : MAX(reach[e], reach[e + 1]);
+				const Rect2 edge_bounds = Rect2(points[e], Vector2()).expand(get_edge_end(e)).grow(edge_reach);
+				const Vector2i from = (get_cell(edge_bounds.position) - grid_origin).maxi(0);
+				const Vector2i to = (get_cell(edge_bounds.get_end()) - grid_origin).min(grid_size - Vector2i(1, 1));
+				for (int y = from.y; y <= to.y; y++) {
+					for (int x = from.x; x <= to.x; x++) {
+						const uint32_t cell = y * grid_size.x + x;
+						if (pass == 0) {
+							cell_starts[cell + 1]++;
+						} else {
+							cell_edges[cell_ends[cell]++] = e;
+						}
+					}
+				}
+			}
+			if (pass == 0) {
+				for (uint32_t cell = 0; cell < cell_count; cell++) {
+					cell_starts[cell + 1] += cell_starts[cell];
+				}
+				cell_edges.resize(cell_starts[cell_count]);
+				cell_ends.resize(cell_count);
+				for (uint32_t cell = 0; cell < cell_count; cell++) {
+					cell_ends[cell] = cell_starts[cell];
+				}
+			}
+		}
+
+		if (filled) {
+			// Each row of cell centers against the shoreline, from where the
+			// row crosses it (as LandscapeSpline3D tells which of a lake's
+			// tiles are inside it).
+			inside.resize(cell_count);
+			LocalVector<float> crossings;
+			for (int row = 0; row < grid_size.y; row++) {
+				const float y = (grid_origin.y + row + 0.5f) * cell_size;
+				crossings.clear();
+				for (uint32_t e = 0; e < edge_count; e++) {
+					const Vector2 &a = points[e];
+					const Vector2 &b = get_edge_end(e);
+					if ((a.y <= y) != (b.y <= y)) {
+						crossings.push_back(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+					}
+				}
+				crossings.sort();
+				uint32_t passed = 0;
+				for (int column = 0; column < grid_size.x; column++) {
+					const float x = (grid_origin.x + column + 0.5f) * cell_size;
+					while (passed < crossings.size() && crossings[passed] < x) {
+						passed++;
+					}
+					inside[row * grid_size.x + column] = passed % 2;
+				}
+			}
+		}
+
+		occupied.resize_initialized((cell_count + 63) / 64);
+		for (uint32_t cell = 0; cell < cell_count; cell++) {
+			if (cell_starts[cell + 1] > cell_starts[cell] || (filled && inside[cell] != 0)) {
+				occupied[cell / 64] |= uint64_t(1) << (cell % 64);
+			}
+		}
+		return true;
+	}
+
+	// Whether p_global (an instance's place on the ground) is somewhere the
+	// spline keeps foliage off: on a strip, or under a filled area's water,
+	// or within margin of either.
+	bool covers(const Vector3 &p_global) const {
+		const Vector2 point = flatten(p_global);
+		const Vector2i cell = get_cell(point) - grid_origin;
+		if (cell.x < 0 || cell.y < 0 || cell.x >= grid_size.x || cell.y >= grid_size.y) {
+			return false;
+		}
+		const uint32_t index = cell.y * grid_size.x + cell.x;
+		if ((occupied[index / 64] & (uint64_t(1) << (index % 64))) == 0) {
+			return false;
+		}
+		const uint32_t first = cell_starts[index];
+		const uint32_t last = cell_starts[index + 1];
+		float t = 0.0f;
+
+		if (!filled) {
+			// Against the centerline, reaching as far as the strip is wide
+			// there: the same measure apply_to_landscape() carves and paints by.
+			for (uint32_t i = first; i < last; i++) {
+				const uint32_t e = cell_edges[i];
+				const float distance_squared = get_distance_squared_to_edge(point, e, t);
+				const float edge_reach = Math::lerp(reach[e], reach[e + 1], t);
+				if (distance_squared <= edge_reach * edge_reach) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		// Under the water: within the shoreline, and below the surface. Not
+		// just within the shoreline, since a lake drawn around a hollow rather
+		// than carved into the ground only fills it up to its level, and any
+		// ground inside the shoreline that stands higher is dry land.
+		if (up.dot(p_global) < level) {
+			bool is_inside = inside[index] != 0;
+			const Vector2 center((grid_origin.x + cell.x + 0.5f) * cell_size, (grid_origin.y + cell.y + 0.5f) * cell_size);
+			for (uint32_t i = first; i < last; i++) {
+				const uint32_t e = cell_edges[i];
+				if (segments_cross(center, point, points[e], get_edge_end(e))) {
+					is_inside = !is_inside;
+				}
+			}
+			if (is_inside) {
+				return true;
+			}
+		}
+		if (margin > 0.0f) {
+			for (uint32_t i = first; i < last; i++) {
+				if (get_distance_squared_to_edge(point, cell_edges[i], t) <= margin * margin) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+};
+
+// Every LandscapeSpline3D in p_spawner's world whose type is one of p_types and
+// whose coverage reaches into the volume p_volume_corners bound.
+void gather_spline_keep_outs(const Node3D *p_spawner, const Vector3 *p_volume_corners, uint32_t p_types, float p_margin, LocalVector<SplineKeepOut> &r_keep_outs) {
+	const Ref<World3D> world = p_spawner->get_world_3d();
+	for (Node *node : p_spawner->get_tree()->get_nodes_in_group(LandscapeSpline3D::get_group_name())) {
+		LandscapeSpline3D *spline = Object::cast_to<LandscapeSpline3D>(node);
+		if (spline == nullptr || !spline->is_inside_tree() || spline->get_world_3d() != world) {
+			continue;
+		}
+		if ((p_types & (1u << spline->get_spline_type())) == 0) {
+			continue;
+		}
+		LandscapeSpline3D::GroundCoverage coverage;
+		if (!spline->get_ground_coverage(coverage)) {
+			continue;
+		}
+		r_keep_outs.resize(r_keep_outs.size() + 1);
+		if (!r_keep_outs[r_keep_outs.size() - 1].setup(coverage, p_margin, p_volume_corners)) {
+			r_keep_outs.resize(r_keep_outs.size() - 1);
+		}
+	}
+}
+
+} // namespace
 
 void FoliageSpawner3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_lod_levels", "levels"), &FoliageSpawner3D::set_lod_levels);
@@ -80,6 +502,21 @@ void FoliageSpawner3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_mask_invert", "invert"), &FoliageSpawner3D::set_mask_invert);
 	ClassDB::bind_method(D_METHOD("is_mask_inverted"), &FoliageSpawner3D::is_mask_inverted);
+
+	ClassDB::bind_method(D_METHOD("set_terrain_layer_mask", "mask"), &FoliageSpawner3D::set_terrain_layer_mask);
+	ClassDB::bind_method(D_METHOD("get_terrain_layer_mask"), &FoliageSpawner3D::get_terrain_layer_mask);
+
+	ClassDB::bind_method(D_METHOD("set_terrain_layer_mask_invert", "invert"), &FoliageSpawner3D::set_terrain_layer_mask_invert);
+	ClassDB::bind_method(D_METHOD("is_terrain_layer_mask_inverted"), &FoliageSpawner3D::is_terrain_layer_mask_inverted);
+
+	ClassDB::bind_method(D_METHOD("set_terrain_layer_threshold", "threshold"), &FoliageSpawner3D::set_terrain_layer_threshold);
+	ClassDB::bind_method(D_METHOD("get_terrain_layer_threshold"), &FoliageSpawner3D::get_terrain_layer_threshold);
+
+	ClassDB::bind_method(D_METHOD("set_spline_avoid", "types"), &FoliageSpawner3D::set_spline_avoid);
+	ClassDB::bind_method(D_METHOD("get_spline_avoid"), &FoliageSpawner3D::get_spline_avoid);
+
+	ClassDB::bind_method(D_METHOD("set_spline_margin", "margin"), &FoliageSpawner3D::set_spline_margin);
+	ClassDB::bind_method(D_METHOD("get_spline_margin"), &FoliageSpawner3D::get_spline_margin);
 
 	ClassDB::bind_method(D_METHOD("set_project_on_mesh", "project"), &FoliageSpawner3D::set_project_on_mesh);
 	ClassDB::bind_method(D_METHOD("is_projecting_on_mesh"), &FoliageSpawner3D::is_projecting_on_mesh);
@@ -182,6 +619,18 @@ void FoliageSpawner3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "align_to_normal"), "set_align_to_normal", "is_aligned_to_normal");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "align_to_normal_amount", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_align_to_normal_amount", "get_align_to_normal_amount");
 
+	// The flags are named after the ground's own layers in _validate_property;
+	// these stand in for them while there is no Landscape3D ground to ask.
+	ADD_GROUP("Terrain Layers", "terrain_layer_");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "terrain_layer_mask", PROPERTY_HINT_FLAGS, "Layer 0,Layer 1,Layer 2,Layer 3,Layer 4,Layer 5,Layer 6,Layer 7"), "set_terrain_layer_mask", "get_terrain_layer_mask");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "terrain_layer_mask_invert"), "set_terrain_layer_mask_invert", "is_terrain_layer_mask_inverted");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "terrain_layer_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_terrain_layer_threshold", "get_terrain_layer_threshold");
+
+	// One flag per LandscapeSpline3D::SplineType, in order.
+	ADD_GROUP("Landscape Splines", "spline_");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "spline_avoid", PROPERTY_HINT_FLAGS, "Roads,Rivers,Streams,Lakes"), "set_spline_avoid", "get_spline_avoid");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "spline_margin", PROPERTY_HINT_RANGE, "0,100,0.01,or_greater,suffix:m"), "set_spline_margin", "get_spline_margin");
+
 	ADD_GROUP("Randomization", "");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "random_rotation"), "set_random_rotation", "is_random_rotation_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "random_tilt_degrees", PROPERTY_HINT_RANGE, "0,90,0.1,suffix:°"), "set_random_tilt_degrees", "get_random_tilt_degrees");
@@ -215,6 +664,11 @@ void FoliageSpawner3D::_bind_methods() {
 }
 
 void FoliageSpawner3D::_validate_property(PropertyInfo &p_property) const {
+	if (p_property.name == "terrain_layer_mask") {
+		p_property.hint_string = _get_terrain_layer_hint();
+		return;
+	}
+
 	if (p_property.name == "multimesh") {
 		// Superseded by chunking (see _cell_data): this base-class property is
 		// only still written to for scenes saved before chunking existed, so
@@ -841,6 +1295,47 @@ bool FoliageSpawner3D::is_mask_inverted() const {
 	return mask_invert;
 }
 
+void FoliageSpawner3D::set_terrain_layer_mask(uint32_t p_mask) {
+	terrain_layer_mask = p_mask;
+	update_configuration_warnings();
+}
+
+uint32_t FoliageSpawner3D::get_terrain_layer_mask() const {
+	return terrain_layer_mask;
+}
+
+void FoliageSpawner3D::set_terrain_layer_mask_invert(bool p_invert) {
+	terrain_layer_mask_invert = p_invert;
+}
+
+bool FoliageSpawner3D::is_terrain_layer_mask_inverted() const {
+	return terrain_layer_mask_invert;
+}
+
+void FoliageSpawner3D::set_terrain_layer_threshold(float p_threshold) {
+	terrain_layer_threshold = CLAMP(p_threshold, 0.0f, 1.0f);
+}
+
+float FoliageSpawner3D::get_terrain_layer_threshold() const {
+	return terrain_layer_threshold;
+}
+
+void FoliageSpawner3D::set_spline_avoid(uint32_t p_types) {
+	spline_avoid = p_types;
+}
+
+uint32_t FoliageSpawner3D::get_spline_avoid() const {
+	return spline_avoid;
+}
+
+void FoliageSpawner3D::set_spline_margin(float p_margin) {
+	spline_margin = MAX(p_margin, 0.0f);
+}
+
+float FoliageSpawner3D::get_spline_margin() const {
+	return spline_margin;
+}
+
 void FoliageSpawner3D::set_project_on_mesh(bool p_project) {
 	project_on_mesh = p_project;
 	update_configuration_warnings();
@@ -853,6 +1348,8 @@ bool FoliageSpawner3D::is_projecting_on_mesh() const {
 void FoliageSpawner3D::set_ground_mesh_path(const NodePath &p_path) {
 	ground_mesh_path = p_path;
 	update_configuration_warnings();
+	// terrain_layer_mask's flags are named after the ground's layers.
+	notify_property_list_changed();
 }
 
 NodePath FoliageSpawner3D::get_ground_mesh_path() const {
@@ -1049,6 +1546,47 @@ bool FoliageSpawner3D::_sample_mask(const Ref<Image> &p_image, const Vector2 &p_
 	return p_rng.randf() <= value;
 }
 
+bool FoliageSpawner3D::_sample_terrain_layers(float p_share, RandomPCG &p_rng) const {
+	const float share = terrain_layer_mask_invert ? 1.0f - p_share : p_share;
+	// Nothing below the threshold, then a chance that rises to certainty where
+	// the chosen layers cover the ground completely: across a blend between
+	// layers, the foliage thins out along with its layers' textures rather
+	// than stopping at a line.
+	float chance;
+	if (terrain_layer_threshold >= 1.0f) {
+		chance = share >= 1.0f ? 1.0f : 0.0f;
+	} else {
+		chance = CLAMP((share - terrain_layer_threshold) / (1.0f - terrain_layer_threshold), 0.0f, 1.0f);
+	}
+	if (chance >= 1.0f) {
+		return true;
+	}
+	if (chance <= 0.0f) {
+		return false;
+	}
+	return p_rng.randf() < chance;
+}
+
+String FoliageSpawner3D::_get_terrain_layer_hint() const {
+	const Landscape3D *terrain = is_inside_tree() ? Object::cast_to<Landscape3D>(get_node_or_null(ground_mesh_path)) : nullptr;
+	const TypedArray<TerrainLayer> terrain_layers = terrain != nullptr ? terrain->get_layers() : TypedArray<TerrainLayer>();
+	if (terrain_layers.is_empty()) {
+		return "Layer 0,Layer 1,Layer 2,Layer 3,Layer 4,Layer 5,Layer 6,Layer 7";
+	}
+
+	// Named as the Landscape3D editor names them, and numbered, since layers
+	// left with the same default name would be told apart by nothing else.
+	PackedStringArray names;
+	for (int i = 0; i < MIN(terrain_layers.size(), TerrainData::MAX_LAYERS); i++) {
+		const Ref<TerrainLayer> layer = terrain_layers[i];
+		String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
+		// A comma would start the next flag, a colon give this one a value.
+		name = name.replace(",", " ").replace(":", " ");
+		names.push_back(vformat("%d. %s", i, name));
+	}
+	return String(",").join(names);
+}
+
 void FoliageSpawner3D::regenerate() {
 	// Instances now live in per-cell MultiMeshes (see _cell_data); clear any
 	// pre-chunking bake still sitting in the inherited (and now unused)
@@ -1070,9 +1608,10 @@ void FoliageSpawner3D::regenerate() {
 		return;
 	}
 
+	// One place for every 1 / density square meters of the footprint, each of
+	// which gets an instance unless something rules it out (see the loop).
 	const double area = double(volume_size.x) * double(volume_size.z);
-	int target_count = int(Math::round(area * double(density)));
-	target_count = CLAMP(target_count, 0, max_instances);
+	const int64_t place_count = (int64_t)CLAMP(Math::round(area * double(density)), 0.0, 1e15);
 
 	RandomPCG rng;
 	rng.seed(uint64_t(uint32_t(seed)));
@@ -1147,16 +1686,50 @@ void FoliageSpawner3D::regenerate() {
 		}
 	}
 
+	// Over a Landscape3D: where it has ground at all, and how much of that
+	// ground the chosen layers cover.
+	const bool has_terrain = ground_terrain != nullptr && ground_terrain_data.is_valid();
+	Transform3D terrain_gt;
+	Transform3D local_to_terrain;
+	TerrainGroundSampler terrain_ground;
+	TerrainLayerSampler terrain_layers;
+	bool use_terrain_ground = false;
+	bool use_terrain_layers = false;
+	if (has_terrain) {
+		terrain_gt = ground_terrain->get_global_transform();
+		local_to_terrain = terrain_gt.affine_inverse() * gt;
+		use_terrain_ground = project_on_mesh && terrain_ground.setup(ground_terrain_data);
+		use_terrain_layers = terrain_layer_mask != 0 && terrain_layers.setup(ground_terrain_data, ground_terrain->get_layers().size(), terrain_layer_mask);
+	}
+
+	// The roads, rivers, streams and lakes to keep off.
+	LocalVector<SplineKeepOut> spline_keep_outs;
+	if (spline_avoid != 0 && is_inside_tree()) {
+		Vector3 volume_corners[8];
+		for (int i = 0; i < 8; i++) {
+			volume_corners[i] = gt.xform(Vector3((i & 1) ? half.x : -half.x, (i & 2) ? half.y : -half.y, (i & 4) ? half.z : -half.z));
+		}
+		gather_spline_keep_outs(this, volume_corners, spline_avoid, spline_margin, spline_keep_outs);
+	}
+
 	const float spacing_cell_size = MAX(min_distance, 0.001f);
 	const float min_distance_sq = min_distance * min_distance;
 	HashMap<Vector2i, LocalVector<Vector2>> grid;
 
 	LocalVector<Transform3D> transforms;
 
-	const int max_attempts = target_count > 0 ? target_count * MAX(max_attempts_factor, 1) : 0;
-	int attempts = 0;
+	// Every attempt either settles one of the places - an instance grows there,
+	// or something rules the place out and it is left bare - or finds it too
+	// close to an instance already standing (see min_distance) and tries
+	// another. Only that last kind is a retry, and it is what the attempt
+	// budget is for. A place left bare is not made up for elsewhere: that would
+	// crowd every instance into whatever is left, so that density would mean
+	// more instances per square meter the less of the volume they may grow in.
+	const int64_t max_attempts = MIN(place_count, (int64_t)max_instances) * MAX(max_attempts_factor, 1);
+	int64_t places_settled = 0;
+	int64_t attempts = 0;
 
-	while ((int)transforms.size() < target_count && attempts < max_attempts) {
+	while ((int)transforms.size() < max_instances && places_settled < place_count && attempts < max_attempts) {
 		attempts++;
 
 		const float lx = rng.random(-half.x, half.x);
@@ -1165,6 +1738,23 @@ void FoliageSpawner3D::regenerate() {
 		if (mask_image.is_valid()) {
 			const Vector2 uv((lx / volume_size.x) + 0.5f, (lz / volume_size.z) + 0.5f);
 			if (!_sample_mask(mask_image, uv, rng)) {
+				places_settled++;
+				continue;
+			}
+		}
+
+		// The spot on the terrain under this point, along the terrain's own up
+		// axis: exactly where the instance stands once projected onto it.
+		Vector2 terrain_xz;
+		if (has_terrain) {
+			const Vector3 terrain_local = local_to_terrain.xform(Vector3(lx, 0.0f, lz));
+			terrain_xz = Vector2(terrain_local.x, terrain_local.z);
+			if (use_terrain_ground && !terrain_ground.has_ground_at(terrain_xz)) {
+				places_settled++;
+				continue;
+			}
+			if (use_terrain_layers && !_sample_terrain_layers(terrain_layers.share_at(terrain_xz), rng)) {
+				places_settled++;
 				continue;
 			}
 		}
@@ -1196,27 +1786,25 @@ void FoliageSpawner3D::regenerate() {
 		Vector3 world_normal(0, 1, 0);
 
 		if (project_on_mesh && ground_terrain != nullptr) {
-			const Transform3D local_to_terrain = ground_terrain->get_global_transform().affine_inverse() * gt;
-			const Vector3 terrain_local = local_to_terrain.xform(Vector3(lx, 0.0f, lz));
-			const Vector2 terrain_xz(terrain_local.x, terrain_local.z);
-
 			const float height = ground_terrain_data->get_height_at_position(terrain_xz);
 			const Vector3 terrain_normal = ground_terrain_data->get_normal_at_position(terrain_xz);
-			const Vector3 hit_world_normal = ground_terrain->get_global_transform().basis.xform(terrain_normal).normalized();
+			const Vector3 hit_world_normal = terrain_gt.basis.xform(terrain_normal).normalized();
 
 			if (max_slope_degrees < 90.0f) {
 				const float angle = Math::rad_to_deg(Math::acos(CLAMP(hit_world_normal.dot(Vector3(0, 1, 0)), -1.0f, 1.0f)));
 				if (angle > max_slope_degrees) {
+					places_settled++;
 					continue;
 				}
 			}
 
-			local_pos = gt_inv.xform(ground_terrain->get_global_transform().xform(Vector3(terrain_local.x, height, terrain_local.z)));
+			local_pos = gt_inv.xform(terrain_gt.xform(Vector3(terrain_xz.x, height, terrain_xz.y)));
 			world_normal = hit_world_normal;
 		} else if (project_on_mesh) {
 			const Vector2i fcell(int(Math::floor(lx / face_cell_size)), int(Math::floor(lz / face_cell_size)));
 			const LocalVector<uint32_t> *face_indices = face_grid.getptr(fcell);
 			if (face_indices == nullptr) {
+				places_settled++;
 				continue;
 			}
 
@@ -1247,6 +1835,7 @@ void FoliageSpawner3D::regenerate() {
 			}
 
 			if (!hit_found) {
+				places_settled++;
 				continue;
 			}
 
@@ -1254,6 +1843,7 @@ void FoliageSpawner3D::regenerate() {
 			if (max_slope_degrees < 90.0f) {
 				const float angle = Math::rad_to_deg(Math::acos(CLAMP(hit_world_normal.dot(Vector3(0, 1, 0)), -1.0f, 1.0f)));
 				if (angle > max_slope_degrees) {
+					places_settled++;
 					continue;
 				}
 			}
@@ -1263,6 +1853,24 @@ void FoliageSpawner3D::regenerate() {
 		} else {
 			const float ly = rng.random(-half.y, half.y);
 			local_pos = Vector3(lx, ly, lz);
+		}
+
+		// Only now that it is known where on the ground the instance stands:
+		// a lake keeps foliage off the ground under its water, not off dry
+		// ground inside its shoreline.
+		if (!spline_keep_outs.is_empty()) {
+			const Vector3 global_pos = gt.xform(local_pos);
+			bool kept_out = false;
+			for (const SplineKeepOut &keep_out : spline_keep_outs) {
+				if (keep_out.covers(global_pos)) {
+					kept_out = true;
+					break;
+				}
+			}
+			if (kept_out) {
+				places_settled++;
+				continue;
+			}
 		}
 
 		Vector3 up_target(0, 1, 0);
@@ -1294,6 +1902,7 @@ void FoliageSpawner3D::regenerate() {
 		basis = basis.scaled_local(Vector3(s, s, s));
 
 		transforms.push_back(Transform3D(gt_inv.basis * basis, local_pos));
+		places_settled++;
 
 		if (min_distance > 0.0f) {
 			grid[cell].push_back(Vector2(lx, lz));
@@ -1460,8 +2069,21 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 		}
 	}
 
+	if (terrain_layer_mask != 0) {
+		const Landscape3D *terrain = is_inside_tree() ? Object::cast_to<Landscape3D>(get_node_or_null(ground_mesh_path)) : nullptr;
+		if (terrain == nullptr || terrain->get_terrain_data().is_null()) {
+			warnings.push_back(RTR("Terrain Layer Mask only applies to a Landscape3D (with TerrainData) referenced by Ground Mesh Path, so it is ignored."));
+		} else {
+			const int layer_count = MIN(terrain->get_layers().size(), TerrainData::MAX_LAYERS);
+			const uint32_t existing_layers = layer_count >= 32 ? 0xFFFFFFFF : (1u << layer_count) - 1;
+			if ((terrain_layer_mask & existing_layers) == 0) {
+				warnings.push_back(RTR("None of the layers chosen in Terrain Layer Mask exist on the Landscape3D referenced by Ground Mesh Path."));
+			}
+		}
+	}
+
 	if (has_any_mesh() && cells.is_empty() && gpu_transforms.is_empty()) {
-		warnings.push_back(RTR("No instances have been generated yet (or none matched the current settings). Press Regenerate after adjusting Density, Min Distance, the Distribution Mask, or the ground projection settings."));
+		warnings.push_back(RTR("No instances have been generated yet (or none matched the current settings). Press Regenerate after adjusting Density, Min Distance, the Distribution Mask, the Terrain Layers, the Landscape Splines, or the ground projection settings."));
 	}
 
 	if (gpu_culling && !FoliageGPUCuller::is_supported()) {
@@ -1488,6 +2110,10 @@ FoliageSpawner3D::FoliageSpawner3D() {
 	// and dynamic per-instance GI probe lookups add up with thousands of
 	// MultiMesh instances. Users who do want it can switch Cell GI Mode back
 	// to Dynamic in the inspector.
+
+	// Off every kind of spline by default: most foliage has no business on a
+	// road or under water.
+	spline_avoid = (1u << LandscapeSpline3D::TYPE_MAX) - 1;
 
 	TypedArray<FoliageLODLevel> defaults;
 

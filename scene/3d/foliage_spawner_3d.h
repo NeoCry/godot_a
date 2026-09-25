@@ -44,6 +44,9 @@ class Texture2D;
 // to Unreal Engine's Procedural Foliage Spawner: it fills the volume according to
 // density/spacing rules, an optional grayscale distribution mask, and can project
 // the instances onto the actual surface geometry of another mesh below them (e.g. terrain).
+// Over a Landscape3D it can also grow only on the ground its chosen TerrainLayers
+// cover, and it keeps off the roads, rivers, streams and lakes LandscapeSpline3D
+// lays out, the way Unreal's foliage heeds landscape layers and splines.
 //
 // Generated instances are spatially chunked into a grid of cells on the local XZ
 // plane (see cell_size), the same technique FoliagePainter3D uses for painted
@@ -82,6 +85,21 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	// Mask.
 	Ref<Texture2D> distribution_mask;
 	bool mask_invert = false;
+
+	// Terrain layers: which of a Landscape3D ground's TerrainLayers foliage
+	// grows on, one bit per layer in the order of Landscape3D.layers. None
+	// chosen means the layers are not looked at.
+	uint32_t terrain_layer_mask = 0;
+	bool terrain_layer_mask_invert = false;
+	// How much of the ground the chosen layers have to cover for anything to
+	// grow; density rises from there to full where they cover all of it.
+	float terrain_layer_threshold = 0.1;
+
+	// Landscape splines: which kinds of LandscapeSpline3D (one bit per
+	// LandscapeSpline3D::SplineType) foliage keeps off, and how much further
+	// than their edges. Every kind by default, set in the constructor.
+	uint32_t spline_avoid = 0;
+	float spline_margin = 0.0;
 
 	// Ground projection.
 	bool project_on_mesh = true;
@@ -150,6 +168,12 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 
 	Ref<Image> _get_mask_image() const;
 	bool _sample_mask(const Ref<Image> &p_image, const Vector2 &p_uv, RandomPCG &p_rng) const;
+	// Whether an instance grows where the layers in terrain_layer_mask cover
+	// p_share of the ground (see terrain_layer_threshold).
+	bool _sample_terrain_layers(float p_share, RandomPCG &p_rng) const;
+	// The flags the Inspector offers for terrain_layer_mask: the ground
+	// Landscape3D's own layers, by name.
+	String _get_terrain_layer_hint() const;
 	Callable _get_regenerate_button() const;
 	Callable _get_fit_to_ground_mesh_button() const;
 
@@ -214,6 +238,21 @@ public:
 
 	void set_mask_invert(bool p_invert);
 	bool is_mask_inverted() const;
+
+	void set_terrain_layer_mask(uint32_t p_mask);
+	uint32_t get_terrain_layer_mask() const;
+
+	void set_terrain_layer_mask_invert(bool p_invert);
+	bool is_terrain_layer_mask_inverted() const;
+
+	void set_terrain_layer_threshold(float p_threshold);
+	float get_terrain_layer_threshold() const;
+
+	void set_spline_avoid(uint32_t p_types);
+	uint32_t get_spline_avoid() const;
+
+	void set_spline_margin(float p_margin);
+	float get_spline_margin() const;
 
 	void set_project_on_mesh(bool p_project);
 	bool is_projecting_on_mesh() const;
