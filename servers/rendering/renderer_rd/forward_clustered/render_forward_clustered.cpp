@@ -1493,11 +1493,9 @@ void RenderForwardClustered::setup_added_decal(const Transform3D &p_transform, c
 /* Render scene */
 
 void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform) {
+	ERR_FAIL_NULL(gtao);
 	ERR_FAIL_COND(p_render_buffers.is_null());
 	ERR_FAIL_COND(p_environment.is_null());
-
-	RendererRD::GTAO *gtao = RendererRD::GTAO::get_singleton();
-	ERR_FAIL_NULL(gtao);
 
 	Ref<RenderBufferDataForwardClustered> rb_data = p_render_buffers->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
 	ERR_FAIL_COND(rb_data.is_null());
@@ -1704,9 +1702,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		sscs_exclusion_instances.clear();
 		if (p_render_data->instances) {
 			for (int i = 0; i < (int)p_render_data->instances->size(); i++) {
-				GeometryInstanceForwardClustered *gi = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
-				if (gi->data->ignore_screen_space_shadows) {
-					sscs_exclusion_instances.push_back(gi);
+				GeometryInstanceForwardClustered *geometry_instance = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
+				if (geometry_instance->data->ignore_screen_space_shadows) {
+					sscs_exclusion_instances.push_back(geometry_instance);
 				}
 			}
 		}
@@ -4379,7 +4377,6 @@ RID RenderForwardClustered::_render_buffers_get_velocity_texture(Ref<RenderScene
 }
 
 void RenderForwardClustered::environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) {
-	RendererRD::GTAO *gtao = RendererRD::GTAO::get_singleton();
 	ERR_FAIL_NULL(gtao);
 	ERR_FAIL_COND(p_quality < RSE::EnvironmentGTAOQuality::ENV_GTAO_QUALITY_VERY_LOW || p_quality > RSE::EnvironmentGTAOQuality::ENV_GTAO_QUALITY_ULTRA);
 	gtao->set_quality(p_quality, p_half_size, p_fadeout_from, p_fadeout_to);
