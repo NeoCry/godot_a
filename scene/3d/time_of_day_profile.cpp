@@ -303,7 +303,10 @@ void TimeOfDayProfile::set_context(TimeOfDay *p_context) {
 
 Object *TimeOfDayProfile::_get_context_target(const Track &p_track) const {
 	const TimeOfDay *time_of_day = ObjectDB::get_instance<TimeOfDay>(context);
-	if (!time_of_day || !time_of_day->is_inside_tree()) {
+	// Only the thread that owns the node may look into its scene. Elsewhere
+	// (the editor saves, duplicates and previews resources on worker threads)
+	// the Inspector hints fall back on the targets' usual classes.
+	if (!time_of_day || !time_of_day->is_accessible_from_caller_thread() || !time_of_day->is_inside_tree()) {
 		return nullptr;
 	}
 	return time_of_day->get_target_object(p_track.target, p_track.node_path);

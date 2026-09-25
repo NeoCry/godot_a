@@ -45,7 +45,9 @@ TEST_FORCE_LINK(test_time_of_day)
 #include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/sky.h"
+#include "core/os/thread.h"
 #include "tests/signal_watcher.h"
+#include "tests/test_tools.h"
 
 namespace TestTimeOfDay {
 
@@ -727,6 +729,31 @@ TEST_CASE("[Editor][TimeOfDay] The saved scene never contains the cycle") {
 		CHECK(profile->get_track_gradient(track).is_valid());
 		CHECK(profile->get_track_curve(track).is_null());
 	}
+}
+
+TEST_CASE("[SceneTree][TimeOfDay] Other threads can read a profile without touching the scene") {
+	TestScene scene;
+	Ref<TimeOfDayProfile> profile = TimeOfDayProfile::create_default();
+	scene.time_of_day->set_profile(profile);
+
+	// The editor lists, duplicates and saves resources on worker threads
+	// (scene thumbnails, previews), and the node can't be asked for its
+	// targets from there.
+	ErrorDetector errors;
+	struct Reader {
+		static void read(void *p_profile) {
+			List<PropertyInfo> properties;
+			static_cast<TimeOfDayProfile *>(p_profile)->get_property_list(&properties);
+			static_cast<TimeOfDayProfile *>(p_profile)->duplicate(true);
+		}
+	};
+	Thread thread;
+	thread.start(&Reader::read, profile.ptr());
+	thread.wait_to_finish();
+	CHECK_FALSE(errors.has_error);
+
+	// On the main thread the real targets still answer.
+	CHECK(scene.time_of_day->get_target_object(TimeOfDayProfile::TARGET_SUN) == scene.sun);
 }
 
 } // namespace TestTimeOfDay

@@ -59,6 +59,11 @@ WorldEnvironment *TimeOfDay::_get_world_environment() const {
 }
 
 Object *TimeOfDay::get_target_object(TimeOfDayProfile::Target p_target, const NodePath &p_node_path) const {
+	// The editor also builds scenes and reads resources on background threads
+	// (thumbnails, resource previews), where the scene tree is off limits.
+	if (!is_accessible_from_caller_thread()) {
+		return nullptr;
+	}
 	switch (p_target) {
 		case TimeOfDayProfile::TARGET_SUN:
 			return _get_sun();
@@ -323,6 +328,11 @@ bool TimeOfDay::is_weather_transitioning() const {
 // Profiles.
 
 void TimeOfDay::_on_profile_changed() {
+	if (!is_accessible_from_caller_thread()) {
+		// A profile edited from another thread; catch up on this node's own.
+		callable_mp(this, &TimeOfDay::_on_profile_changed).call_deferred();
+		return;
+	}
 	_queue_update();
 	update_configuration_warnings();
 }
