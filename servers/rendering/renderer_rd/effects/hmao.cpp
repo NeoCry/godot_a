@@ -109,6 +109,8 @@ void HeightMapAO::_free_height_map() {
 	height_map.framebuffer = RID();
 	height_map.resolution = 0;
 	height_map.valid = false;
+	height_map.rendered_since_update = false;
+	height_map.idle_frames = 0;
 }
 
 RID HeightMapAO::prepare_height_map(uint32_t p_resolution) {
@@ -143,6 +145,26 @@ RID HeightMapAO::prepare_height_map(uint32_t p_resolution) {
 void HeightMapAO::height_map_rendered(const AABB &p_bounds) {
 	height_map.bounds = p_bounds;
 	height_map.valid = true;
+	height_map.rendered_since_update = true;
+}
+
+void HeightMapAO::frame_update() {
+	if (height_map.texture.is_null()) {
+		return;
+	}
+
+	if (height_map.rendered_since_update) {
+		height_map.rendered_since_update = false;
+		height_map.idle_frames = 0;
+		return;
+	}
+
+	height_map.idle_frames++;
+	if (height_map.idle_frames >= HEIGHT_MAP_IDLE_FRAMES) {
+		// Nothing has used the map for long enough that the effect is off rather than between frames, so
+		// its memory goes back - which is the whole of what this effect costs while it is switched off.
+		_free_height_map();
+	}
 }
 
 void HeightMapAO::allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p_hmao_buffers, const Settings &p_settings) {

@@ -81,6 +81,13 @@ public:
 	// another viewport, or from before the camera teleported) as this frame's occlusion.
 	void invalidate_height_map() { height_map.valid = false; }
 
+	// Called once per frame. The height map is the only thing this effect keeps alive between frames, and
+	// nothing tells it when the last viewport using it switched the effect off - so it hands the texture
+	// back itself once no frame has drawn into it for a while, and prepare_height_map() makes a new one if
+	// the effect ever comes back. The delay is what keeps a viewport that simply didn't redraw, or a camera
+	// standing somewhere with nothing around it, from freeing and recreating the map every frame.
+	void frame_update();
+
 	/* Screen space gather */
 
 	struct RenderBuffers {
@@ -109,12 +116,17 @@ private:
 	RID nearest_sampler;
 	RID border_sampler;
 
+	// Frames without a single map render after which the texture is released, see frame_update().
+	static constexpr uint32_t HEIGHT_MAP_IDLE_FRAMES = 120;
+
 	struct {
 		RID texture;
 		RID framebuffer;
 		uint32_t resolution = 0;
 		AABB bounds;
 		bool valid = false;
+		bool rendered_since_update = false;
+		uint32_t idle_frames = 0;
 	} height_map;
 
 	struct GatherPushConstant {

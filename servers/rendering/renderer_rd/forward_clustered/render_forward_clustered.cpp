@@ -323,6 +323,9 @@ bool RenderForwardClustered::free(RID p_rid) {
 
 void RenderForwardClustered::update() {
 	RendererSceneRenderRD::update();
+	if (hmao != nullptr) {
+		hmao->frame_update();
+	}
 	_update_global_pipeline_data_requirements_from_project();
 	_update_global_pipeline_data_requirements_from_light_storage();
 }
