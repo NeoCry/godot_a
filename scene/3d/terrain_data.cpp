@@ -198,12 +198,14 @@ float TerrainData::get_size() const {
 // byte buffer directly (heightmap is always FORMAT_RF, one float per pixel;
 // each weight map is always FORMAT_RGBA8, one byte per channel/layer; the
 // hole map is always FORMAT_R8), which is a simple array index.
-// Image::get_data() returns that buffer by reference (free), while a write
-// needs one get_data()+set_data() round trip to commit (one copy-on-write of
-// the whole image) - cheap by itself, but still worth batching: callers
-// doing many edits (TerrainData's own *_region methods, and Landscape3D's
-// sculpt/paint_layer/set_hole) do exactly one such round trip per call, not
-// one per sample.
+// Image::get_data() returns that buffer by reference (free), and writes go
+// through Image::ptrw() straight into it, which costs nothing either as long
+// as nothing else holds a reference to the same buffer. (They used to copy
+// it out with get_data(), edit the copy and commit it with set_data(), which
+// duplicates the whole image on every call: fine for a small terrain, but at
+// the maximum resolution that is 64 MB per write however few samples change.)
+// _apply_layer_mask() still takes its own copies, since it rewrites every
+// sample of every weight map anyway.
 float TerrainData::get_height(int p_x, int p_z) const {
 	p_x = CLAMP(p_x, 0, resolution - 1);
 	p_z = CLAMP(p_z, 0, resolution - 1);
@@ -215,9 +217,8 @@ void TerrainData::set_height(int p_x, int p_z, float p_height) {
 	if (p_x < 0 || p_x >= resolution || p_z < 0 || p_z >= resolution) {
 		return;
 	}
-	Vector<uint8_t> raw = heightmap->get_data();
-	reinterpret_cast<float *>(raw.ptrw())[p_z * resolution + p_x] = p_height;
-	heightmap->set_data(resolution, resolution, false, Image::FORMAT_RF, raw);
+	// In place, for the same reason as set_height_region().
+	reinterpret_cast<float *>(heightmap->ptrw())[p_z * resolution + p_x] = p_height;
 }
 
 PackedFloat32Array TerrainData::get_height_region(const Rect2i &p_region) const {
@@ -252,8 +253,13 @@ void TerrainData::set_height_region(const Rect2i &p_region, const PackedFloat32A
 		return;
 	}
 
-	Vector<uint8_t> raw = heightmap->get_data();
-	float *dst = reinterpret_cast<float *>(raw.ptrw());
+	// Written straight into the image's own buffer. Going through a copy of
+	// get_data() and handing it back with set_data() duplicates the whole
+	// heightmap on every call, because the copy shares the buffer the image
+	// still holds: at 4097x4097 that is 64 MB moved for what may be a brush
+	// stamp's few hundred samples, and a spline or script writing back a long
+	// run of small regions paid it once per region.
+	float *dst = reinterpret_cast<float *>(heightmap->ptrw());
 	const float *src = p_heights.ptr();
 
 	int i = 0;
@@ -271,7 +277,6 @@ void TerrainData::set_height_region(const Rect2i &p_region, const PackedFloat32A
 			i++;
 		}
 	}
-	heightmap->set_data(resolution, resolution, false, Image::FORMAT_RF, raw);
 	emit_changed();
 }
 
@@ -292,9 +297,7 @@ void TerrainData::set_layer_weight(int p_x, int p_z, int p_layer_index, float p_
 	}
 	const int group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
 	const int channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
-	Vector<uint8_t> raw = weight_maps[group]->get_data();
-	raw.ptrw()[(p_z * resolution + p_x) * 4 + channel] = (uint8_t)CLAMP(Math::round(p_weight * 255.0f), 0.0f, 255.0f);
-	weight_maps.write[group]->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
+	weight_maps[group]->ptrw()[(p_z * resolution + p_x) * 4 + channel] = (uint8_t)CLAMP(Math::round(p_weight * 255.0f), 0.0f, 255.0f);
 }
 
 PackedFloat32Array TerrainData::get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const {
@@ -335,8 +338,8 @@ void TerrainData::set_layer_weight_region(const Rect2i &p_region, int p_layer_in
 
 	const int group = p_layer_index / LAYERS_PER_WEIGHT_MAP;
 	const int channel = p_layer_index % LAYERS_PER_WEIGHT_MAP;
-	Vector<uint8_t> raw = weight_maps[group]->get_data();
-	uint8_t *dst = raw.ptrw();
+	// In place, for the same reason as set_height_region().
+	uint8_t *dst = weight_maps[group]->ptrw();
 	const float *src = p_weights.ptr();
 
 	int i = 0;
@@ -354,7 +357,6 @@ void TerrainData::set_layer_weight_region(const Rect2i &p_region, int p_layer_in
 			i++;
 		}
 	}
-	weight_maps.write[group]->set_data(resolution, resolution, false, Image::FORMAT_RGBA8, raw);
 	emit_changed();
 }
 
@@ -369,9 +371,7 @@ void TerrainData::set_hole(int p_x, int p_z, bool p_hole) {
 	if (p_x < 0 || p_x >= resolution || p_z < 0 || p_z >= resolution) {
 		return;
 	}
-	Vector<uint8_t> raw = hole_map->get_data();
-	raw.ptrw()[p_z * resolution + p_x] = p_hole ? 255 : 0;
-	hole_map->set_data(resolution, resolution, false, Image::FORMAT_R8, raw);
+	hole_map->ptrw()[p_z * resolution + p_x] = p_hole ? 255 : 0;
 }
 
 PackedByteArray TerrainData::get_hole_region(const Rect2i &p_region) const {
@@ -406,8 +406,8 @@ void TerrainData::set_hole_region(const Rect2i &p_region, const PackedByteArray 
 		return;
 	}
 
-	Vector<uint8_t> raw = hole_map->get_data();
-	uint8_t *dst = raw.ptrw();
+	// In place, for the same reason as set_height_region().
+	uint8_t *dst = hole_map->ptrw();
 	const uint8_t *src = p_holes.ptr();
 
 	int i = 0;
@@ -425,7 +425,6 @@ void TerrainData::set_hole_region(const Rect2i &p_region, const PackedByteArray 
 			i++;
 		}
 	}
-	hole_map->set_data(resolution, resolution, false, Image::FORMAT_R8, raw);
 	emit_changed();
 }
 
@@ -568,7 +567,7 @@ float TerrainData::get_curvature(int p_x, int p_z, int p_radius) const {
 	const float mean = (get_height(p_x - r, p_z) + get_height(p_x + r, p_z) +
 							   get_height(p_x, p_z - r) + get_height(p_x, p_z + r)) *
 			0.25f;
-	// Over the distance to those neighbours, so this stays a change in slope
+	// Over the distance to those neighbors, so this stays a change in slope
 	// (dimensionless) rather than a height difference, and reads the same for
 	// the same shape at any vertex_spacing.
 	return (get_height(p_x, p_z) - mean) / (vertex_spacing * (float)r);
@@ -614,8 +613,8 @@ void TerrainData::_apply_layer_mask(const float *p_mask, int p_layer_index, bool
 	// Every layer's weight at a sample sits in one of these maps, and
 	// normalizing has to read all of them, so this walks all the raw buffers
 	// at once and commits each exactly once at the end - rather than going
-	// through set_layer_weight_region() per layer, which copies a whole map
-	// per call (see the note above get_height()).
+	// through get/set_layer_weight_region() per layer, which would convert
+	// every map to floats and back once for each layer it holds.
 	Vector<uint8_t> raws[WEIGHT_MAP_COUNT];
 	uint8_t *dst[WEIGHT_MAP_COUNT];
 	for (int g = 0; g < WEIGHT_MAP_COUNT; g++) {

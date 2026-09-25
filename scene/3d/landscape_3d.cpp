@@ -44,7 +44,7 @@
 #include "servers/rendering/rendering_server.h"
 
 namespace {
-// How much of a brush stamp lands at p_dist from its centre: 1 at the centre,
+// How much of a brush stamp lands at p_dist from its center: 1 at the center,
 // tapering to 0 at the rim. p_falloff is how much of the radius that taper
 // takes up - 0 stamps at full strength right up to the rim and stops dead
 // (a hard edge), 1 tapers across the whole radius, and anything between keeps
@@ -60,6 +60,40 @@ float brush_falloff_weight(float p_dist, float p_radius, float p_falloff) {
 	}
 	const float t = 1.0f - (p_dist - inner) / MAX(p_radius - inner, 0.00001f);
 	return t * t * (3.0f - 2.0f * t);
+}
+
+// Sets p_target_layer's weight at sample p_index (an index into every array of
+// r_layer_weights, one array per layer) to p_new_weight, and when that raises
+// it, takes the raised amount out of the other layers, proportionally to their
+// current share of "the rest", so the total weight stays roughly constant
+// instead of every layer just growing without bound - the same weight-blended-
+// layer behavior CryEngine/UE4/5 terrain painting uses. Without this, painting
+// a second layer over a first one already at full weight could only ever reach
+// an even split between them, never fully replace it.
+void set_layer_weight_renormalized(Vector<PackedFloat32Array> &r_layer_weights, int p_target_layer, int p_index, float p_new_weight) {
+	PackedFloat32Array &target = r_layer_weights.write[p_target_layer];
+	const float new_target = CLAMP(p_new_weight, 0.0f, 1.0f);
+	const float delta = new_target - target[p_index];
+
+	if (delta > 0.00001f) {
+		const int layer_count = r_layer_weights.size();
+		float others_sum = 0.0f;
+		for (int i = 0; i < layer_count; i++) {
+			if (i != p_target_layer) {
+				others_sum += r_layer_weights[i][p_index];
+			}
+		}
+		if (others_sum > 0.00001f) {
+			const float scale = MAX(0.0f, (others_sum - delta) / others_sum);
+			for (int i = 0; i < layer_count; i++) {
+				if (i != p_target_layer) {
+					PackedFloat32Array &other = r_layer_weights.write[i];
+					other.set(p_index, other[p_index] * scale);
+				}
+			}
+		}
+	}
+	target.set(p_index, new_target);
 }
 
 // Used only when a layer has no texture of its own to say how big its stand-in
@@ -607,6 +641,13 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_hole_region", "region"), &Landscape3D::get_hole_region);
 	ClassDB::bind_method(D_METHOD("set_hole_region", "region", "holes"), &Landscape3D::set_hole_region);
 
+	ClassDB::bind_method(D_METHOD("get_height_regions", "regions"), &Landscape3D::get_height_regions);
+	ClassDB::bind_method(D_METHOD("set_height_regions", "regions", "heights", "update_collision"), &Landscape3D::set_height_regions, DEFVAL(true));
+
+	ClassDB::bind_method(D_METHOD("get_layer_weight_regions", "regions", "layer_index"), &Landscape3D::get_layer_weight_regions);
+	ClassDB::bind_method(D_METHOD("set_layer_weight_regions", "regions", "layer_index", "weights"), &Landscape3D::set_layer_weight_regions);
+	ClassDB::bind_method(D_METHOD("paint_layer_regions", "regions", "layer_index", "weights"), &Landscape3D::paint_layer_regions);
+
 	ClassDB::bind_method(D_METHOD("update_collision"), &Landscape3D::update_collision);
 
 	ClassDB::bind_method(D_METHOD("get_aabb"), &Landscape3D::get_aabb);
@@ -642,6 +683,8 @@ void Landscape3D::_bind_methods() {
 	ADD_GROUP("Collision", "collision_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");
+
+	ADD_SIGNAL(MethodInfo("terrain_changed", PropertyInfo(Variant::RECT2I, "region")));
 
 	BIND_ENUM_CONSTANT(SCULPT_RAISE);
 	BIND_ENUM_CONSTANT(SCULPT_LOWER);
@@ -690,6 +733,9 @@ void Landscape3D::_notification(int p_what) {
 			if (material.is_valid()) {
 				material->set_shader_parameter("terrain_origin", get_global_transform().origin);
 			}
+			// Whatever sits on the surface (see LandscapeSpline3D) has to follow
+			// it wherever it moved.
+			_emit_terrain_changed(_get_full_region());
 		} break;
 
 		case NOTIFICATION_VISIBILITY_CHANGED: {
@@ -913,16 +959,69 @@ void Landscape3D::_rebuild_all_chunks() {
 	}
 }
 
+void Landscape3D::_add_chunks_in_region(const Rect2i &p_vertex_region, HashSet<Vector2i> &r_chunks) const {
+	if (p_vertex_region.size.x <= 0 || p_vertex_region.size.y <= 0) {
+		return;
+	}
+	// An edit reaches further than the chunks its samples belong to: a chunk
+	// shares its border row and column of vertices with its neighbors, reads
+	// one sample beyond them for its normals, and its occluder takes the lowest
+	// sample up to one occluder stride away. Looking only at the edited samples
+	// left the chunk across a border stale whenever an edit started right on
+	// it - a crack along the border, and an occluder standing above ground that
+	// had been dug out beside it.
+	const int margin = occluder_enabled ? MAX(_get_occluder_stride(), 1) : 1;
+	const Rect2i range = _get_chunk_range_for_region(p_vertex_region.grow(margin));
+	for (int z = range.position.y; z < range.position.y + range.size.y; z++) {
+		for (int x = range.position.x; x < range.position.x + range.size.x; x++) {
+			r_chunks.insert(Vector2i(x, z));
+		}
+	}
+}
+
 void Landscape3D::_rebuild_chunks_in_region(const Rect2i &p_vertex_region) {
 	if (terrain_data.is_null()) {
 		return;
 	}
-	const Rect2i range = _get_chunk_range_for_region(p_vertex_region);
-	for (int z = range.position.y; z < range.position.y + range.size.y; z++) {
-		for (int x = range.position.x; x < range.position.x + range.size.x; x++) {
-			_rebuild_chunk(Vector2i(x, z));
-		}
+	HashSet<Vector2i> coords;
+	_add_chunks_in_region(p_vertex_region, coords);
+	for (const Vector2i &coord : coords) {
+		_rebuild_chunk(coord);
 	}
+}
+
+void Landscape3D::_rebuild_chunks_in_regions(const Vector<Rect2i> &p_vertex_regions) {
+	if (terrain_data.is_null()) {
+		return;
+	}
+	HashSet<Vector2i> coords;
+	for (const Rect2i &region : p_vertex_regions) {
+		_add_chunks_in_region(region, coords);
+	}
+	for (const Vector2i &coord : coords) {
+		_rebuild_chunk(coord);
+	}
+}
+
+void Landscape3D::_upload_weight_groups(int p_layer_count) {
+	if (weight_array.is_null() || terrain_data.is_null()) {
+		return;
+	}
+	const int group_count = MIN((p_layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP, TerrainData::WEIGHT_MAP_COUNT);
+	for (int g = 0; g < group_count; g++) {
+		weight_array->update_layer(terrain_data->get_weight_map_image(g), g);
+	}
+}
+
+Rect2i Landscape3D::_get_full_region() const {
+	if (terrain_data.is_null()) {
+		return Rect2i();
+	}
+	return Rect2i(0, 0, terrain_data->get_resolution(), terrain_data->get_resolution());
+}
+
+void Landscape3D::_emit_terrain_changed(const Rect2i &p_region) {
+	emit_signal(SNAME("terrain_changed"), p_region);
 }
 
 void Landscape3D::_clear_chunks() {
@@ -1339,6 +1438,7 @@ void Landscape3D::_on_terrain_data_changed() {
 	_rebuild_textures();
 	_rebuild_all_chunks();
 	update_collision();
+	_emit_terrain_changed(_get_full_region());
 }
 
 void Landscape3D::_disconnect_terrain_data_changed() {
@@ -1364,6 +1464,7 @@ void Landscape3D::set_terrain_data(const Ref<TerrainData> &p_data) {
 		update_collision();
 	}
 	update_configuration_warnings();
+	_emit_terrain_changed(_get_full_region());
 }
 
 Ref<TerrainData> Landscape3D::get_terrain_data() const {
@@ -1632,7 +1733,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	const int region_w = region.size.x;
 
 	// Smoothing is the one operation strength cannot simply scale: averaging a
-	// vertex with its neighbours is one pass whatever fraction of it is applied,
+	// vertex with its neighbors is one pass whatever fraction of it is applied,
 	// so once the blend reaches that average there is nothing left for more
 	// strength to do - which is why the brush used to feel stuck on weak however
 	// high it was set. Strength is the number of averaging passes here, run over
@@ -1719,6 +1820,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	if (p_update_collision) {
 		update_collision();
 	}
+	_emit_terrain_changed(region);
 }
 
 void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff) {
@@ -1765,37 +1867,7 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 			const float amount = p_strength * brush_falloff_weight(dist, radius, p_falloff);
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
-			PackedFloat32Array &target = layer_weights.write[p_layer_index];
-			const float old_target = target[local_idx];
-			const float new_target = CLAMP(old_target + amount, 0.0f, 1.0f);
-			const float delta = new_target - old_target;
-
-			// Take the raised amount out of the other layers, proportionally
-			// to their current share of "the rest", so the total weight
-			// stays roughly constant instead of every layer just growing
-			// without bound - the same weight-blended-layer behavior
-			// CryEngine/UE4/5 terrain painting uses. Without this, painting
-			// a second layer over a first one already at full weight could
-			// only ever reach an even split between them, never fully
-			// replace it.
-			if (delta > 0.00001f) {
-				float others_sum = 0.0f;
-				for (int i = 0; i < layer_count; i++) {
-					if (i != p_layer_index) {
-						others_sum += layer_weights[i][local_idx];
-					}
-				}
-				if (others_sum > 0.00001f) {
-					const float scale = MAX(0.0f, (others_sum - delta) / others_sum);
-					for (int i = 0; i < layer_count; i++) {
-						if (i != p_layer_index) {
-							PackedFloat32Array &other = layer_weights.write[i];
-							other.set(local_idx, other[local_idx] * scale);
-						}
-					}
-				}
-			}
-			target.set(local_idx, new_target);
+			set_layer_weight_renormalized(layer_weights, p_layer_index, local_idx, layer_weights[p_layer_index][local_idx] + amount);
 		}
 	}
 
@@ -1805,12 +1877,7 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 	}
 	_connect_terrain_data_changed();
 
-	if (weight_array.is_valid()) {
-		const int group_count = (layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP;
-		for (int g = 0; g < group_count; g++) {
-			weight_array->update_layer(terrain_data->get_weight_map_image(g), g);
-		}
-	}
+	_upload_weight_groups(layer_count);
 }
 
 void Landscape3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision) {
@@ -1871,6 +1938,7 @@ void Landscape3D::set_height_region(const Rect2i &p_region, const PackedFloat32A
 	if (p_update_collision) {
 		update_collision();
 	}
+	_emit_terrain_changed(p_region);
 }
 
 PackedFloat32Array Landscape3D::get_layer_weight_region(const Rect2i &p_region, int p_layer_index) const {
@@ -1900,6 +1968,103 @@ void Landscape3D::set_hole_region(const Rect2i &p_region, const PackedByteArray 
 	terrain_data->set_hole_region(p_region, p_holes);
 	_connect_terrain_data_changed();
 	_rebuild_chunks_in_region(p_region);
+}
+
+TypedArray<PackedFloat32Array> Landscape3D::get_height_regions(const TypedArray<Rect2i> &p_regions) const {
+	TypedArray<PackedFloat32Array> result;
+	ERR_FAIL_COND_V(terrain_data.is_null(), result);
+	result.resize(p_regions.size());
+	for (int i = 0; i < p_regions.size(); i++) {
+		result[i] = terrain_data->get_height_region(p_regions[i]);
+	}
+	return result;
+}
+
+void Landscape3D::set_height_regions(const TypedArray<Rect2i> &p_regions, const TypedArray<PackedFloat32Array> &p_heights, bool p_update_collision) {
+	ERR_FAIL_COND(terrain_data.is_null());
+	ERR_FAIL_COND_MSG(p_regions.size() != p_heights.size(), "Every region needs exactly one array of heights.");
+
+	Vector<Rect2i> regions;
+	regions.resize(p_regions.size());
+	_disconnect_terrain_data_changed();
+	for (int i = 0; i < p_regions.size(); i++) {
+		regions.write[i] = p_regions[i];
+		terrain_data->set_height_region(regions[i], p_heights[i]);
+	}
+	_connect_terrain_data_changed();
+
+	_rebuild_chunks_in_regions(regions);
+	if (p_update_collision) {
+		update_collision();
+	}
+	for (const Rect2i &region : regions) {
+		_emit_terrain_changed(region);
+	}
+}
+
+TypedArray<PackedFloat32Array> Landscape3D::get_layer_weight_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index) const {
+	TypedArray<PackedFloat32Array> result;
+	ERR_FAIL_COND_V(terrain_data.is_null(), result);
+	ERR_FAIL_INDEX_V(p_layer_index, TerrainData::MAX_LAYERS, result);
+	result.resize(p_regions.size());
+	for (int i = 0; i < p_regions.size(); i++) {
+		result[i] = terrain_data->get_layer_weight_region(p_regions[i], p_layer_index);
+	}
+	return result;
+}
+
+void Landscape3D::set_layer_weight_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights) {
+	ERR_FAIL_COND(terrain_data.is_null());
+	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
+	ERR_FAIL_COND_MSG(p_regions.size() != p_weights.size(), "Every region needs exactly one array of weights.");
+
+	_disconnect_terrain_data_changed();
+	for (int i = 0; i < p_regions.size(); i++) {
+		terrain_data->set_layer_weight_region(p_regions[i], p_layer_index, p_weights[i]);
+	}
+	_connect_terrain_data_changed();
+
+	if (weight_array.is_valid()) {
+		const int group = p_layer_index / TerrainData::LAYERS_PER_WEIGHT_MAP;
+		weight_array->update_layer(terrain_data->get_weight_map_image(group), group);
+	}
+}
+
+void Landscape3D::paint_layer_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights) {
+	ERR_FAIL_COND(terrain_data.is_null());
+	ERR_FAIL_INDEX(p_layer_index, layers.size());
+	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
+	ERR_FAIL_COND_MSG(p_regions.size() != p_weights.size(), "Every region needs exactly one array of weights.");
+
+	const int layer_count = MIN(layers.size(), TerrainData::MAX_LAYERS);
+	Vector<PackedFloat32Array> layer_weights;
+	layer_weights.resize(layer_count);
+
+	_disconnect_terrain_data_changed();
+	for (int r = 0; r < p_regions.size(); r++) {
+		const Rect2i region = p_regions[r];
+		const PackedFloat32Array targets = p_weights[r];
+		const int sample_count = MAX(region.size.x, 0) * MAX(region.size.y, 0);
+		ERR_CONTINUE_MSG(targets.size() < sample_count, "Too few weights for their region.");
+
+		// Same reasoning as paint_layer(): raising one layer only means
+		// anything relative to every other layer's weight at the same sample.
+		for (int i = 0; i < layer_count; i++) {
+			layer_weights.write[i] = terrain_data->get_layer_weight_region(region, i);
+		}
+		for (int idx = 0; idx < sample_count; idx++) {
+			const float current = layer_weights[p_layer_index][idx];
+			if (targets[idx] > current) {
+				set_layer_weight_renormalized(layer_weights, p_layer_index, idx, targets[idx]);
+			}
+		}
+		for (int i = 0; i < layer_count; i++) {
+			terrain_data->set_layer_weight_region(region, i, layer_weights[i]);
+		}
+	}
+	_connect_terrain_data_changed();
+
+	_upload_weight_groups(layer_count);
 }
 
 void Landscape3D::update_collision() {

@@ -31,6 +31,8 @@
 #pragma once
 
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
+#include "core/variant/typed_array.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/3d/terrain_layer.h"
 #include "scene/3d/visual_instance_3d.h"
@@ -184,6 +186,14 @@ private:
 	void _rebuild_textures();
 	void _rebuild_all_chunks();
 	void _rebuild_chunks_in_region(const Rect2i &p_vertex_region);
+	// Rebuilds every chunk any of p_vertex_regions touches, each exactly once
+	// however many of the regions it borders - the batched counterpart of
+	// _rebuild_chunks_in_region() for set_height_regions() and friends.
+	void _rebuild_chunks_in_regions(const Vector<Rect2i> &p_vertex_regions);
+	void _add_chunks_in_region(const Rect2i &p_vertex_region, HashSet<Vector2i> &r_chunks) const;
+	void _upload_weight_groups(int p_layer_count);
+	Rect2i _get_full_region() const;
+	void _emit_terrain_changed(const Rect2i &p_region);
 	void _rebuild_chunk(const Vector2i &p_coord);
 	void _clear_chunks();
 	int _get_occluder_stride() const;
@@ -293,7 +303,7 @@ public:
 	// Sculpting/painting API. Positions are in this node's local space
 	// (XZ plane, Y up). Also directly usable at runtime (e.g. for explosion
 	// craters), not just from the editor brush.
-	// p_falloff shapes the stamp from its centre to its rim: 0 is a hard edge,
+	// p_falloff shapes the stamp from its center to its rim: 0 is a hard edge,
 	// 1 tapers across the whole radius. For SCULPT_SMOOTH, p_strength is how
 	// many averaging passes to smooth by rather than a per-stamp amount - see
 	// the comment in sculpt() for why that operation cannot use one.
@@ -309,6 +319,22 @@ public:
 
 	PackedByteArray get_hole_region(const Rect2i &p_region) const;
 	void set_hole_region(const Rect2i &p_region, const PackedByteArray &p_holes);
+
+	// Batched forms of the region accessors above, for edits that touch many
+	// small, scattered regions at once - LandscapeSpline3D writing a road or
+	// river bed along its whole length, and the editor undoing that - where
+	// one call per region would rebuild the chunks along every shared border
+	// several times over, and refresh collision and GPU textures per region.
+	TypedArray<PackedFloat32Array> get_height_regions(const TypedArray<Rect2i> &p_regions) const;
+	void set_height_regions(const TypedArray<Rect2i> &p_regions, const TypedArray<PackedFloat32Array> &p_heights, bool p_update_collision = true);
+	TypedArray<PackedFloat32Array> get_layer_weight_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index) const;
+	void set_layer_weight_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights);
+	// Raises p_layer_index's weight to at least the matching value in
+	// p_weights (0-1) at every sample of each region, taking what it gains out
+	// of the other layers the same way paint_layer() does. Painting the same
+	// mask twice changes nothing the second time, unlike paint_layer()'s
+	// additive stamps.
+	void paint_layer_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights);
 
 	void update_collision();
 
