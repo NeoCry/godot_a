@@ -4112,7 +4112,11 @@ void RendererSceneCull::render_probes() {
 			RID base = ref_probe->self()->owner->base;
 
 			switch (RSG::light_storage->reflection_probe_get_update_mode(base)) {
-				case RSE::REFLECTION_PROBE_UPDATE_ONCE: {
+				case RSE::REFLECTION_PROBE_UPDATE_ONCE:
+				case RSE::REFLECTION_PROBE_UPDATE_INTERVAL: {
+					// Both spread a high quality refresh over several frames: the cubemap faces on
+					// the first step, then one roughness layer per step. Interval probes are simply
+					// queued again once their interval is up, instead of only when they turn dirty.
 					if (busy) { // Already rendering something.
 						break;
 					}
@@ -4126,10 +4130,7 @@ void RendererSceneCull::render_probes() {
 
 					busy = true; // Do not render another one of this kind.
 				} break;
-				case RSE::REFLECTION_PROBE_UPDATE_ALWAYS:
-				case RSE::REFLECTION_PROBE_UPDATE_INTERVAL: {
-					// Real-time probes render the whole cubemap in one go. Interval probes only get
-					// here on the frames they are due, so they skip the work on the frames in between.
+				case RSE::REFLECTION_PROBE_UPDATE_ALWAYS: {
 					int step = 0;
 					bool done = false;
 					while (!done) {

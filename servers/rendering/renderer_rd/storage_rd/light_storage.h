@@ -249,7 +249,7 @@ private:
 
 	struct ReflectionProbe {
 		RSE::ReflectionProbeUpdateMode update_mode = RSE::REFLECTION_PROBE_UPDATE_ONCE;
-		int update_interval = RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN;
+		int update_interval = RSE::REFLECTION_PROBE_UPDATE_INTERVAL_DEFAULT;
 		float intensity = 1.0;
 		float blend_distance = 1.0;
 		RSE::ReflectionProbeAmbientMode ambient_mode = RSE::REFLECTION_PROBE_AMBIENT_ENVIRONMENT;
@@ -277,7 +277,7 @@ private:
 		int size = 0;
 		int reflection_texture_size = 0;
 		float uv_border_size = 0.0;
-		bool update_realtime = false;
+		bool update_always = false;
 
 		RID reflection;
 		RID color_buffer;

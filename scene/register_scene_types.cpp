@@ -254,6 +254,8 @@
 #include "scene/3d/iterate_ik_3d.h"
 #include "scene/3d/jacobian_ik_3d.h"
 #include "scene/3d/label_3d.h"
+#include "scene/3d/landscape_3d.h"
+#include "scene/3d/landscape_spline_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/lightmap_gi.h"
 #include "scene/3d/lightmap_probe.h"
@@ -279,7 +281,6 @@
 #include "scene/3d/spring_bone_collision_sphere_3d.h"
 #include "scene/3d/spring_bone_simulator_3d.h"
 #include "scene/3d/sprite_3d.h"
-#include "scene/3d/landscape_3d.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/3d/terrain_layer.h"
 #include "scene/3d/time_of_day.h"
@@ -787,6 +788,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(Curve3D);
 	GDREGISTER_CLASS(Path3D);
 	GDREGISTER_CLASS(PathFollow3D);
+	GDREGISTER_CLASS(LandscapeSpline3D);
 	GDREGISTER_CLASS(VisibleOnScreenNotifier3D);
 	GDREGISTER_CLASS(VisibleOnScreenEnabler3D);
 	GDREGISTER_CLASS(WorldEnvironment);
@@ -1359,6 +1361,7 @@ void register_scene_types() {
 #ifndef _3D_DISABLED
 		Trail3D::init_shaders();
 		Landscape3D::init_shaders();
+		LandscapeSpline3D::init_shaders();
 #endif //_3D_DISABLED
 	}
 
@@ -1423,6 +1426,7 @@ void unregister_scene_types() {
 	FogMaterial::cleanup_shader();
 	Trail3D::finish_shaders();
 	Landscape3D::finish_shaders();
+	LandscapeSpline3D::finish_shaders();
 #endif // _3D_DISABLED
 
 	ParticleProcessMaterial::finish_shaders();

@@ -95,6 +95,8 @@
 #include "editor/scene/3d/camera_3d_editor_plugin.h"
 #include "editor/scene/3d/foliage_painter_3d_editor_plugin.h"
 #include "editor/scene/3d/gpu_particles_collision_sdf_editor_plugin.h"
+#include "editor/scene/3d/landscape_3d_editor_plugin.h"
+#include "editor/scene/3d/landscape_spline_3d_editor_plugin.h"
 #include "editor/scene/3d/lightmap_gi_editor_plugin.h"
 #include "editor/scene/3d/mesh_editor_plugin.h"
 #include "editor/scene/3d/mesh_instance_3d_editor_plugin.h"
@@ -107,7 +109,6 @@
 #include "editor/scene/3d/physics/physical_bone_3d_editor_plugin.h"
 #include "editor/scene/3d/polygon_3d_editor_plugin.h"
 #include "editor/scene/3d/skeleton_3d_editor_plugin.h"
-#include "editor/scene/3d/landscape_3d_editor_plugin.h"
 #include "editor/scene/3d/time_of_day_editor_plugin.h"
 #include "editor/scene/3d/vertex_paint_3d_editor_plugin.h"
 #include "editor/scene/3d/voxel_gi_editor_plugin.h"
@@ -295,6 +296,7 @@ void register_editor_types() {
 	EditorPlugins::add_by_type<Polygon3DEditorPlugin>();
 	EditorPlugins::add_by_type<Skeleton3DEditorPlugin>();
 	EditorPlugins::add_by_type<Landscape3DEditorPlugin>();
+	EditorPlugins::add_by_type<LandscapeSpline3DEditorPlugin>();
 	EditorPlugins::add_by_type<TimeOfDayEditorPlugin>();
 	EditorPlugins::add_by_type<VertexPaint3DEditorPlugin>();
 	EditorPlugins::add_by_type<VoxelGIEditorPlugin>();

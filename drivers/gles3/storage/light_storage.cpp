@@ -659,7 +659,7 @@ RSE::ReflectionProbeUpdateMode LightStorage::reflection_probe_get_update_mode(RI
 
 int LightStorage::reflection_probe_get_update_interval(RID p_probe) const {
 	const ReflectionProbe *reflection_probe = reflection_probe_owner.get_or_null(p_probe);
-	ERR_FAIL_NULL_V(reflection_probe, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_MIN);
+	ERR_FAIL_NULL_V(reflection_probe, RSE::REFLECTION_PROBE_UPDATE_INTERVAL_DEFAULT);
 
 	return reflection_probe->update_interval;
 }
@@ -909,9 +909,8 @@ bool LightStorage::reflection_probe_instance_begin_render(RID p_instance, RID p_
 
 	// First we check if our atlas is initialized.
 
-	// Not making an exception for real-time update modes (REFLECTION_PROBE_UPDATE_ALWAYS and
-	// REFLECTION_PROBE_UPDATE_INTERVAL), we are using the same render techniques regardless of
-	// realtime or update once (for now).
+	// Not making an exception for update_mode = REFLECTION_PROBE_UPDATE_ALWAYS, we are using
+	// the same render techniques regardless of realtime or update once (for now).
 
 	if (atlas->depth == 0) {
 		// We need to create our textures
@@ -1098,7 +1097,7 @@ bool LightStorage::reflection_probe_instance_postprocess_step(RID p_instance) {
 		return false;
 	}
 
-	if (RSE::reflection_probe_update_mode_is_realtime(LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe))) {
+	if (LightStorage::get_singleton()->reflection_probe_get_update_mode(rpi->probe) == RSE::REFLECTION_PROBE_UPDATE_ALWAYS) {
 		// Using real time reflections, all roughness is done in one step
 		for (int m = 0; m < atlas->mipmap_count; m++) {
 			const GLES3::ReflectionAtlas::Reflection &reflection = atlas->reflections[rpi->atlas_index];
