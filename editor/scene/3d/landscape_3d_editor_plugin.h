@@ -102,6 +102,7 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 	MenuButton *paint_layer_menu = nullptr;
 	Button *import_heightmap_button = nullptr;
 	Button *import_layer_mask_button = nullptr;
+	MenuButton *add_spline_menu = nullptr;
 
 	// Heightmap import dialogs.
 	EditorFileDialog *import_file_dialog = nullptr;
@@ -163,6 +164,10 @@ class Landscape3DEditorPlugin : public EditorPlugin {
 
 	void _rebuild_paint_layer_menu();
 	void _paint_layer_menu_id_pressed(int p_id);
+
+	// Adds a LandscapeSpline3D of the chosen type under the terrain and
+	// selects it, ready for its points to be placed.
+	void _add_spline_menu_id_pressed(int p_id);
 
 	void _import_heightmap_pressed();
 	void _import_file_selected(const String &p_path);

@@ -35,6 +35,7 @@ TEST_FORCE_LINK(test_landscape_3d)
 #include "core/templates/rid_owner.h"
 #include "scene/3d/landscape_3d.h"
 #include "scene/3d/terrain_data.h"
+#include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 #include "servers/rendering/renderer_scene_occlusion_cull.h"
 

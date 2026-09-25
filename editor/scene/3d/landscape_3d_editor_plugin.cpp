@@ -39,6 +39,7 @@
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/landscape_spline_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
@@ -136,6 +137,37 @@ void Landscape3DEditorPlugin::_rebuild_paint_layer_menu() {
 void Landscape3DEditorPlugin::_paint_layer_menu_id_pressed(int p_id) {
 	paint_layer_index = p_id;
 	_rebuild_paint_layer_menu();
+}
+
+void Landscape3DEditorPlugin::_add_spline_menu_id_pressed(int p_id) {
+	Node *scene_root = EditorNode::get_singleton()->get_edited_scene();
+	if (terrain == nullptr || scene_root == nullptr) {
+		return;
+	}
+	ERR_FAIL_INDEX(p_id, LandscapeSpline3D::TYPE_MAX);
+	const LandscapeSpline3D::SplineType type = (LandscapeSpline3D::SplineType)p_id;
+
+	LandscapeSpline3D *spline = memnew(LandscapeSpline3D);
+	spline->apply_preset(type);
+	// An empty curve rather than none, so the Path3D tools can start adding
+	// points straight away instead of first asking to create one.
+	Ref<Curve3D> curve;
+	curve.instantiate();
+	spline->set_curve(curve);
+	static const char *names[LandscapeSpline3D::TYPE_MAX] = { "Road", "River", "Stream" };
+	spline->set_name(names[type]);
+
+	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
+	ur->create_action(vformat(TTR("Add %s"), names[type]));
+	ur->add_do_method(terrain, "add_child", spline, true);
+	ur->add_do_method(spline, "set_owner", scene_root);
+	ur->add_do_reference(spline);
+	ur->add_undo_method(terrain, "remove_child", spline);
+	ur->commit_action();
+
+	EditorSelection *selection = EditorNode::get_singleton()->get_editor_selection();
+	selection->clear();
+	selection->add_node(spline);
 }
 
 void Landscape3DEditorPlugin::_import_heightmap_pressed() {
@@ -255,8 +287,8 @@ void Landscape3DEditorPlugin::_do_import_layer_mask() {
 	if (terrain == nullptr || pending_mask_path.is_empty()) {
 		return;
 	}
-	Ref<TerrainData> data = terrain->get_terrain_data();
-	if (data.is_null()) {
+	Ref<TerrainData> terrain_data = terrain->get_terrain_data();
+	if (terrain_data.is_null()) {
 		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainData to import a mask into. Import a heightmap first, or assign a TerrainData resource."));
 		return;
 	}
@@ -276,7 +308,7 @@ void Landscape3DEditorPlugin::_do_import_layer_mask() {
 		return;
 	}
 
-	data->import_layer_mask(image, layer_index,
+	terrain_data->import_layer_mask(image, layer_index,
 			(TerrainData::MaskChannel)mask_channel_option->get_selected_id(),
 			mask_normalize_check->is_pressed());
 }
@@ -285,8 +317,8 @@ void Landscape3DEditorPlugin::_generate_layer_mask_pressed() {
 	if (terrain == nullptr) {
 		return;
 	}
-	Ref<TerrainData> data = terrain->get_terrain_data();
-	if (data.is_null()) {
+	Ref<TerrainData> terrain_data = terrain->get_terrain_data();
+	if (terrain_data.is_null()) {
 		EditorNode::get_singleton()->show_warning(TTR("This Landscape3D has no TerrainData to generate a mask from. Import or sculpt a heightmap first."));
 		return;
 	}
@@ -298,8 +330,8 @@ void Landscape3DEditorPlugin::_generate_layer_mask_pressed() {
 	// The height band is meaningless without knowing what the terrain actually
 	// spans, and nothing else in the editor shows that, so the dialog states it
 	// and starts the band on it rather than on numbers picked out of the air.
-	const int resolution = data->get_resolution();
-	const PackedFloat32Array heights = data->get_height_region(Rect2i(0, 0, resolution, resolution));
+	const int resolution = terrain_data->get_resolution();
+	const PackedFloat32Array heights = terrain_data->get_height_region(Rect2i(0, 0, resolution, resolution));
 	float lowest = 0.0f;
 	float highest = 0.0f;
 	if (!heights.is_empty()) {
@@ -322,18 +354,18 @@ void Landscape3DEditorPlugin::_update_curvature_range_label(double p_unused) {
 	if (terrain == nullptr) {
 		return;
 	}
-	Ref<TerrainData> data = terrain->get_terrain_data();
-	if (data.is_null()) {
+	Ref<TerrainData> terrain_data = terrain->get_terrain_data();
+	if (terrain_data.is_null()) {
 		return;
 	}
 
-	const int resolution = data->get_resolution();
+	const int resolution = terrain_data->get_resolution();
 	const int radius = (int)generate_curvature_radius_spin->get_value();
 	float most_hollow = 0.0f;
 	float most_raised = 0.0f;
 	for (int z = 0; z < resolution; z++) {
 		for (int x = 0; x < resolution; x++) {
-			const float c = data->get_curvature(x, z, radius);
+			const float c = terrain_data->get_curvature(x, z, radius);
 			most_hollow = MIN(most_hollow, c);
 			most_raised = MAX(most_raised, c);
 		}
@@ -345,8 +377,8 @@ void Landscape3DEditorPlugin::_do_generate_layer_mask() {
 	if (terrain == nullptr) {
 		return;
 	}
-	Ref<TerrainData> data = terrain->get_terrain_data();
-	if (data.is_null()) {
+	Ref<TerrainData> terrain_data = terrain->get_terrain_data();
+	if (terrain_data.is_null()) {
 		return;
 	}
 	const int layer_index = generate_layer_option->get_selected_id();
@@ -354,7 +386,7 @@ void Landscape3DEditorPlugin::_do_generate_layer_mask() {
 		return;
 	}
 
-	data->generate_layer_mask(layer_index,
+	terrain_data->generate_layer_mask(layer_index,
 			generate_height_min_spin->get_value(), generate_height_max_spin->get_value(), generate_height_falloff_spin->get_value(),
 			generate_slope_min_spin->get_value(), generate_slope_max_spin->get_value(), generate_slope_falloff_spin->get_value(),
 			generate_curvature_min_spin->get_value(), generate_curvature_max_spin->get_value(), generate_curvature_falloff_spin->get_value(),
@@ -836,6 +868,17 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 	paint_layer_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &Landscape3DEditorPlugin::_paint_layer_menu_id_pressed));
 	paint_layer_menu->connect("about_to_popup", callable_mp(this, &Landscape3DEditorPlugin::_rebuild_paint_layer_menu));
 	toolbar->add_child(paint_layer_menu);
+
+	toolbar->add_child(memnew(VSeparator));
+
+	add_spline_menu = memnew(MenuButton);
+	add_spline_menu->set_text(TTR("Add Spline"));
+	add_spline_menu->set_tooltip_text(TTR("Add a road, river or stream to this terrain: a LandscapeSpline3D laid along a curve. Place its points with the Path3D tools (turn on their \"Snap to Colliders\" option to drop them onto the terrain), then use \"Apply to Landscape\" to shape the ground under it."));
+	add_spline_menu->get_popup()->add_item(TTR("Road"), LandscapeSpline3D::TYPE_ROAD);
+	add_spline_menu->get_popup()->add_item(TTR("River"), LandscapeSpline3D::TYPE_RIVER);
+	add_spline_menu->get_popup()->add_item(TTR("Stream"), LandscapeSpline3D::TYPE_STREAM);
+	add_spline_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &Landscape3DEditorPlugin::_add_spline_menu_id_pressed));
+	toolbar->add_child(add_spline_menu);
 
 	toolbar->add_child(memnew(VSeparator));
 
