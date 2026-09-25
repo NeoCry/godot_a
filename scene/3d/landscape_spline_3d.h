@@ -44,7 +44,8 @@ class ShaderMaterial;
 // Path3D's curve, draped over (or cut into) a Landscape3D, with a material on
 // it. Being a Path3D, its curve is drawn and edited with the ordinary Path3D
 // tools; turning on their "Snap to Colliders" option drops new points straight
-// onto the terrain.
+// onto the terrain. With fill on, a closed curve is a shoreline instead, and
+// what it encloses is filled with a level surface: a lake.
 //
 // Built to cross a whole terrain without costing as much as one:
 //  - The strip is cut into chunks of about chunk_length along the spline, each
@@ -70,6 +71,10 @@ class ShaderMaterial;
 //    shadow, and a long one would otherwise be drawn into every shadow cascade.
 //  - Optional per-chunk visibility range, for splines that are not worth
 //    drawing at all past some distance.
+//  - A filled area is cut into square tiles instead. Tiles wholly inside the
+//    shoreline are two triangles each; only those the shoreline crosses are
+//    clipped to it, and the shoreline is simplified first, so a lake costs a
+//    few triangles per tile plus its outline, however large it is.
 class LandscapeSpline3D : public Path3D {
 	GDCLASS(LandscapeSpline3D, Path3D);
 
@@ -82,6 +87,7 @@ public:
 		TYPE_ROAD,
 		TYPE_RIVER,
 		TYPE_STREAM,
+		TYPE_LAKE,
 		TYPE_MAX,
 	};
 
@@ -130,9 +136,19 @@ private:
 		bool feature = false;
 	};
 
+	// How a tile of a filled area is built (see _partition_fill()).
+	enum FillTile : uint8_t {
+		FILL_TILE_NONE, // A strip chunk, not part of a fill.
+		FILL_TILE_FULL, // Wholly inside the shoreline: one quad.
+		FILL_TILE_CLIPPED, // Crossed by the shoreline: clipped to it.
+	};
+
 	struct Chunk {
 		int first_ring = 0;
 		int last_ring = 0;
+		// Fills only: which tile, in units of the fill tile size.
+		Vector2i tile;
+		FillTile fill_tile = FILL_TILE_NONE;
 		// Of the positions and settings the mesh was last built from; a chunk
 		// that hashes the same is left alone.
 		uint64_t hash = 0;
@@ -182,6 +198,13 @@ private:
 		uint64_t settings_hash = 0;
 		bool use_terrain = false;
 		TerrainSampler sampler;
+
+		// Fills only. The shoreline, simplified, in the plane's 2D
+		// coordinates: x along fill_x, y along fill_y.
+		Vector<Vector2> fill_polygon;
+		// Height of the surface along rings_up.
+		float fill_level = 0.0;
+		Rect2 fill_terrain_bounds;
 	};
 
 	enum UpdateFlags {
@@ -199,6 +222,7 @@ private:
 	HeightMode height_mode = HEIGHT_MODE_CONFORM;
 	float height_offset = 0.05;
 	bool smooth = true;
+	bool fill = false;
 
 	float segment_length = 1.0;
 	int cross_segments = 6;
@@ -247,6 +271,27 @@ private:
 	void _update_rings();
 	void _update_columns();
 	void _partition_chunks();
+
+	bool _is_filled() const;
+	float _get_fill_tile_size() const;
+	// The level of a filled area along rings_up: the lowest point of its
+	// shoreline, on the ground or on the curve (see HeightMode), plus
+	// height_offset when p_with_offset.
+	float _get_fill_level(const TerrainSampler &p_sampler, bool p_use_terrain, bool p_with_offset) const;
+	// The shoreline in the fill plane's 2D coordinates, closed implicitly
+	// (its last point is not a repeat of its first).
+	Vector<Vector2> _get_fill_shoreline(bool p_simplified) const;
+	void _partition_fill();
+	void _build_fill_chunk(uint32_t p_index, BuildContext *p_context);
+	// The fill plane's axes, perpendicular to rings_up: UV.x runs along the
+	// first, UV.y along the second.
+	Vector3 fill_x = Vector3(1, 0, 0);
+	Vector3 fill_y = Vector3(0, 0, 1);
+	// Set by _partition_fill(): the simplified shoreline the tiles are
+	// clipped to, and the tiles' size (normally four chunk_lengths, larger
+	// for an area that would otherwise need a great many of them).
+	Vector<Vector2> fill_shoreline;
+	float fill_tile_size = 256.0;
 	void _free_chunk(Chunk &p_chunk);
 	void _clear_chunks();
 
@@ -289,6 +334,7 @@ private:
 		float distance = Math::INF;
 		float lateral = 0.0;
 		float along = 0.0; // Fractional ring index.
+		bool inside = false; // Fills only: within the shoreline.
 	};
 	struct FootprintBlock {
 		Rect2i region;
@@ -298,6 +344,11 @@ private:
 	// carve falloff starts (see apply_to_landscape()).
 	float _get_carve_shoulder(const Landscape3D *p_landscape) const;
 	void _compute_footprint(Landscape3D *p_landscape, LocalVector<RingOnTerrain> &r_rings, LocalVector<FootprintBlock> &r_blocks) const;
+	// The filled area's counterpart: every sample within the shoreline or
+	// within reach of it, with its distance to the shoreline, and the base
+	// level (without height_offset) in the landscape's local space.
+	void _compute_fill_footprint(Landscape3D *p_landscape, float &r_level, LocalVector<FootprintBlock> &r_blocks) const;
+	void _apply_fill_to_landscape(Landscape3D *p_landscape, bool p_carve, bool p_paint);
 
 protected:
 	static void _bind_methods();
@@ -341,6 +392,9 @@ public:
 
 	void set_smooth(bool p_smooth);
 	bool is_smooth() const;
+
+	void set_fill(bool p_fill);
+	bool is_fill() const;
 
 	void set_segment_length(float p_length);
 	float get_segment_length() const;

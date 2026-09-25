@@ -31,10 +31,12 @@
 #include "landscape_spline_3d.h"
 
 #include "core/io/image.h"
+#include "core/math/geometry_2d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/object/worker_thread_pool.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 #include "core/templates/hashfuncs.h"
 #include "scene/3d/landscape_3d.h"
 #include "scene/resources/curve.h"
@@ -123,17 +125,25 @@ uniform float grain : hint_range(0.0, 1.0, 0.01) = 0.12;
 uniform bool use_vertex_alpha = true;
 uniform float depth_offset : hint_range(0.0, 0.01, 0.0001) = 0.0005;
 
-float hash21(vec2 p) {
-	p = fract(p * vec2(123.34, 456.21));
-	p += dot(p, p + 45.32);
-	return fract(p.x * p.y);
+// A random gradient per lattice point, without sin(), which loses precision
+// far from the origin on some GPUs.
+vec2 lattice_gradient(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.xx + p3.yz) * p3.zy) * 2.0 - 1.0;
 }
 
-float value_noise(vec2 p) {
+// Gradient noise, roughly -0.7 to 0.7. Unlike value noise it shows no square
+// lattice.
+float gradient_noise(vec2 p) {
 	vec2 i = floor(p);
-	vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+	vec2 f = p - i;
+	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+	float va = dot(lattice_gradient(i), f);
+	float vb = dot(lattice_gradient(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0));
+	float vc = dot(lattice_gradient(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0));
+	float vd = dot(lattice_gradient(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0));
+	return va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd);
 }
 
 void vertex() {
@@ -149,9 +159,9 @@ void vertex() {
 void fragment() {
 	float edge = min(UV.x, 1.0 - UV.x);
 	float shoulder = 1.0 - smoothstep(shoulder_width * 0.7, shoulder_width, edge);
-	float n = value_noise(UV * vec2(24.0, 24.0)) * 0.6 + value_noise(UV * vec2(3.0, 3.0)) * 0.4;
+	float n = gradient_noise(UV * 24.0) * 0.6 + gradient_noise(mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * UV * 3.0) * 0.4;
 	vec3 color = mix(albedo.rgb, shoulder_color.rgb, shoulder);
-	ALBEDO = color * (1.0 + (n - 0.5) * 2.0 * grain);
+	ALBEDO = color * (1.0 + n * 1.5 * grain);
 	ROUGHNESS = roughness;
 	SPECULAR = specular;
 	if (use_vertex_alpha) {
@@ -165,52 +175,152 @@ static const char *water_shader_code = R"(
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, skip_vertex_transform;
 
-// Built-in LandscapeSpline3D river and stream material. UV.x runs 0-1 across
-// the water and UV.y along it, downstream (1 per spline width), so ripples
-// scroll along UV.y; vertex COLOR.a is the spline's edge and end fade.
+// Built-in LandscapeSpline3D water, for rivers, streams and lakes.
+//
+// Ripples are made in world space from gradient noise: several octaves, each
+// turned against the last and faded out once it gets too fine for the pixels
+// it lands on, so there is no lattice to show and no shimmer in the distance,
+// they line up across the spline's chunks, and they keep their size in meters
+// whatever the spline's width. The current carries them downstream (the way
+// UV.y increases), fastest in midstream (UV.x = 0.5) and slower towards the
+// banks, using the two-phase flow map technique so that an uneven current
+// never smears them out; the wind drifts them on top of that, and is all that
+// moves still water. What lies under the surface shows through, bent by the
+// ripples and tinted by how much water the view passes through, and foam
+// gathers in the shallows and where the water runs fast. Vertex COLOR.a is the
+// spline's edge and end fade.
 
-uniform vec4 shallow_color : source_color = vec4(0.2, 0.4, 0.38, 1.0);
-uniform vec4 deep_color : source_color = vec4(0.02, 0.09, 0.12, 1.0);
-// Depth of water, in meters, over which it goes from shallow_color (and
-// see-through) to deep_color (and opacity).
-uniform float depth_range : hint_range(0.01, 100.0, 0.01) = 3.0;
-uniform float opacity : hint_range(0.0, 1.0, 0.01) = 0.9;
-// Depth of water, in meters, over which it fades in from nothing at the
-// shoreline, hiding where its mesh meets the ground.
-uniform float shore_fade : hint_range(0.0, 10.0, 0.01) = 0.3;
-// How fast the ripples travel downstream, in spline widths per second.
-uniform float flow_speed = 0.35;
-// Ripples per spline width.
-uniform float wave_scale : hint_range(0.1, 128.0, 0.1) = 4.0;
-uniform float wave_strength : hint_range(0.0, 2.0, 0.01) = 0.35;
+group_uniforms surface;
+// What the water looks like where it is too deep to see through.
+uniform vec3 deep_color : source_color = vec3(0.02, 0.08, 0.09);
+// The tint what lies under the water takes on through clarity meters of it.
+uniform vec3 transmission_color : source_color = vec3(0.35, 0.62, 0.58);
+// How many meters of water it takes to tint what is seen through it by
+// transmission_color; further down, less and less shows through.
+uniform float clarity : hint_range(0.05, 50.0, 0.01) = 1.5;
 uniform float roughness : hint_range(0.0, 1.0, 0.01) = 0.03;
+// How far the ripples bend what is seen through the water.
+uniform float refraction : hint_range(0.0, 0.2, 0.001) = 0.03;
+// Depth of water, in meters, over which it fades in from nothing at the
+// shoreline, hiding where the mesh meets the ground.
+uniform float shore_fade : hint_range(0.0, 5.0, 0.01) = 0.15;
+
+group_uniforms waves;
+// Length of the largest ripples, in meters.
+uniform float wave_length : hint_range(0.05, 50.0, 0.01) = 2.5;
+// How steep the ripples are: roughly the slope of the steepest of them.
+uniform float wave_strength : hint_range(0.0, 1.0, 0.01) = 0.12;
+// Speed of the current in midstream, in meters per second. 0 for still water.
+uniform float flow_speed : hint_range(0.0, 20.0, 0.01) = 1.2;
+// Speed of the current at the banks, as a fraction of flow_speed.
+uniform float bank_flow : hint_range(0.0, 1.0, 0.01) = 0.35;
+// Seconds the ripples are carried along before being faded out for a fresh
+// copy. Longer shows the current more clearly, but lets an uneven one stretch
+// them further before they are replaced.
+uniform float flow_cycle : hint_range(0.5, 20.0, 0.01) = 3.0;
+// Direction and speed of the wind, in meters per second along world X and Z,
+// drifting the ripples on top of the current.
+uniform vec2 wind = vec2(0.15, 0.05);
+
+group_uniforms foam;
+uniform vec3 foam_color : source_color = vec3(0.85, 0.88, 0.86);
+// Size of the foam's patches, in meters.
+uniform float foam_scale : hint_range(0.05, 50.0, 0.01) = 1.2;
+// How much foam gathers in the shallows along the shore.
+uniform float shore_foam : hint_range(0.0, 1.0, 0.01) = 0.45;
+// Depth of water, in meters, the shore's foam reaches out to.
+uniform float shore_foam_depth : hint_range(0.01, 5.0, 0.01) = 0.35;
+// How much foam the current raises where it runs faster than rapids_speed.
+uniform float rapids_foam : hint_range(0.0, 1.0, 0.01) = 0.0;
+// Speed of the current, in meters per second, at which it starts to foam.
+uniform float rapids_speed : hint_range(0.0, 20.0, 0.01) = 1.5;
+
+group_uniforms;
 uniform float depth_offset : hint_range(0.0, 0.01, 0.0001) = 0.0002;
 uniform sampler2D depth_texture : hint_depth_texture, filter_nearest, repeat_disable;
+uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap, repeat_disable;
 
-float hash21(vec2 p) {
-	p = fract(p * vec2(123.34, 456.21));
-	p += dot(p, p + 45.32);
-	return fract(p.x * p.y);
+varying vec3 world_position;
+// Downstream, along world X and Z.
+varying vec2 downstream;
+
+// A random gradient per lattice point, without sin(), which loses precision
+// far from the origin on some GPUs.
+vec2 lattice_gradient(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.xx + p3.yz) * p3.zy) * 2.0 - 1.0;
 }
 
-float value_noise(vec2 p) {
+// Gradient noise and its exact derivatives, as (value, d/dx, d/dy). The
+// quintic fade keeps it smooth through the second derivative, so normals
+// made from it show no lattice.
+vec3 gradient_noise(vec2 p) {
 	vec2 i = floor(p);
-	vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+	vec2 f = p - i;
+	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+	vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+	vec2 ga = lattice_gradient(i);
+	vec2 gb = lattice_gradient(i + vec2(1.0, 0.0));
+	vec2 gc = lattice_gradient(i + vec2(0.0, 1.0));
+	vec2 gd = lattice_gradient(i + vec2(1.0, 1.0));
+	float va = dot(ga, f);
+	float vb = dot(gb, f - vec2(1.0, 0.0));
+	float vc = dot(gc, f - vec2(0.0, 1.0));
+	float vd = dot(gd, f - vec2(1.0, 1.0));
+	float k = va - vb - vc + vd;
+	float value = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * k;
+	vec2 derivative = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) + du * (u.yx * k + vec2(vb, vc) - va);
+	return vec3(value, derivative);
 }
 
-float ripples(vec2 p) {
-	return value_noise(p) * 0.65 + value_noise(p * 2.3 + vec2(17.0, 5.0)) * 0.35;
+// Slope of the ripples at p (world X and Z, in meters), as height gained per
+// meter along X and Z, around 1 at the steepest. Each octave's height is in
+// proportion to its wavelength, so they are all about as steep as each other.
+vec2 ripple_slope(vec2 p, float footprint) {
+	vec2 slope = vec2(0.0);
+	float frequency = 1.0 / max(wave_length, 0.01);
+	// 1 / (1 + 0.52 + 0.52^2 + 0.52^3), so the octaves add up to about 1.
+	float amplitude = 0.52;
+	mat2 rotation = mat2(1.0);
+	for (int octave = 0; octave < 4; octave++) {
+		// Fade out ripples too fine for the pixels they fall on, before they
+		// alias into shimmer.
+		float fade = 1.0 - smoothstep(0.15, 0.45, footprint * frequency);
+		vec3 n = gradient_noise(rotation * p * frequency + vec2(17.31, 7.13) * float(octave));
+		slope += transpose(rotation) * n.yz * (amplitude * fade);
+		frequency *= 1.93;
+		amplitude *= 0.52;
+		rotation = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * rotation;
+	}
+	return slope;
 }
 
-vec2 ripple_slope(vec2 p) {
-	const float e = 0.05;
-	float h = ripples(p);
-	return vec2(ripples(p + vec2(e, 0.0)) - h, ripples(p + vec2(0.0, e)) - h) / e;
+// Where foam is, 0-1, in patches foam_scale meters across.
+float foam_pattern(vec2 p) {
+	vec2 q = p / max(foam_scale, 0.01);
+	float n = gradient_noise(q).x + gradient_noise(mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * q * 2.3 + vec2(3.7, 1.9)).x * 0.5;
+	return clamp(n * 0.8 + 0.5, 0.0, 1.0);
+}
+
+// View-space position of whatever opaque surface is at p_uv on screen.
+vec3 scene_position(vec2 p_uv, mat4 p_inv_projection) {
+	float depth = textureLod(depth_texture, p_uv, 0.0).r;
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	vec3 ndc = vec3(p_uv, depth) * 2.0 - 1.0;
+#else
+	vec3 ndc = vec3(p_uv * 2.0 - 1.0, depth);
+#endif
+	vec4 view = p_inv_projection * vec4(ndc, 1.0);
+	return view.xyz / view.w;
 }
 
 void vertex() {
+	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	// LandscapeSpline3D's binormals point upstream, the way UV.y decreases.
+	vec3 along = (MODEL_MATRIX * vec4(-BINORMAL, 0.0)).xyz;
+	downstream = dot(along.xz, along.xz) > 1e-8 ? normalize(along.xz) : vec2(0.0);
+
 	VERTEX = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	NORMAL = normalize(MODELVIEW_NORMAL_MATRIX * NORMAL);
 	TANGENT = normalize(mat3(MODELVIEW_MATRIX) * TANGENT);
@@ -221,45 +331,112 @@ void vertex() {
 }
 
 void fragment() {
-	// Two layers moving at different speeds, so the pattern churns rather
-	// than visibly sliding along as one piece.
-	vec2 p = UV * wave_scale;
-	float travel = TIME * flow_speed * wave_scale;
-	vec2 slope = ripple_slope(p - vec2(0.0, travel));
-	slope += ripple_slope(p * 1.7 + vec2(3.1, 0.0) - vec2(0.0, travel * 1.35)) * 0.5;
-	NORMAL_MAP = normalize(vec3(-slope * wave_strength * 0.25, 1.0)) * 0.5 + 0.5;
+	vec2 p = world_position.xz;
+	// Meters per pixel here, taken before any branching, where screen-space
+	// derivatives are still defined.
+	float footprint = max(length(dFdx(p)), length(dFdy(p)));
 
-	float depth_raw = texture(depth_texture, SCREEN_UV).r;
-#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
-	vec3 ndc = vec3(SCREEN_UV, depth_raw) * 2.0 - 1.0;
-#else
-	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth_raw);
-#endif
-	vec4 ground = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
-	float water_depth = max(VERTEX.z - ground.z / ground.w, 0.0);
+	// The current, easing off from midstream towards either bank.
+	float across = clamp(abs(UV.x * 2.0 - 1.0), 0.0, 1.0);
+	float speed = flow_speed * mix(1.0, bank_flow, across * across);
+	vec2 velocity = downstream * speed + wind;
 
-	float deepness = 1.0 - exp(-3.0 * water_depth / max(depth_range, 0.001));
-	ALBEDO = mix(shallow_color.rgb, deep_color.rgb, deepness);
-	ROUGHNESS = roughness;
+	// Two copies of the ripples, each carried along for one flow_cycle and
+	// then started over, half a cycle apart and cross-faded so that each
+	// starts over while it is invisible. Carrying a single copy along forever
+	// would stretch it without limit wherever the current is uneven.
+	float phase = fract(TIME / flow_cycle);
+	float phase_b = fract(phase + 0.5);
+	float blend = abs(1.0 - 2.0 * phase);
+	vec2 offset_a = velocity * (phase * flow_cycle);
+	vec2 offset_b = velocity * (phase_b * flow_cycle) - vec2(41.3, 17.9);
+	vec2 slope = mix(ripple_slope(p - offset_a, footprint), ripple_slope(p - offset_b, footprint), blend);
+	// Averaging two unrelated patterns flattens them midway through the
+	// fade; this keeps the ripples equally strong throughout.
+	slope /= sqrt(blend * blend + (1.0 - blend) * (1.0 - blend));
+	float foam_noise = mix(foam_pattern(p - offset_a), foam_pattern(p - offset_b), blend);
+
+	vec3 surface_normal = NORMAL;
+	vec3 view = normalize(-VERTEX);
+	// Seen at a glancing angle, water looks smoother than it is, and ripples
+	// at full strength would tip the reflection below the horizon, showing
+	// the underside of the sky; they are eased off towards the horizon.
+	float strength = wave_strength * mix(0.3, 1.0, smoothstep(0.0, 0.4, dot(view, surface_normal)));
+	vec3 slope_view = (VIEW_MATRIX * vec4(slope.x * strength, 0.0, slope.y * strength, 0.0)).xyz;
+	NORMAL = normalize(NORMAL - (slope_view - NORMAL * dot(slope_view, NORMAL)));
+	// Never tipped so far that it faces away from the camera.
+	NORMAL = normalize(NORMAL + surface_normal * max(0.0, 0.05 - dot(NORMAL, view)));
+
+	// How much water the view passes through, and about how deep it is.
+	float surface_distance = length(VERTEX);
+	vec3 ground = scene_position(SCREEN_UV, INV_PROJECTION_MATRIX);
+	float through = max(length(ground) - surface_distance, 0.0);
+	float depth = through * abs(dot(view, surface_normal));
+
+	// What lies under the water, seen through the bent surface. Near the
+	// shore the bend fades out, rather than reaching past the shoreline.
+	vec2 refracted_uv = clamp(SCREEN_UV + (NORMAL.xy - surface_normal.xy) * refraction * clamp(depth, 0.0, 1.0), vec2(0.0), vec2(1.0));
+	vec3 refracted_ground = scene_position(refracted_uv, INV_PROJECTION_MATRIX);
+	if (length(refracted_ground) < surface_distance) {
+		// Something in front of the water there: not what lies under it.
+		refracted_uv = SCREEN_UV;
+		refracted_ground = ground;
+	}
+	float refracted_through = max(length(refracted_ground) - surface_distance, 0.0);
+	vec3 transmittance = pow(max(transmission_color, vec3(0.001)), vec3(refracted_through / max(clarity, 0.001)));
+	vec3 under = textureLod(screen_texture, refracted_uv, 0.0).rgb;
+
+	float shore = 1.0 - smoothstep(0.0, shore_foam_depth, depth);
+	float rapids = smoothstep(rapids_speed, rapids_speed * 1.5 + 0.1, speed);
+	float coverage = clamp(shore * shore_foam + rapids * rapids_foam, 0.0, 1.0);
+	float foam = coverage > 0.001 ? smoothstep(1.0 - coverage, 1.25 - coverage, foam_noise) : 0.0;
+
+	// The water's own color is lit like any surface; what shows through it
+	// is already lit, so it goes in as emission.
+	float murk = 1.0 - dot(transmittance, vec3(1.0 / 3.0));
+	ALBEDO = mix(deep_color * murk, foam_color, foam);
+	EMISSION = under * transmittance * (1.0 - foam);
+	ROUGHNESS = mix(roughness, 0.6, foam);
 	METALLIC = 0.0;
 	SPECULAR = 0.5;
-	float shore = clamp(water_depth / max(shore_fade, 0.001), 0.0, 1.0);
-	ALPHA = mix(0.3, 1.0, deepness) * opacity * shore * COLOR.a;
+	ALPHA = smoothstep(0.0, max(shore_fade, 0.0001), depth) * COLOR.a;
 }
 )";
 
 static void _setup_default_material(const Ref<ShaderMaterial> &p_material, LandscapeSpline3D::SplineType p_type) {
-	if (p_type == LandscapeSpline3D::TYPE_STREAM) {
-		// Shallow, clear and quick: the bed shows through, and the surface is
-		// all broken-up little ripples.
-		p_material->set_shader_parameter("shallow_color", Color(0.3, 0.46, 0.42));
-		p_material->set_shader_parameter("deep_color", Color(0.05, 0.14, 0.15));
-		p_material->set_shader_parameter("depth_range", 1.2);
-		p_material->set_shader_parameter("opacity", 0.8);
-		p_material->set_shader_parameter("shore_fade", 0.12);
-		p_material->set_shader_parameter("flow_speed", 0.9);
-		p_material->set_shader_parameter("wave_scale", 3.0);
-		p_material->set_shader_parameter("wave_strength", 0.7);
+	switch (p_type) {
+		case LandscapeSpline3D::TYPE_STREAM: {
+			// Shallow, clear and quick: the bed shows through, the surface is
+			// all small broken ripples, and it froths where it runs fastest.
+			p_material->set_shader_parameter("transmission_color", Color(0.55, 0.75, 0.7));
+			p_material->set_shader_parameter("clarity", 3.0);
+			p_material->set_shader_parameter("shore_fade", 0.08);
+			p_material->set_shader_parameter("wave_length", 0.9);
+			p_material->set_shader_parameter("wave_strength", 0.2);
+			p_material->set_shader_parameter("flow_speed", 1.6);
+			p_material->set_shader_parameter("bank_flow", 0.4);
+			p_material->set_shader_parameter("flow_cycle", 2.0);
+			p_material->set_shader_parameter("foam_scale", 0.6);
+			p_material->set_shader_parameter("shore_foam", 0.6);
+			p_material->set_shader_parameter("shore_foam_depth", 0.2);
+			p_material->set_shader_parameter("rapids_foam", 0.35);
+			p_material->set_shader_parameter("rapids_speed", 1.2);
+		} break;
+		case LandscapeSpline3D::TYPE_LAKE: {
+			// Still, deep and dark, with broad ripples the wind pushes along.
+			p_material->set_shader_parameter("deep_color", Color(0.015, 0.06, 0.085));
+			p_material->set_shader_parameter("clarity", 2.5);
+			p_material->set_shader_parameter("shore_fade", 0.2);
+			p_material->set_shader_parameter("wave_length", 4.0);
+			p_material->set_shader_parameter("wave_strength", 0.1);
+			p_material->set_shader_parameter("flow_speed", 0.0);
+			p_material->set_shader_parameter("flow_cycle", 6.0);
+			p_material->set_shader_parameter("wind", Vector2(0.3, 0.12));
+			p_material->set_shader_parameter("shore_foam", 0.25);
+		} break;
+		default: {
+			// The shader's own defaults are a river's.
+		} break;
 	}
 }
 
@@ -318,6 +495,7 @@ Dictionary LandscapeSpline3D::get_preset(SplineType p_type) {
 			preset["carve_depth"] = 0.0;
 			preset["carve_falloff"] = 4.0;
 			preset["paint_falloff"] = 2.0;
+			preset["fill"] = false;
 		} break;
 		case TYPE_RIVER: {
 			preset["width"] = 16.0;
@@ -330,6 +508,7 @@ Dictionary LandscapeSpline3D::get_preset(SplineType p_type) {
 			preset["carve_depth"] = 2.5;
 			preset["carve_falloff"] = 8.0;
 			preset["paint_falloff"] = 4.0;
+			preset["fill"] = false;
 		} break;
 		case TYPE_STREAM: {
 			preset["width"] = 2.5;
@@ -342,6 +521,23 @@ Dictionary LandscapeSpline3D::get_preset(SplineType p_type) {
 			preset["carve_depth"] = 0.4;
 			preset["carve_falloff"] = 1.5;
 			preset["paint_falloff"] = 1.0;
+			preset["fill"] = false;
+		} break;
+		case TYPE_LAKE: {
+			// Width only scales the texture across a filled area.
+			preset["width"] = 16.0;
+			// Level with the lowest ground around the shore, so it fills
+			// whatever hollow it is drawn around without any carving.
+			preset["height_mode"] = HEIGHT_MODE_CONFORM_LEVEL;
+			preset["height_offset"] = 0.0;
+			preset["cross_segments"] = 1;
+			preset["edge_fade"] = 0.0;
+			preset["end_fade_length"] = 0.0;
+			preset["gi_mode"] = GeometryInstance3D::GI_MODE_DISABLED;
+			preset["carve_depth"] = 3.0;
+			preset["carve_falloff"] = 8.0;
+			preset["paint_falloff"] = 3.0;
+			preset["fill"] = true;
 		} break;
 		default: {
 			ERR_FAIL_V_MSG(preset, "Invalid spline type.");
@@ -383,6 +579,9 @@ void LandscapeSpline3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_smooth", "smooth"), &LandscapeSpline3D::set_smooth);
 	ClassDB::bind_method(D_METHOD("is_smooth"), &LandscapeSpline3D::is_smooth);
+
+	ClassDB::bind_method(D_METHOD("set_fill", "fill"), &LandscapeSpline3D::set_fill);
+	ClassDB::bind_method(D_METHOD("is_fill"), &LandscapeSpline3D::is_fill);
 
 	ClassDB::bind_method(D_METHOD("set_segment_length", "length"), &LandscapeSpline3D::set_segment_length);
 	ClassDB::bind_method(D_METHOD("get_segment_length"), &LandscapeSpline3D::get_segment_length);
@@ -453,7 +652,7 @@ void LandscapeSpline3D::_bind_methods() {
 	ClassDB::bind_static_method("LandscapeSpline3D", D_METHOD("get_default_material", "type"), &LandscapeSpline3D::get_default_material);
 	ClassDB::bind_static_method("LandscapeSpline3D", D_METHOD("create_default_material", "type"), &LandscapeSpline3D::create_default_material);
 
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "spline_type", PROPERTY_HINT_ENUM, "Road,River,Stream"), "set_spline_type", "get_spline_type");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "spline_type", PROPERTY_HINT_ENUM, "Road,River,Stream,Lake"), "set_spline_type", "get_spline_type");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "landscape_path", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Landscape3D"), "set_landscape_path", "get_landscape_path");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial"), "set_material", "get_material");
 
@@ -463,6 +662,7 @@ void LandscapeSpline3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "height_mode", PROPERTY_HINT_ENUM, "Conform,Conform Level,Spline"), "set_height_mode", "get_height_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "height_offset", PROPERTY_HINT_RANGE, "-10,10,0.001,or_less,or_greater,suffix:m"), "set_height_offset", "get_height_offset");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "smooth"), "set_smooth", "is_smooth");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "fill"), "set_fill", "is_fill");
 
 	ADD_GROUP("Mesh", "");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "segment_length", PROPERTY_HINT_RANGE, "0.05,100,0.01,or_greater,suffix:m"), "set_segment_length", "get_segment_length");
@@ -494,6 +694,7 @@ void LandscapeSpline3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(TYPE_ROAD);
 	BIND_ENUM_CONSTANT(TYPE_RIVER);
 	BIND_ENUM_CONSTANT(TYPE_STREAM);
+	BIND_ENUM_CONSTANT(TYPE_LAKE);
 	BIND_ENUM_CONSTANT(TYPE_MAX);
 
 	BIND_ENUM_CONSTANT(HEIGHT_MODE_CONFORM);
@@ -502,6 +703,10 @@ void LandscapeSpline3D::_bind_methods() {
 }
 
 void LandscapeSpline3D::_validate_property(PropertyInfo &p_property) const {
+	if (fill && (p_property.name == "width_curve" || p_property.name == "cross_segments" || p_property.name == "edge_fade" || p_property.name == "end_fade_length")) {
+		// Only a strip has these.
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+	}
 	if (p_property.name == "paint_layer") {
 		// Offer only the layers the landscape actually has.
 		const Landscape3D *landscape = _get_landscape();
@@ -601,7 +806,11 @@ void LandscapeSpline3D::_update() {
 	if (flags & UPDATE_RINGS) {
 		_update_rings();
 		_update_columns();
-		_partition_chunks();
+		if (_is_filled()) {
+			_partition_fill();
+		} else {
+			_partition_chunks();
+		}
 	}
 
 	const bool all = (flags & (UPDATE_RINGS | UPDATE_ALL_CHUNKS)) != 0;
@@ -622,6 +831,22 @@ void LandscapeSpline3D::_update() {
 	context.builds = builds.ptr();
 	context.settings_hash = _get_settings_hash();
 	context.use_terrain = height_mode != HEIGHT_MODE_SPLINE && _make_terrain_sampler(context.sampler);
+	if (_is_filled()) {
+		context.fill_polygon = fill_shoreline;
+		context.fill_level = _get_fill_level(context.sampler, context.use_terrain, true);
+		if (context.use_terrain) {
+			// The level comes from the ground all along the shoreline, so an
+			// edit anywhere along it can move every tile.
+			Vector2 lo(Math::INF, Math::INF);
+			Vector2 hi(-Math::INF, -Math::INF);
+			for (const Ring &ring : rings) {
+				const Vector3 on_terrain = context.sampler.to_terrain.xform(ring.center);
+				lo = lo.min(Vector2(on_terrain.x, on_terrain.z));
+				hi = hi.max(Vector2(on_terrain.x, on_terrain.z));
+			}
+			context.fill_terrain_bounds = Rect2(lo, hi - lo).grow(context.sampler.spacing);
+		}
+	}
 
 	// Building a chunk touches nothing but its own ChunkBuild, so they are
 	// all built at once; only handing the results to the RenderingServer,
@@ -703,6 +928,13 @@ void LandscapeSpline3D::_update_rings() {
 	rings.clear();
 	total_length = 0.0f;
 	rings_up = _get_local_up();
+	// The fill plane's axes: world X and Z for an upright landscape.
+	fill_x = Vector3(1, 0, 0) - rings_up * rings_up.x;
+	if (fill_x.length_squared() < 0.0001f) {
+		fill_x = Vector3(0, 0, 1) - rings_up * rings_up.z;
+	}
+	fill_x.normalize();
+	fill_y = fill_x.cross(rings_up).normalized();
 	rings_closed = false;
 
 	const Ref<Curve3D> source_curve = get_curve();
@@ -720,7 +952,7 @@ void LandscapeSpline3D::_update_rings() {
 
 	// Rings sit at whole multiples of segment_length from the start, plus
 	// one at the very end, rather than spreading evenly over the length:
-	// then lengthening or shortening the source_curve's far end leaves every ring
+	// then lengthening or shortening the curve's far end leaves every ring
 	// before the change exactly where it was, and with them the chunks there
 	// (see _build_chunk), instead of nudging every ring along the whole
 	// spline and rebuilding all of it.
@@ -755,9 +987,9 @@ void LandscapeSpline3D::_update_rings() {
 	}
 
 	// Directions come from the sampled centerline itself rather than the
-	// source_curve's own frames: the chord between the neighboring samples is
+	// curve's own frames: the chord between the neighboring samples is
 	// exactly the direction this polyline runs, it never degenerates the way
-	// a source_curve frame does on a vertical tangent, and it matches the strip that
+	// a curve frame does on a vertical tangent, and it matches the strip that
 	// actually gets built.
 	Vector3 flat_right = rings_up.get_any_perpendicular();
 	for (int i = 0; i <= steps; i++) {
@@ -851,7 +1083,295 @@ void LandscapeSpline3D::_partition_chunks() {
 	for (int i = 0; i < chunk_count; i++) {
 		chunks[i].first_ring = i * rings_per_chunk;
 		chunks[i].last_ring = MIN((i + 1) * rings_per_chunk, ring_count - 1);
+		chunks[i].fill_tile = FILL_TILE_NONE;
 	}
+}
+
+// Filled areas.
+
+bool LandscapeSpline3D::_is_filled() const {
+	return fill && rings.size() >= 3;
+}
+
+float LandscapeSpline3D::_get_fill_tile_size() const {
+	return MAX(chunk_length, 1.0f) * 4.0f;
+}
+
+Vector<Vector2> LandscapeSpline3D::_get_fill_shoreline(bool p_simplified) const {
+	Vector<Vector2> points;
+	// A closed curve's last ring repeats its first.
+	const int count = rings_closed ? (int)rings.size() - 1 : (int)rings.size();
+	for (int i = 0; i < count; i++) {
+		const Vector2 point(rings[i].center.dot(fill_x), rings[i].center.dot(fill_y));
+		if (points.is_empty() || points[points.size() - 1].distance_squared_to(point) > 0.00000001f) {
+			points.push_back(point);
+		}
+	}
+	while (points.size() > 1 && points[0].distance_squared_to(points[points.size() - 1]) <= 0.00000001f) {
+		points.remove_at(points.size() - 1);
+	}
+	if (!p_simplified || simplify_tolerance <= 0.0f || points.size() <= 3) {
+		return points;
+	}
+
+	// Douglas-Peucker, on the loop split in two at the point farthest from
+	// the first: a curve sampled every segment_length has many more points
+	// along its gentle stretches than the outline needs, and the tiles it
+	// crosses are triangulated from every one of them.
+	const int n = points.size();
+	int farthest = 0;
+	for (int i = 1; i < n; i++) {
+		if (points[i].distance_squared_to(points[0]) > points[farthest].distance_squared_to(points[0])) {
+			farthest = i;
+		}
+	}
+	LocalVector<bool> keep;
+	keep.resize(n);
+	for (int i = 0; i < n; i++) {
+		keep[i] = false;
+	}
+	keep[0] = true;
+	keep[farthest] = true;
+	const float tolerance_squared = simplify_tolerance * simplify_tolerance;
+	LocalVector<Vector2i> spans;
+	spans.push_back(Vector2i(0, farthest));
+	spans.push_back(Vector2i(farthest, n)); // n stands for point 0 again.
+	while (!spans.is_empty()) {
+		const Vector2i span = spans[spans.size() - 1];
+		spans.resize(spans.size() - 1);
+		const Vector2 a = points[span.x % n];
+		const Vector2 b = points[span.y % n];
+		int worst = -1;
+		float worst_distance = tolerance_squared;
+		for (int i = span.x + 1; i < span.y; i++) {
+			const float distance = points[i].distance_squared_to(Geometry2D::get_closest_point_to_segment(points[i], a, b));
+			if (distance > worst_distance) {
+				worst = i;
+				worst_distance = distance;
+			}
+		}
+		if (worst >= 0) {
+			keep[worst] = true;
+			spans.push_back(Vector2i(span.x, worst));
+			spans.push_back(Vector2i(worst, span.y));
+		}
+	}
+	Vector<Vector2> simplified;
+	for (int i = 0; i < n; i++) {
+		if (keep[i]) {
+			simplified.push_back(points[i]);
+		}
+	}
+	return simplified;
+}
+
+float LandscapeSpline3D::_get_fill_level(const TerrainSampler &p_sampler, bool p_use_terrain, bool p_with_offset) const {
+	// The lowest point of the shoreline, so that the water never stands above
+	// the ground (or the curve) anywhere along its edge, which would leave it
+	// floating there.
+	float lowest = Math::INF;
+	for (const Ring &ring : rings) {
+		const Vector3 point = p_use_terrain ? p_sampler.project(ring.center, 0.0f) : ring.center;
+		lowest = MIN(lowest, point.dot(rings_up));
+	}
+	if (!Math::is_finite(lowest)) {
+		lowest = 0.0f;
+	}
+	return lowest + (p_with_offset ? height_offset : 0.0f);
+}
+
+void LandscapeSpline3D::_partition_fill() {
+	fill_shoreline = _get_fill_shoreline(true);
+	LocalVector<Chunk> tiles;
+	if (fill_shoreline.size() >= 3) {
+		Vector2 lo = fill_shoreline[0];
+		Vector2 hi = fill_shoreline[0];
+		for (const Vector2 &point : fill_shoreline) {
+			lo = lo.min(point);
+			hi = hi.max(point);
+		}
+		// Grow the tiles for a vast area rather than drawing it in thousands
+		// of pieces.
+		fill_tile_size = _get_fill_tile_size();
+		while (((int64_t)Math::floor(hi.x / fill_tile_size) - (int64_t)Math::floor(lo.x / fill_tile_size) + 1) *
+						((int64_t)Math::floor(hi.y / fill_tile_size) - (int64_t)Math::floor(lo.y / fill_tile_size) + 1) >
+				4096) {
+			fill_tile_size *= 2.0f;
+		}
+		const float size = fill_tile_size;
+		const Vector2i first((int)Math::floor(lo.x / size), (int)Math::floor(lo.y / size));
+		const Vector2i last((int)Math::floor(hi.x / size), (int)Math::floor(hi.y / size));
+
+		// Every tile an edge of the shoreline passes through, found by
+		// walking each edge across the grid, one tile boundary at a time.
+		HashSet<Vector2i> crossed;
+		const int n = fill_shoreline.size();
+		for (int i = 0; i < n; i++) {
+			const Vector2 a = fill_shoreline[i];
+			const Vector2 b = fill_shoreline[(i + 1) % n];
+			Vector2i tile((int)Math::floor(a.x / size), (int)Math::floor(a.y / size));
+			const Vector2i end((int)Math::floor(b.x / size), (int)Math::floor(b.y / size));
+			crossed.insert(tile);
+			const Vector2 d = b - a;
+			const int step_x = d.x > 0.0f ? 1 : (d.x < 0.0f ? -1 : 0);
+			const int step_y = d.y > 0.0f ? 1 : (d.y < 0.0f ? -1 : 0);
+			float next_x = step_x != 0 ? ((tile.x + (step_x > 0 ? 1 : 0)) * size - a.x) / d.x : Math::INF;
+			float next_y = step_y != 0 ? ((tile.y + (step_y > 0 ? 1 : 0)) * size - a.y) / d.y : Math::INF;
+			const float delta_x = step_x != 0 ? size / Math::abs(d.x) : Math::INF;
+			const float delta_y = step_y != 0 ? size / Math::abs(d.y) : Math::INF;
+			for (int guard = Math::abs(end.x - tile.x) + Math::abs(end.y - tile.y); tile != end && guard > 0; guard--) {
+				if (next_x < next_y) {
+					tile.x += step_x;
+					next_x += delta_x;
+				} else {
+					tile.y += step_y;
+					next_y += delta_y;
+				}
+				crossed.insert(tile);
+			}
+		}
+
+		// The rest are wholly inside or wholly outside; which, their centers
+		// say, tested against the shoreline's crossings of each row of tiles.
+		LocalVector<float> crossings;
+		for (int ty = first.y; ty <= last.y; ty++) {
+			const float row_y = (ty + 0.5f) * size;
+			crossings.clear();
+			for (int i = 0; i < n; i++) {
+				const Vector2 a = fill_shoreline[i];
+				const Vector2 b = fill_shoreline[(i + 1) % n];
+				if ((a.y <= row_y) != (b.y <= row_y)) {
+					crossings.push_back(a.x + (row_y - a.y) / (b.y - a.y) * (b.x - a.x));
+				}
+			}
+			crossings.sort();
+			for (int tx = first.x; tx <= last.x; tx++) {
+				Chunk tile;
+				tile.tile = Vector2i(tx, ty);
+				if (crossed.has(tile.tile)) {
+					tile.fill_tile = FILL_TILE_CLIPPED;
+				} else {
+					const float center_x = (tx + 0.5f) * size;
+					int left = 0;
+					for (const float crossing : crossings) {
+						left += crossing < center_x ? 1 : 0;
+					}
+					if (left % 2 == 0) {
+						continue;
+					}
+					tile.fill_tile = FILL_TILE_FULL;
+				}
+				tiles.push_back(tile);
+			}
+		}
+	}
+
+	for (uint32_t i = tiles.size(); i < chunks.size(); i++) {
+		_free_chunk(chunks[i]);
+	}
+	chunks.resize(tiles.size());
+	// Slots keep their mesh and instance, as strip chunks do; the hash check
+	// decides whether what a slot holds now still matches.
+	for (uint32_t i = 0; i < tiles.size(); i++) {
+		chunks[i].first_ring = 0;
+		chunks[i].last_ring = 0;
+		chunks[i].tile = tiles[i].tile;
+		chunks[i].fill_tile = tiles[i].fill_tile;
+	}
+}
+
+void LandscapeSpline3D::_build_fill_chunk(uint32_t p_index, BuildContext *p_context) {
+	ChunkBuild &build = p_context->builds[p_index];
+	const Chunk &chunk = chunks[build.chunk_index];
+	const float size = fill_tile_size;
+	const Vector2 origin = Vector2(chunk.tile) * size;
+
+	Vector<Vector2> square;
+	square.push_back(origin);
+	square.push_back(origin + Vector2(size, 0));
+	square.push_back(origin + Vector2(size, size));
+	square.push_back(origin + Vector2(0, size));
+	Vector<Vector<Vector2>> pieces;
+	if (chunk.fill_tile == FILL_TILE_FULL) {
+		pieces.push_back(square);
+	} else {
+		pieces = Geometry2D::intersect_polygons(p_context->fill_polygon, square);
+	}
+
+	PackedVector3Array positions;
+	PackedVector2Array uvs;
+	PackedInt32Array indices;
+	const Vector3 level = rings_up * p_context->fill_level;
+	const Vector2 uv_per_meter = uv_scale / MAX(width, 0.001f);
+	for (const Vector<Vector2> &piece : pieces) {
+		if (piece.size() < 3) {
+			continue;
+		}
+		const Vector<int> triangles = Geometry2D::triangulate_polygon(piece);
+		if (triangles.is_empty()) {
+			continue;
+		}
+		const int base = positions.size();
+		for (const Vector2 &point : piece) {
+			positions.push_back(fill_x * point.x + fill_y * point.y + level);
+			uvs.push_back(point * uv_per_meter);
+		}
+		for (int t = 0; t + 2 < triangles.size(); t += 3) {
+			const int a = triangles[t];
+			int b = triangles[t + 1];
+			int c = triangles[t + 2];
+			// Counterclockwise in the plane's coordinates is clockwise seen
+			// from above, Godot's front face.
+			if ((piece[b] - piece[a]).cross(piece[c] - piece[a]) < 0.0f) {
+				SWAP(b, c);
+			}
+			indices.push_back(base + a);
+			indices.push_back(base + b);
+			indices.push_back(base + c);
+		}
+	}
+
+	uint64_t hash = hash_float(p_context->fill_level, p_context->settings_hash);
+	hash = hash64_murmur3_64(chunk.fill_tile, hash);
+	hash = hash_bytes(positions.ptr(), positions.size() * sizeof(Vector3), hash);
+	hash = hash_bytes(indices.ptr(), indices.size() * sizeof(int32_t), hash);
+	build.hash = hash;
+	build.terrain_bounds = p_context->fill_terrain_bounds;
+	if (chunk.built && chunk.hash == hash) {
+		build.changed = false;
+		return;
+	}
+	build.changed = true;
+	build.empty = indices.is_empty();
+	if (build.empty) {
+		return;
+	}
+
+	const int vertex_count = positions.size();
+	PackedVector3Array normals;
+	PackedFloat32Array tangents;
+	PackedColorArray colors;
+	normals.resize(vertex_count);
+	tangents.resize(vertex_count * 4);
+	colors.resize(vertex_count);
+	for (int i = 0; i < vertex_count; i++) {
+		normals.set(i, rings_up);
+		tangents.set(i * 4 + 0, fill_x.x);
+		tangents.set(i * 4 + 1, fill_x.y);
+		tangents.set(i * 4 + 2, fill_x.z);
+		// up x fill_x points the way V decreases, as Godot expects of the
+		// binormal (see _build_chunk), so no flip here.
+		tangents.set(i * 4 + 3, 1.0f);
+		colors.set(i, Color(1, 1, 1, 1));
+	}
+
+	build.arrays.resize(RSE::ARRAY_MAX);
+	build.arrays[RSE::ARRAY_VERTEX] = positions;
+	build.arrays[RSE::ARRAY_NORMAL] = normals;
+	build.arrays[RSE::ARRAY_TANGENT] = tangents;
+	build.arrays[RSE::ARRAY_TEX_UV] = uvs;
+	build.arrays[RSE::ARRAY_COLOR] = colors;
+	build.arrays[RSE::ARRAY_INDEX] = indices;
 }
 
 uint64_t LandscapeSpline3D::_get_settings_hash() const {
@@ -933,6 +1453,10 @@ bool LandscapeSpline3D::_make_terrain_sampler_for(Landscape3D *p_landscape, Terr
 }
 
 void LandscapeSpline3D::_build_chunk(uint32_t p_index, BuildContext *p_context) {
+	if (chunks[p_context->builds[p_index].chunk_index].fill_tile != FILL_TILE_NONE) {
+		_build_fill_chunk(p_index, p_context);
+		return;
+	}
 	ChunkBuild &build = p_context->builds[p_index];
 	const Chunk &chunk = chunks[build.chunk_index];
 	const TerrainSampler &sampler = p_context->sampler;
@@ -1554,13 +2078,195 @@ TypedArray<Rect2i> LandscapeSpline3D::get_landscape_footprint() const {
 	if (landscape == nullptr) {
 		return regions;
 	}
-	LocalVector<RingOnTerrain> terrain_rings;
 	LocalVector<FootprintBlock> blocks;
-	_compute_footprint(landscape, terrain_rings, blocks);
+	if (_is_filled()) {
+		float level = 0.0f;
+		_compute_fill_footprint(landscape, level, blocks);
+	} else {
+		LocalVector<RingOnTerrain> terrain_rings;
+		_compute_footprint(landscape, terrain_rings, blocks);
+	}
 	for (const FootprintBlock &block : blocks) {
 		regions.push_back(block.region);
 	}
 	return regions;
+}
+
+void LandscapeSpline3D::_compute_fill_footprint(Landscape3D *p_landscape, float &r_level, LocalVector<FootprintBlock> &r_blocks) const {
+	r_blocks.clear();
+	r_level = 0.0f;
+	const Ref<TerrainData> terrain_data = p_landscape->get_terrain_data();
+	if (terrain_data.is_null() || rings.size() < 3) {
+		return;
+	}
+	const int resolution = terrain_data->get_resolution();
+	const float spacing = terrain_data->get_vertex_spacing();
+	const Transform3D to_terrain = p_landscape->get_global_transform().affine_inverse() * get_global_transform();
+
+	// The whole shoreline, unsimplified, in the landscape's local XZ.
+	LocalVector<Vector2> shoreline;
+	const int count = rings_closed ? (int)rings.size() - 1 : (int)rings.size();
+	for (int i = 0; i < count; i++) {
+		const Vector3 point = to_terrain.xform(rings[i].center);
+		shoreline.push_back(Vector2(point.x, point.z));
+	}
+	const int n = shoreline.size();
+
+	// The same level the surface is built at, less height_offset.
+	TerrainSampler sampler;
+	const bool use_terrain = height_mode != HEIGHT_MODE_SPLINE && _make_terrain_sampler_for(p_landscape, sampler);
+	r_level = _get_fill_level(sampler, use_terrain, false);
+	// That is along this node's up axis, from its origin; the landscape
+	// measures along its own, from its own.
+	r_level = to_terrain.xform(rings_up * r_level).y;
+
+	const bool paint = paint_layer >= 0 && paint_layer < p_landscape->get_layers().size() && paint_strength > 0.0f;
+	const float reach = MAX(carve_enabled ? _get_carve_shoulder(p_landscape) + carve_falloff : 0.0f, paint ? paint_falloff : 0.0f);
+
+	HashMap<Vector2i, uint32_t> block_indices;
+	const int block_size = Landscape3D::CHUNK_QUADS;
+	auto sample_at = [&](int p_x, int p_z) -> FootprintSample & {
+		const Vector2i block_coord(p_x / block_size, p_z / block_size);
+		uint32_t block_index;
+		if (const uint32_t *existing = block_indices.getptr(block_coord)) {
+			block_index = *existing;
+		} else {
+			block_index = r_blocks.size();
+			block_indices.insert(block_coord, block_index);
+			FootprintBlock block;
+			block.region.position = block_coord * block_size;
+			block.region.size = Vector2i(MIN(block_size, resolution - block.region.position.x), MIN(block_size, resolution - block.region.position.y));
+			block.samples.resize(block.region.size.x * block.region.size.y);
+			r_blocks.push_back(block);
+		}
+		FootprintBlock &block = r_blocks[block_index];
+		return block.samples[(p_z - block.region.position.y) * block.region.size.x + (p_x - block.region.position.x)];
+	};
+	auto to_sample_range = [&](float p_lo, float p_hi, int &r_from, int &r_to) {
+		r_from = CLAMP((int)Math::ceil(p_lo / spacing), 0, resolution - 1);
+		r_to = CLAMP((int)Math::floor(p_hi / spacing), 0, resolution - 1);
+		return p_hi >= 0.0f && p_lo <= (resolution - 1) * spacing && r_from <= r_to;
+	};
+
+	// Within reach of the shoreline, on either side of it: how far from it.
+	for (int i = 0; i < n; i++) {
+		const Vector2 a = shoreline[i];
+		const Vector2 b = shoreline[(i + 1) % n];
+		int x0, x1, z0, z1;
+		if (!to_sample_range(MIN(a.x, b.x) - reach, MAX(a.x, b.x) + reach, x0, x1) || !to_sample_range(MIN(a.y, b.y) - reach, MAX(a.y, b.y) + reach, z0, z1)) {
+			continue;
+		}
+		for (int z = z0; z <= z1; z++) {
+			for (int x = x0; x <= x1; x++) {
+				const Vector2 p(x * spacing, z * spacing);
+				const float distance = p.distance_to(Geometry2D::get_closest_point_to_segment(p, a, b));
+				if (distance <= reach) {
+					FootprintSample &sample = sample_at(x, z);
+					sample.distance = MIN(sample.distance, distance);
+				}
+			}
+		}
+	}
+
+	// Everything within the shoreline, row by row, from where the row crosses
+	// it; samples far from the shore keep an infinite distance.
+	Vector2 lo = shoreline[0];
+	Vector2 hi = shoreline[0];
+	for (const Vector2 &point : shoreline) {
+		lo = lo.min(point);
+		hi = hi.max(point);
+	}
+	int row_from, row_to;
+	if (!to_sample_range(lo.y, hi.y, row_from, row_to)) {
+		return;
+	}
+	LocalVector<float> crossings;
+	for (int z = row_from; z <= row_to; z++) {
+		const float row_z = z * spacing;
+		crossings.clear();
+		for (int i = 0; i < n; i++) {
+			const Vector2 a = shoreline[i];
+			const Vector2 b = shoreline[(i + 1) % n];
+			if ((a.y <= row_z) != (b.y <= row_z)) {
+				crossings.push_back(a.x + (row_z - a.y) / (b.y - a.y) * (b.x - a.x));
+			}
+		}
+		crossings.sort();
+		for (uint32_t c = 0; c + 1 < crossings.size(); c += 2) {
+			int x0, x1;
+			if (!to_sample_range(crossings[c], crossings[c + 1], x0, x1)) {
+				continue;
+			}
+			for (int x = x0; x <= x1; x++) {
+				sample_at(x, z).inside = true;
+			}
+		}
+	}
+}
+
+void LandscapeSpline3D::_apply_fill_to_landscape(Landscape3D *p_landscape, bool p_carve, bool p_paint) {
+	float level = 0.0f;
+	LocalVector<FootprintBlock> blocks;
+	_compute_fill_footprint(p_landscape, level, blocks);
+	if (blocks.is_empty()) {
+		return;
+	}
+	TypedArray<Rect2i> regions;
+	for (const FootprintBlock &block : blocks) {
+		regions.push_back(block.region);
+	}
+
+	if (p_carve) {
+		// A bowl: carve_depth below the water's level, reached carve_falloff
+		// in from the shore; a level shore a sample and a half wide around
+		// it, at the water's level, so the water meets the ground right at
+		// the shoreline (see the strip's shoulder in apply_to_landscape()); then
+		// back into the untouched ground over carve_falloff.
+		const float shoulder = _get_carve_shoulder(p_landscape);
+		TypedArray<PackedFloat32Array> heights = p_landscape->get_height_regions(regions);
+		for (uint32_t b = 0; b < blocks.size(); b++) {
+			PackedFloat32Array block_heights = heights[b];
+			float *h = block_heights.ptrw();
+			const LocalVector<FootprintSample> &samples = blocks[b].samples;
+			for (uint32_t s = 0; s < samples.size(); s++) {
+				const FootprintSample &sample = samples[s];
+				if (sample.inside) {
+					const float slope = carve_falloff > 0.0f ? smoothstep01(sample.distance / carve_falloff) : 1.0f;
+					h[s] = level - carve_depth * slope;
+				} else if (sample.distance != Math::INF) {
+					const float beyond = sample.distance - shoulder;
+					float blend = 1.0f;
+					if (beyond > 0.0f) {
+						blend = carve_falloff > 0.0f ? 1.0f - smoothstep01(beyond / carve_falloff) : 0.0f;
+					}
+					h[s] = Math::lerp(h[s], level, blend);
+				}
+			}
+			heights[b] = block_heights;
+		}
+		p_landscape->set_height_regions(regions, heights, true);
+	}
+
+	if (p_paint) {
+		TypedArray<PackedFloat32Array> weights;
+		for (const FootprintBlock &block : blocks) {
+			PackedFloat32Array block_weights;
+			block_weights.resize(block.samples.size());
+			float *w = block_weights.ptrw();
+			for (uint32_t s = 0; s < block.samples.size(); s++) {
+				const FootprintSample &sample = block.samples[s];
+				float amount = 0.0f;
+				if (sample.inside) {
+					amount = 1.0f;
+				} else if (sample.distance != Math::INF && paint_falloff > 0.0f) {
+					amount = 1.0f - smoothstep01(sample.distance / paint_falloff);
+				}
+				w[s] = amount * paint_strength;
+			}
+			weights.push_back(block_weights);
+		}
+		p_landscape->paint_layer_regions(regions, paint_layer, weights);
+	}
 }
 
 void LandscapeSpline3D::apply_to_landscape() {
@@ -1577,6 +2283,10 @@ void LandscapeSpline3D::apply_to_landscape() {
 
 	const bool paint = paint_layer >= 0 && paint_layer < landscape->get_layers().size() && paint_strength > 0.0f;
 	if (!carve_enabled && !paint) {
+		return;
+	}
+	if (_is_filled()) {
+		_apply_fill_to_landscape(landscape, carve_enabled, paint);
 		return;
 	}
 
@@ -1782,6 +2492,20 @@ bool LandscapeSpline3D::is_smooth() const {
 	return smooth;
 }
 
+void LandscapeSpline3D::set_fill(bool p_fill) {
+	if (fill == p_fill) {
+		return;
+	}
+	fill = p_fill;
+	_queue_update(UPDATE_RINGS);
+	notify_property_list_changed();
+	update_configuration_warnings();
+}
+
+bool LandscapeSpline3D::is_fill() const {
+	return fill;
+}
+
 void LandscapeSpline3D::set_segment_length(float p_length) {
 	segment_length = MAX(p_length, 0.05f);
 	_queue_update(UPDATE_RINGS);
@@ -1802,7 +2526,8 @@ int LandscapeSpline3D::get_cross_segments() const {
 
 void LandscapeSpline3D::set_simplify_tolerance(float p_tolerance) {
 	simplify_tolerance = MAX(p_tolerance, 0.0f);
-	_queue_update(UPDATE_ALL_CHUNKS);
+	// A fill's tiles are laid out around its simplified shoreline.
+	_queue_update(fill ? UPDATE_RINGS : UPDATE_ALL_CHUNKS);
 }
 
 float LandscapeSpline3D::get_simplify_tolerance() const {
@@ -1970,13 +2695,19 @@ PackedStringArray LandscapeSpline3D::get_configuration_warnings() const {
 	PackedStringArray warnings = Path3D::get_configuration_warnings();
 
 	const Ref<Curve3D> source_curve = get_curve();
-	if (source_curve.is_null() || source_curve->get_point_count() < 2) {
-		warnings.push_back(RTR("Add at least two points to the source_curve (with the Path3D tools in the 3D editor's toolbar) to lay this spline out."));
+	if (fill) {
+		if (source_curve.is_null() || source_curve->get_point_count() < 3) {
+			warnings.push_back(RTR("Add at least three points to the curve (with the Path3D tools in the 3D editor's toolbar) around the area to fill."));
+		} else if (!source_curve->is_closed()) {
+			warnings.push_back(RTR("The curve is open, so the filled area is closed with a straight line from its last point back to its first. Close the curve (Close Curve, in the Path3D toolbar) to shape that side of it too."));
+		}
+	} else if (source_curve.is_null() || source_curve->get_point_count() < 2) {
+		warnings.push_back(RTR("Add at least two points to the curve (with the Path3D tools in the 3D editor's toolbar) to lay this spline out."));
 	}
 	if (is_inside_tree() && height_mode != HEIGHT_MODE_SPLINE) {
 		const Landscape3D *landscape = get_landscape();
 		if (landscape == nullptr || landscape->get_terrain_data().is_null()) {
-			warnings.push_back(RTR("No Landscape3D with TerrainData found to conform to, so the mesh follows the source_curve's own height. Set landscape_path, or place this node under the landscape or next to it."));
+			warnings.push_back(RTR("No Landscape3D with TerrainData found to conform to, so the mesh follows the curve's own height. Set landscape_path, or place this node under the landscape or next to it."));
 		}
 	}
 

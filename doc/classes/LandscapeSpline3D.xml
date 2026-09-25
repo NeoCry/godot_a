@@ -1,19 +1,21 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <class name="LandscapeSpline3D" inherits="Path3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
-		A road, river or stream laid along a spline over a [Landscape3D].
+		A road, river, stream or lake laid along a spline over a [Landscape3D].
 	</brief_description>
 	<description>
 		[LandscapeSpline3D] sweeps a strip of mesh [member width] meters wide along its [member Path3D.curve] and renders it with [member material]. The strip can drape over the [Landscape3D] it sits on ([member height_mode]), and the spline can shape that landscape to itself: cut and fill the ground under a road to the curve's height, dig a bed for a river, and paint a [TerrainLayer] underneath (see [method apply_to_landscape]).
-		Being a [Path3D], its curve is drawn and edited with the ordinary Path3D tools in the 3D editor's toolbar. Turn on their [b]Snap to Colliders[/b] option to drop new points straight onto the terrain, or place them roughly and use [b]Snap Points to Terrain[/b] from this node's own toolbar. Points left without handles are joined smoothly (see [member smooth]), so a road can be laid by clicking along its route. [member spline_type] picks between a road, a river and a stream; changing it in the Inspector also sets the rest of the properties to suit that type (see [method get_preset]).
+		With [member fill] on, the curve is a shoreline instead, and the area it encloses is filled with a level surface: a lake. The surface stands at the lowest point of its shoreline, so it never floats above the ground at its edge, and [method apply_to_landscape] digs the lake's bed and shapes its shore.
+		Being a [Path3D], its curve is drawn and edited with the ordinary Path3D tools in the 3D editor's toolbar. Turn on their [b]Snap to Colliders[/b] option to drop new points straight onto the terrain, or place them roughly and use [b]Snap Points to Terrain[/b] from this node's own toolbar. Points left without handles are joined smoothly (see [member smooth]), so a road can be laid by clicking along its route. [member spline_type] picks between a road, a river, a stream and a lake; changing it in the Inspector also sets the rest of the properties to suit that type (see [method get_preset]). The [Landscape3D] toolbar's [b]Add Spline[/b] menu adds one of each, ready to draw (a lake's curve already closed).
 		The spline finds its landscape by itself when it is a descendant of the [Landscape3D], or when the landscape is a direct child of one of the spline's ancestors (for example [code]World/Landscape3D[/code] next to [code]World/Roads/MainRoad[/code]); otherwise, set [member landscape_path].
 		A spline can cross an entire terrain, so it is built not to cost as much as one:
 		- The strip is split into chunks of about [member chunk_length] along the spline, each a separate instance with its own bounds, so frustum and occlusion culling skip the parts out of view, and mesh level of detail (which the renderer chooses per instance, from the distance to its bounds) coarsens the distant parts rather than the whole strip being drawn as finely as its nearest point.
 		- Every chunk is simplified before it is built: cross-sections, and columns across the width, that lie within [member simplify_tolerance] of the surface their neighbors already describe are dropped, so straight and even stretches cost a handful of triangles however finely [member segment_length] samples them. Each chunk also gets its own level of detail meshes, whose switching thresholds are the measured distance between each coarser surface and the full one.
 		- Only what changes is rebuilt: moving a point, or sculpting the terrain under part of the spline (the landscape reports what it changed through [signal Landscape3D.terrain_changed]), rebuilds just the chunks affected, and those are built on worker threads in parallel. Changes made within one frame are gathered into a single update at the end of it.
 		- Vertex data is stored compressed, and by default the strip casts no shadows ([member cast_shadow]), since something lying on the ground has nothing to shadow and would otherwise be drawn once more for every shadow cascade.
-		When [member material] is empty, the spline renders with a built-in material for its [member spline_type]: an asphalt road with shoulders, or water that flows along the spline (from its first point to its last), darkens with depth and fades out at its shoreline. [method create_default_material] makes an editable copy of it. Both built-in materials nudge the surface a little towards the camera along the view ray, which keeps it on top of the terrain it lies on at any distance without shifting it on screen; a custom material has only [member height_offset] to keep it above the ground.
-		The mesh's [code]UV.x[/code] runs from 0 at the left edge to 1 at the right one, and [code]UV.y[/code] along the spline, advancing by 1 every [member width] meters (both scaled by [member uv_scale]). The vertex color's alpha fades the edges and the ends out ([member edge_fade], [member end_fade_length]): for a [StandardMaterial3D], enable [member BaseMaterial3D.vertex_color_use_as_albedo] and a transparency mode to use it.
+		- A filled area is split into square tiles four times [member chunk_length] on a side. Tiles wholly inside the shoreline are two triangles each; only the tiles the shoreline passes through are clipped to it, after it has been simplified to within [member simplify_tolerance]. However big the lake, it costs a few triangles per tile plus its outline.
+		When [member material] is empty, the spline renders with a built-in material for its [member spline_type]: an asphalt road with shoulders, or water. The water's ripples are made in world space, so they keep their size in meters whatever the spline's width and line up across its chunks, and they fade out as they get too fine for the pixels they land on instead of shimmering. The current carries them along a river or stream (from its first point to its last), fastest in midstream and slower at the banks, and the wind drifts them, which is all that moves a lake. What lies under the surface shows through, bent by the ripples and tinted by how much water the view passes through; foam gathers in the shallows along the shore and where the water runs fast. [method create_default_material] makes an editable copy of either material. Both nudge the surface a little towards the camera along the view ray, which keeps it on top of the terrain it lies on at any distance without shifting it on screen; a custom material has only [member height_offset] to keep it above the ground.
+		The mesh's [code]UV.x[/code] runs from 0 at the left edge to 1 at the right one, and [code]UV.y[/code] along the spline, advancing by 1 every [member width] meters (both scaled by [member uv_scale]); its binormal points back along the spline, the way [code]UV.y[/code] decreases. The vertex color's alpha fades the edges and the ends out ([member edge_fade], [member end_fade_length]): for a [StandardMaterial3D], enable [member BaseMaterial3D.vertex_color_use_as_albedo] and a transparency mode to use it. A filled area's [code]UV[/code] instead maps its plane, 1 every [member width] meters along each axis, and its vertex alpha is 1.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -29,6 +31,7 @@
 			<return type="void" />
 			<description>
 				Shapes the [Landscape3D] to the spline. With [member carve_enabled], the ground across the strip is cut or filled to the curve's own height (following its tilt), [member carve_depth] further down along the middle for a river or stream bed, and blended back into the untouched terrain over [member carve_falloff] beyond the edges. With a valid [member paint_layer], that [TerrainLayer] is painted under the strip, fading out over [member paint_falloff].
+				For a filled area ([member fill]), the ground inside the shoreline is dug into a bowl [member carve_depth] below the surface's level, which it reaches [member carve_falloff] in from the shore; the ground just outside is set level with the water, then blended back into the untouched terrain over [member carve_falloff]. [member paint_layer] is painted over the whole bed, fading out over [member paint_falloff] beyond the shore.
 				The ground is shaped to the [i]curve's[/i] heights, not the terrain's, so place the curve's points on the ground first (with the Path3D tools' [b]Snap to Colliders[/b], the editor's [b]Snap Points to Terrain[/b], or [method project_to_landscape]). Only the terrain within reach of the spline is read or written (see [method get_landscape_footprint]), and the terrain's chunks, collision shape and textures are refreshed once for the whole edit.
 				Applying again leaves the ground under the strip as it is, but eases the falloff a little further each time, since it blends with whatever the ground is. In the editor, the toolbar's [b]Apply to Landscape[/b] button does this as a single undoable action.
 			</description>
@@ -69,7 +72,7 @@
 			<return type="Dictionary" />
 			<param index="0" name="type" type="int" enum="LandscapeSpline3D.SplineType" />
 			<description>
-				Returns the property values that suit a spline of this [param type], as a dictionary of property names to values: its width, [member height_mode], [member height_offset], how finely it is divided across, its fades, [member gi_mode], and how it carves and paints the landscape. The road preset matches the class's own default values.
+				Returns the property values that suit a spline of this [param type], as a dictionary of property names to values: its width, [member height_mode], [member height_offset], how finely it is divided across, its fades, [member gi_mode], whether it is a [member fill], and how it carves and paints the landscape. The road preset matches the class's own default values.
 			</description>
 		</method>
 		<method name="project_to_landscape" qualifiers="const">
@@ -88,19 +91,19 @@
 	</methods>
 	<members>
 		<member name="carve_depth" type="float" setter="set_carve_depth" getter="get_carve_depth" default="0.0">
-			How far below the curve [method apply_to_landscape] digs the ground along the middle of the strip, in meters: [code]0[/code] for a road (the ground is flattened to the road's surface), the depth of the water for a river or stream. The bed is flat across the middle half of the width and rises to the curve's height at the edges.
+			How far below the curve [method apply_to_landscape] digs the ground along the middle of the strip, in meters: [code]0[/code] for a road (the ground is flattened to the road's surface), the depth of the water for a river or stream. The bed is flat across the middle half of the width and rises to the curve's height at the edges. For a filled area, how deep below the surface the lake's bed is.
 		</member>
 		<member name="carve_enabled" type="bool" setter="set_carve_enabled" getter="is_carve_enabled" default="true">
 			If [code]true[/code], [method apply_to_landscape] shapes the ground's height to the spline. Turn it off to only paint [member paint_layer].
 		</member>
 		<member name="carve_falloff" type="float" setter="set_carve_falloff" getter="get_carve_falloff" default="4.0">
-			How far beyond each edge of the strip, in meters, [method apply_to_landscape] blends the shaped ground back into the untouched terrain: the embankments and cuttings along a road, or the banks of a river. The blend starts a terrain sample and a half ([member TerrainData.vertex_spacing] times 1.5) past the edge; the ground up to there is kept level with the edge, so the terrain triangles under the strip's edges are flat too.
+			How far beyond each edge of the strip, in meters, [method apply_to_landscape] blends the shaped ground back into the untouched terrain: the embankments and cuttings along a road, or the banks of a river. The blend starts a terrain sample and a half ([member TerrainData.vertex_spacing] times 1.5) past the edge; the ground up to there is kept level with the edge, so the terrain triangles under the strip's edges are flat too. For a filled area, also how far in from the shore the lake's bed takes to reach its full [member carve_depth].
 		</member>
 		<member name="cast_shadow" type="int" setter="set_cast_shadow" getter="get_cast_shadow" enum="GeometryInstance3D.ShadowCastingSetting" default="0">
 			Whether the strip casts shadows, as [member GeometryInstance3D.cast_shadow]. Off by default: lying on the ground, it has nothing to shadow.
 		</member>
 		<member name="chunk_length" type="float" setter="set_chunk_length" getter="get_chunk_length" default="64.0">
-			The length along the spline, in meters, of each chunk the strip is split into. Each chunk is culled, chooses its level of detail and is rebuilt on its own, so shorter chunks cull and rebuild more precisely at the cost of more instances to draw.
+			The length along the spline, in meters, of each chunk the strip is split into. Each chunk is culled, chooses its level of detail and is rebuilt on its own, so shorter chunks cull and rebuild more precisely at the cost of more instances to draw. A filled area is split into square tiles four times this size (larger still for a vast one, to keep their number down).
 		</member>
 		<member name="cross_segments" type="int" setter="set_cross_segments" getter="get_cross_segments" default="6">
 			How many segments the strip is divided into across its width. With [constant HEIGHT_MODE_CONFORM], this is how finely it follows the ground from side to side, so aim for about one segment per terrain sample across it. Columns the surface does not need are simplified away (see [member simplify_tolerance]), so level strips cost nothing extra for it.
@@ -110,6 +113,9 @@
 		</member>
 		<member name="end_fade_length" type="float" setter="set_end_fade_length" getter="get_end_fade_length" default="0.0">
 			How far from each end of an open spline, in meters, the vertex color's alpha fades out, so a river or stream peters out instead of stopping at a hard edge.
+		</member>
+		<member name="fill" type="bool" setter="set_fill" getter="is_fill" default="false">
+			If [code]true[/code], the curve is a shoreline and the area it encloses is filled with a level surface, such as a lake's, instead of a strip being swept along it. Close the curve (with [b]Close Curve[/b] in the Path3D toolbar, or [member Curve3D.closed]); an open one is closed with a straight line from its last point back to its first. The surface stands at the lowest point of the shoreline, plus [member height_offset]: the lowest point of the ground under it with [constant HEIGHT_MODE_CONFORM] or [constant HEIGHT_MODE_CONFORM_LEVEL], so it fills whatever hollow it is drawn around, or the lowest point of the curve itself with [constant HEIGHT_MODE_SPLINE]. [member width_curve], [member cross_segments], [member edge_fade] and [member end_fade_length] only apply to a strip.
 		</member>
 		<member name="gi_mode" type="int" setter="set_gi_mode" getter="get_gi_mode" enum="GeometryInstance3D.GIMode" default="1">
 			How the strip takes part in global illumination, as [member GeometryInstance3D.gi_mode].
@@ -145,7 +151,7 @@
 			How far apart, in meters, the spline is sampled into cross-sections before simplification. Smaller values follow tight bends and uneven ground more closely; straight, even stretches are simplified back down regardless (see [member simplify_tolerance]). With [constant HEIGHT_MODE_CONFORM] or [constant HEIGHT_MODE_CONFORM_LEVEL], keep it at or below the terrain's [member TerrainData.vertex_spacing] so the strip follows every bump in the ground.
 		</member>
 		<member name="simplify_tolerance" type="float" setter="set_simplify_tolerance" getter="get_simplify_tolerance" default="0.02">
-			How far, in meters, the simplified strip may stray from the full-detail one. Cross-sections and columns that lie within this distance of the surface their neighbors describe are left out of the mesh. [code]0[/code] keeps every one of them.
+			How far, in meters, the simplified strip may stray from the full-detail one. Cross-sections and columns that lie within this distance of the surface their neighbors describe are left out of the mesh. [code]0[/code] keeps every one of them. A filled area's shoreline is simplified to within this distance before its tiles are cut to it.
 		</member>
 		<member name="smooth" type="bool" setter="set_smooth" getter="is_smooth" default="true">
 			If [code]true[/code], curve points that have no handles of their own are joined smoothly, as if their handles pointed from the previous point towards the next one, instead of in straight lines meeting at a corner. Points given handles in the editor keep them.
@@ -163,7 +169,7 @@
 			Over how many meters before [member visibility_range_end] a chunk fades out, instead of disappearing at once.
 		</member>
 		<member name="width" type="float" setter="set_width" getter="get_width" default="6.0">
-			The width of the strip, in meters.
+			The width of the strip, in meters. For a filled area, only how far apart its texture repeats (see [member uv_scale]).
 		</member>
 		<member name="width_curve" type="Curve" setter="set_width_curve" getter="get_width_curve">
 			If set, scales [member width] along the spline: the curve's X axis runs from the spline's start (0) to its end (1), and its value multiplies the width there.
@@ -179,7 +185,10 @@
 		<constant name="TYPE_STREAM" value="2" enum="SplineType">
 			A stream: narrow water that runs downhill with the ground, level across its width, in a shallow bed.
 		</constant>
-		<constant name="TYPE_MAX" value="3" enum="SplineType">
+		<constant name="TYPE_LAKE" value="3" enum="SplineType">
+			A lake: a [member fill] that is level with the lowest ground around its shore, and [method apply_to_landscape] digs its bed.
+		</constant>
+		<constant name="TYPE_MAX" value="4" enum="SplineType">
 			Represents the size of the [enum SplineType] enum.
 		</constant>
 		<constant name="HEIGHT_MODE_CONFORM" value="0" enum="HeightMode">

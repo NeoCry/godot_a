@@ -153,8 +153,10 @@ void Landscape3DEditorPlugin::_add_spline_menu_id_pressed(int p_id) {
 	// points straight away instead of first asking to create one.
 	Ref<Curve3D> curve;
 	curve.instantiate();
+	// A lake's curve is its shoreline, which goes all the way around.
+	curve->set_closed(type == LandscapeSpline3D::TYPE_LAKE);
 	spline->set_curve(curve);
-	static const char *names[LandscapeSpline3D::TYPE_MAX] = { "Road", "River", "Stream" };
+	static const char *names[LandscapeSpline3D::TYPE_MAX] = { "Road", "River", "Stream", "Lake" };
 	spline->set_name(names[type]);
 
 	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
@@ -873,10 +875,11 @@ Landscape3DEditorPlugin::Landscape3DEditorPlugin() {
 
 	add_spline_menu = memnew(MenuButton);
 	add_spline_menu->set_text(TTR("Add Spline"));
-	add_spline_menu->set_tooltip_text(TTR("Add a road, river or stream to this terrain: a LandscapeSpline3D laid along a curve. Place its points with the Path3D tools (turn on their \"Snap to Colliders\" option to drop them onto the terrain), then use \"Apply to Landscape\" to shape the ground under it."));
+	add_spline_menu->set_tooltip_text(TTR("Add a road, river, stream or lake to this terrain: a LandscapeSpline3D laid along a curve (for a lake, around its shoreline). Place its points with the Path3D tools (turn on their \"Snap to Colliders\" option to drop them onto the terrain), then use \"Apply to Landscape\" to shape the ground under it."));
 	add_spline_menu->get_popup()->add_item(TTR("Road"), LandscapeSpline3D::TYPE_ROAD);
 	add_spline_menu->get_popup()->add_item(TTR("River"), LandscapeSpline3D::TYPE_RIVER);
 	add_spline_menu->get_popup()->add_item(TTR("Stream"), LandscapeSpline3D::TYPE_STREAM);
+	add_spline_menu->get_popup()->add_item(TTR("Lake"), LandscapeSpline3D::TYPE_LAKE);
 	add_spline_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &Landscape3DEditorPlugin::_add_spline_menu_id_pressed));
 	toolbar->add_child(add_spline_menu);
 

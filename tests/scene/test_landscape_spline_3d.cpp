@@ -358,6 +358,168 @@ TEST_CASE("[SceneTree][LandscapeSpline3D] Applying to the landscape shapes only 
 	}
 }
 
+// A closed, square shoreline with corners at p_from and p_to, at the given
+// height at each corner.
+static Ref<Curve3D> make_square(const Vector2 &p_from, const Vector2 &p_to, const Vector4 &p_heights = Vector4()) {
+	Ref<Curve3D> curve;
+	curve.instantiate();
+	curve->add_point(Vector3(p_from.x, p_heights.x, p_from.y));
+	curve->add_point(Vector3(p_to.x, p_heights.y, p_from.y));
+	curve->add_point(Vector3(p_to.x, p_heights.z, p_to.y));
+	curve->add_point(Vector3(p_from.x, p_heights.w, p_to.y));
+	curve->set_closed(true);
+	return curve;
+}
+
+static float filled_area(LandscapeSpline3D *p_spline) {
+	float area = 0.0f;
+	for (int i = 0; i < p_spline->get_chunk_count(); i++) {
+		const RID mesh = p_spline->get_chunk_mesh(i);
+		if (!mesh.is_valid() || RS::get_singleton()->mesh_get_surface_count(mesh) == 0) {
+			continue;
+		}
+		const Array arrays = RS::get_singleton()->mesh_surface_get_arrays(mesh, 0);
+		const PackedVector3Array vertices = arrays[RSE::ARRAY_VERTEX];
+		const PackedInt32Array indices = arrays[RSE::ARRAY_INDEX];
+		for (int t = 0; t + 2 < indices.size(); t += 3) {
+			const Vector3 a = vertices[indices[t]];
+			const Vector3 b = vertices[indices[t + 1]];
+			const Vector3 c = vertices[indices[t + 2]];
+			// Positive for a triangle facing up, as all of them must.
+			area += (c - a).cross(b - a).y * 0.5f;
+		}
+	}
+	return area;
+}
+
+TEST_CASE("[SceneTree][LandscapeSpline3D] A lake fills its shoreline with a level surface") {
+	Ref<TerrainData> data = make_terrain(6.0f);
+	SplineScene scene(data);
+	scene.spline->apply_preset(LandscapeSpline3D::TYPE_LAKE);
+	// Straight sides, so the area it has to fill is known exactly.
+	scene.spline->set_smooth(false);
+
+	SUBCASE("It covers exactly the area inside the shoreline, in tiles") {
+		scene.spline->set_curve(make_square(Vector2(200, 200), Vector2(300, 300)));
+		scene.spline->update_mesh();
+		// 256 m tiles; the square straddles the corner of four of them.
+		CHECK(scene.spline->get_chunk_count() == 4);
+		CHECK(filled_area(scene.spline) == doctest::Approx(100.0f * 100.0f).epsilon(0.001));
+	}
+
+	SUBCASE("Level with the lowest ground around its shore") {
+		scene.spline->set_curve(make_square(Vector2(200, 200), Vector2(300, 300)));
+		scene.spline->update_mesh();
+		// The ground only rolls along X, so the shore's lowest point is on the
+		// sides running along X, a meter apart, like the curve's samples.
+		float lowest = Math::INF;
+		for (int x = 200; x <= 300; x++) {
+			lowest = MIN(lowest, data->get_height_at_position(Vector2(x, 200)));
+		}
+		REQUIRE(scene.spline->get_chunk_count() > 0);
+		for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+			for (const Vector3 &v : chunk_vertices(scene.spline, i)) {
+				CHECK(Math::abs(v.y - lowest) < 0.002f);
+			}
+		}
+	}
+
+	SUBCASE("Level with the lowest point of the curve, in Spline mode") {
+		scene.spline->set_height_mode(LandscapeSpline3D::HEIGHT_MODE_SPLINE);
+		scene.spline->set_height_offset(0.5f);
+		scene.spline->set_curve(make_square(Vector2(200, 200), Vector2(300, 300), Vector4(9, 7, 11, 13)));
+		scene.spline->update_mesh();
+		REQUIRE(scene.spline->get_chunk_count() > 0);
+		for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+			for (const Vector3 &v : chunk_vertices(scene.spline, i)) {
+				// Within the curve's own interpolation around its corners.
+				CHECK(Math::abs(v.y - 7.5f) < 0.01f);
+			}
+		}
+	}
+
+	SUBCASE("The tiles wholly inside a big lake are two triangles each") {
+		// A diamond 1800 m across, so the tiles along its shore are cut
+		// diagonally, unlike those in its middle.
+		Ref<Curve3D> diamond;
+		diamond.instantiate();
+		diamond->add_point(Vector3(512, 0, -388));
+		diamond->add_point(Vector3(1412, 0, 512));
+		diamond->add_point(Vector3(512, 0, 1412));
+		diamond->add_point(Vector3(-388, 0, 512));
+		diamond->set_closed(true);
+		scene.spline->set_curve(diamond);
+		scene.spline->update_mesh();
+		int whole_tiles = 0;
+		int cut_tiles = 0;
+		for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+			const RenderingServerTypes::SurfaceData surface = chunk_surface(scene.spline, i);
+			if (surface.index_count == 6 && surface.vertex_count == 4) {
+				whole_tiles++;
+			} else if (surface.index_count > 0) {
+				cut_tiles++;
+			}
+		}
+		CHECK(whole_tiles >= 4);
+		CHECK(cut_tiles > 0);
+		CHECK(filled_area(scene.spline) == doctest::Approx(2.0f * 900.0f * 900.0f).epsilon(0.001));
+	}
+
+	SUBCASE("Turning fill off makes it a strip along the shoreline again") {
+		scene.spline->set_curve(make_square(Vector2(200, 200), Vector2(300, 300)));
+		scene.spline->update_mesh();
+		scene.spline->set_fill(false);
+		scene.spline->update_mesh();
+		// 400 m of shoreline in 64 m chunks, 16 m wide.
+		CHECK(scene.spline->get_chunk_count() == 7);
+		CHECK(filled_area(scene.spline) < 100.0f * 100.0f * 0.8f);
+	}
+}
+
+TEST_CASE("[SceneTree][LandscapeSpline3D] Applying a lake digs its bed and paints it") {
+	Ref<TerrainData> data = make_terrain();
+	SplineScene scene(data);
+	TypedArray<TerrainLayer> layers;
+	for (int i = 0; i < 2; i++) {
+		Ref<TerrainLayer> layer;
+		layer.instantiate();
+		layers.push_back(layer);
+	}
+	scene.landscape->set_layers(layers);
+
+	scene.spline->apply_preset(LandscapeSpline3D::TYPE_LAKE);
+	scene.spline->set_smooth(false);
+	scene.spline->set_height_mode(LandscapeSpline3D::HEIGHT_MODE_SPLINE);
+	scene.spline->set_carve_depth(3.0f);
+	scene.spline->set_carve_falloff(8.0f);
+	scene.spline->set_paint_layer(1);
+	scene.spline->set_curve(make_square(Vector2(200, 200), Vector2(300, 300), Vector4(5, 5, 5, 5)));
+	scene.spline->update_mesh();
+
+	// A 100 m lake on a 512 m terrain: a handful of the 81 blocks.
+	const TypedArray<Rect2i> footprint = scene.spline->get_landscape_footprint();
+	CHECK(footprint.size() > 0);
+	CHECK(footprint.size() <= 16);
+
+	scene.spline->apply_to_landscape();
+
+	// The full depth below the water's level away from the shore...
+	CHECK(data->get_height_at_position(Vector2(250, 250)) == doctest::Approx(2.0f).epsilon(0.001));
+	// ...shelving up towards it...
+	const float near_shore = data->get_height_at_position(Vector2(202, 250));
+	CHECK(near_shore > 2.1f);
+	CHECK(near_shore < 5.0f);
+	// ...a level shore at the water's level just outside it...
+	CHECK(data->get_height_at_position(Vector2(198, 250)) == doctest::Approx(5.0f).epsilon(0.001));
+	// ...and the untouched ground further out.
+	CHECK(data->get_height_at_position(Vector2(150, 250)) == doctest::Approx(0.0f));
+
+	// Its layer is painted over the whole bed, and not far beyond it.
+	CHECK(data->get_layer_weight(125, 125, 1) == doctest::Approx(1.0f));
+	CHECK(data->get_layer_weight(101, 125, 1) == doctest::Approx(1.0f));
+	CHECK(data->get_layer_weight(75, 125, 1) == doctest::Approx(0.0f));
+}
+
 TEST_CASE("[LandscapeSpline3D] The built-in materials' shaders compile") {
 	// No GPU here to build them for, but the shader language front end
 	// catches everything short of driver-specific trouble.
