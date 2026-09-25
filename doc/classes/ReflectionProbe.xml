@@ -64,7 +64,7 @@
 		<member name="update_interval" type="int" setter="set_update_interval" getter="get_update_interval" default="10">
 			The number of frames between the start of two refreshes when [member update_mode] is [constant UPDATE_INTERVAL]. Higher values cost less performance, at the cost of reflections lagging further behind moving objects. Values are clamped between [code]2[/code] and [code]120[/code].
 			[b]Note:[/b] This property has no effect if [member update_mode] is not [constant UPDATE_INTERVAL].
-			[b]Note:[/b] A refresh is spread over several frames (one for the cubemap faces, then one per roughness layer), so an interval shorter than that simply keeps the probe refreshing back to back. With the default project settings a refresh takes about 8 frames, which makes values below that equivalent to each other.
+			[b]Note:[/b] A refresh is spread over several frames (one for the cubemap faces, then one per roughness layer set by [member ProjectSettings.rendering/reflections/sky_reflections/roughness_layers]), so a shorter interval simply keeps the probe refreshing back to back. With the default project settings a refresh takes eight frames and consecutive refreshes start nine frames apart at the earliest, which makes every smaller value behave the same.
 			[b]Note:[/b] Probes are given a staggered starting frame, so that several probes sharing an interval tend to begin refreshing on different frames rather than all at once.
 		</member>
 		<member name="update_mode" type="int" setter="set_update_mode" getter="get_update_mode" enum="ReflectionProbe.UpdateMode" default="0">
