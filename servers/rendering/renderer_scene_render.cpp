@@ -508,6 +508,28 @@ float RendererSceneRender::environment_get_gtao_ao_channel_affect(RID p_env) con
 	return environment_storage.environment_get_gtao_ao_channel_affect(p_env);
 }
 
+// HMAO (height map ambient occlusion)
+
+void RendererSceneRender::environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) {
+	environment_storage.environment_set_hmao(p_env, p_enable, p_amount, p_range, p_resolution);
+}
+
+bool RendererSceneRender::environment_get_hmao_enabled(RID p_env) const {
+	return environment_storage.environment_get_hmao_enabled(p_env);
+}
+
+float RendererSceneRender::environment_get_hmao_amount(RID p_env) const {
+	return environment_storage.environment_get_hmao_amount(p_env);
+}
+
+float RendererSceneRender::environment_get_hmao_range(RID p_env) const {
+	return environment_storage.environment_get_hmao_range(p_env);
+}
+
+RSE::EnvironmentHMAOResolution RendererSceneRender::environment_get_hmao_resolution(RID p_env) const {
+	return environment_storage.environment_get_hmao_resolution(p_env);
+}
+
 // SSCS (screen space contact shadows)
 
 void RendererSceneRender::environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) {

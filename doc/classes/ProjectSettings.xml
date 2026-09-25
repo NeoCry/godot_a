@@ -2993,6 +2993,12 @@
 		<member name="rendering/environment/gtao/quality" type="int" setter="" getter="" default="2">
 			Sets the quality of the ground-truth ambient occlusion effect. Higher values search more directions and steps around each pixel and so will result in better quality, at the cost of performance.
 		</member>
+		<member name="rendering/environment/hmao/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
+			If [code]true[/code], height map based ambient occlusion is gathered at half size and then upscaled with a depth-aware filter before being applied to the scene. If [code]false[/code], it is gathered at full size, which is slower and rarely visible on an effect this smooth.
+		</member>
+		<member name="rendering/environment/hmao/quality" type="int" setter="" getter="" default="1">
+			Sets the quality of the height map based ambient occlusion effect. Higher values gather more directions and steps over the height map around each pixel, which resolves narrow occluders and shallow relief more faithfully, at the cost of performance.
+		</member>
 		<member name="rendering/environment/screen_space_reflection/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
 			If [code]true[/code], screen-space reflections will be rendered at half size and then upscaled before being added to the scene. This is faster but may look pixelated or cause flickering. If [code]false[/code], screen-space reflections will be rendered at full size.
 		</member>

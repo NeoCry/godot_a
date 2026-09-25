@@ -152,6 +152,12 @@ private:
 		float gtao_direct_light_affect = 0.0;
 		float gtao_ao_channel_affect = 0.0;
 
+		// HMAO (height map ambient occlusion)
+		bool hmao_enabled = false;
+		float hmao_amount = 1.0;
+		float hmao_range = 500.0;
+		RSE::EnvironmentHMAOResolution hmao_resolution = RSE::ENV_HMAO_RESOLUTION_512;
+
 		// SSCS (screen space contact shadows)
 		bool sscs_enabled = false;
 		RSE::ScreenSpaceContactShadowsLength sscs_length = RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM;
@@ -305,6 +311,13 @@ public:
 	float environment_get_gtao_sharpness(RID p_env) const;
 	float environment_get_gtao_direct_light_affect(RID p_env) const;
 	float environment_get_gtao_ao_channel_affect(RID p_env) const;
+
+	// HMAO
+	void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution);
+	bool environment_get_hmao_enabled(RID p_env) const;
+	float environment_get_hmao_amount(RID p_env) const;
+	float environment_get_hmao_range(RID p_env) const;
+	RSE::EnvironmentHMAOResolution environment_get_hmao_resolution(RID p_env) const;
 
 	// SSCS (screen space contact shadows)
 	void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness);

@@ -3942,6 +3942,12 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		prev_camera_data = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
 	}
 
+	// Rendered before the scene itself, so the pass below has this frame's height map to gather from.
+	if (p_reflection_probe.is_null() && p_environment.is_valid() && scene_render->is_hmao_supported() && scene_render->environment_get_hmao_enabled(p_environment)) {
+		RENDER_TIMESTAMP("Cull Height Map AO");
+		_cull_height_map_ao(camera_position, p_environment, scenario, p_visible_layers);
+	}
+
 	RENDER_TIMESTAMP("Render 3D Scene");
 	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, &sdfgi_update_data, r_render_info);
 
@@ -4354,6 +4360,96 @@ void RendererSceneCull::render_probes() {
 	}
 }
 
+void RendererSceneCull::_cull_height_map_ao(const Vector3 &p_camera_position, RID p_environment, Scenario *p_scenario, uint32_t p_visible_layers) {
+	// Height map ambient occlusion gathers from a top-down depth map of a box around the camera, so the
+	// geometry that fills it is not the geometry the camera can see: a cliff or a building behind the camera
+	// still shades the ground in front of it. Hence a cull of its own, over the map's footprint, instead of
+	// reusing the frustum cull's results.
+	float range = MAX(scene_render->environment_get_hmao_range(p_environment), 1.0f);
+	uint32_t resolution = RendererSceneRender::environment_hmao_resolution_size(scene_render->environment_get_hmao_resolution(p_environment));
+	float texel_size = range / float(resolution);
+
+	// The footprint follows the camera, but snapped to its own texel grid: without this an occluder would
+	// land in a slightly different texel every frame and its occlusion would crawl over the ground as the
+	// camera moves, which is far more visible than the half texel of lag the snapping costs.
+	float center_x = Math::floor(p_camera_position.x / texel_size) * texel_size;
+	float center_z = Math::floor(p_camera_position.z / texel_size) * texel_size;
+
+	// Vertically the query is deliberately much taller than it is wide, since the map's own height range is
+	// derived from whatever it finds (below), not fixed in advance: a camera flying high over a valley must
+	// still find the valley. Occluders beyond this are out of reach of the effect.
+	AABB query_aabb;
+	query_aabb.position = Vector3(center_x - range * 0.5f, p_camera_position.y - range * 4.0f, center_z - range * 0.5f);
+	query_aabb.size = Vector3(range, range * 8.0f, range);
+
+	instance_hmao_cull_result.clear();
+	hmao_geometry_instances.clear();
+
+	struct CullAABB {
+		PagedArray<Instance *> *result;
+		uint32_t visible_layers;
+		_FORCE_INLINE_ bool operator()(void *p_data) {
+			Instance *p_instance = (Instance *)p_data;
+			if (p_instance->layer_mask & visible_layers) {
+				result->push_back(p_instance);
+			}
+			return false;
+		}
+	};
+
+	CullAABB cull_aabb;
+	cull_aabb.result = &instance_hmao_cull_result;
+	cull_aabb.visible_layers = p_visible_layers;
+	p_scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(query_aabb, cull_aabb);
+
+	AABB content_aabb;
+	bool has_content = false;
+
+	for (int i = 0; i < (int)instance_hmao_cull_result.size(); i++) {
+		Instance *instance = instance_hmao_cull_result[i];
+		if (!instance || !((1 << instance->base_type) & (RSE::INSTANCE_GEOMETRY_MASK & (~(1 << RSE::INSTANCE_PARTICLES))))) {
+			continue;
+		}
+
+		// Anything whose bounds are smaller than a texel of the map can't reliably be seen by it at all,
+		// and the map is the one place in the renderer where "small" is measured against a fixed world
+		// scale rather than against the screen: at a few metres per texel this is what keeps loose props,
+		// debris and clutter out of a pass whose entire job is the shape of the landscape. Note this is
+		// per instance, so one MultiMesh of grass is measured by the field it covers, not by a blade.
+		if (instance->transformed_aabb.get_longest_axis_size() < texel_size) {
+			continue;
+		}
+
+		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
+		ERR_CONTINUE(geom->geometry_instance == nullptr);
+		hmao_geometry_instances.push_back(geom->geometry_instance);
+
+		if (has_content) {
+			content_aabb.merge_with(instance->transformed_aabb);
+		} else {
+			content_aabb = instance->transformed_aabb;
+			has_content = true;
+		}
+	}
+
+	if (!has_content) {
+		// Nothing to record, and a map of nothing occludes nothing: tell the renderer to sit this one out.
+		scene_render->render_height_map_ao(p_environment, AABB(), hmao_geometry_instances);
+		return;
+	}
+
+	// The map's vertical range covers what was actually found, clamped to the query so that a single
+	// oversized bounding box can't stretch it, and padded so nothing sits exactly on a clip plane.
+	float bottom = MAX(content_aabb.position.y, query_aabb.position.y) - 1.0f;
+	float top = MIN(content_aabb.position.y + content_aabb.size.y, query_aabb.position.y + query_aabb.size.y) + 1.0f;
+
+	AABB bounds;
+	bounds.position = Vector3(query_aabb.position.x, bottom, query_aabb.position.z);
+	bounds.size = Vector3(range, MAX(top - bottom, 0.001f), range);
+
+	scene_render->render_height_map_ao(p_environment, bounds, hmao_geometry_instances);
+}
+
 void RendererSceneCull::render_particle_colliders() {
 	while (heightfield_particle_colliders_update_list.begin()) {
 		Instance *hfpc = *heightfield_particle_colliders_update_list.begin();
@@ -4745,6 +4841,8 @@ RendererSceneCull::RendererSceneCull() {
 
 	instance_cull_result.set_page_pool(&instance_cull_page_pool);
 	instance_shadow_cull_result.set_page_pool(&instance_cull_page_pool);
+	instance_hmao_cull_result.set_page_pool(&instance_cull_page_pool);
+	hmao_geometry_instances.set_page_pool(&geometry_instance_cull_page_pool);
 
 	for (uint32_t i = 0; i < MAX_UPDATE_SHADOWS; i++) {
 		render_shadow_data[i].instances.set_page_pool(&geometry_instance_cull_page_pool);
@@ -4781,6 +4879,8 @@ RendererSceneCull::RendererSceneCull() {
 RendererSceneCull::~RendererSceneCull() {
 	instance_cull_result.reset();
 	instance_shadow_cull_result.reset();
+	instance_hmao_cull_result.reset();
+	hmao_geometry_instances.reset();
 
 	for (uint32_t i = 0; i < MAX_UPDATE_SHADOWS; i++) {
 		render_shadow_data[i].instances.reset();

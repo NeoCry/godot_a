@@ -1433,6 +1433,25 @@
 				Sets the quality level of the Ground-Truth Ambient Occlusion (GTAO) post-process effect. See [Environment] for more details.
 			</description>
 		</method>
+		<method name="environment_set_hmao">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="amount" type="float" />
+			<param index="3" name="range" type="float" />
+			<param index="4" name="resolution" type="int" enum="RenderingServer.EnvironmentHMAOResolution" />
+			<description>
+				Configures height map based ambient occlusion for the specified environment RID. See [code]hmao_*[/code] properties in [Environment] for more information.
+			</description>
+		</method>
+		<method name="environment_set_hmao_quality">
+			<return type="void" />
+			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentHMAOQuality" />
+			<param index="1" name="half_size" type="bool" />
+			<description>
+				Sets the quality level of the height map based ambient occlusion effect: how many directions and steps the world space gather takes per pixel, and whether it runs at half resolution. See [Environment] for more details.
+			</description>
+		</method>
 		<method name="environment_set_sdfgi">
 			<return type="void" />
 			<param index="0" name="env" type="RID" />
@@ -5674,64 +5693,67 @@
 			Draws the screen space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.gtao_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SSIL" value="13" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_HMAO" value="13" enum="ViewportDebugDraw">
+			Draws the height map based ambient occlusion buffer (see [member Environment.hmao_enabled]) over the viewport.
+		</constant>
+		<constant name="VIEWPORT_DEBUG_DRAW_SSIL" value="14" enum="ViewportDebugDraw">
 			Draws the screen space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_PSSM_SPLITS" value="14" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_PSSM_SPLITS" value="15" enum="ViewportDebugDraw">
 			Colors each PSSM split for the [DirectionalLight3D]s in the scene a different color so you can see where the splits are. In order (from closest to furthest from the camera), they are colored red, green, blue, and yellow.
 			[b]Note:[/b] When using this debug draw mode, custom shaders are ignored since all materials in the scene temporarily use a debug material. This means the result from custom shader functions (such as vertex displacement) won't be visible anymore when using this debug draw mode.
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_DECAL_ATLAS" value="15" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_DECAL_ATLAS" value="16" enum="ViewportDebugDraw">
 			Draws the decal atlas that stores decal textures from [Decal]s.
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SDFGI" value="16" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_SDFGI" value="17" enum="ViewportDebugDraw">
 			Draws SDFGI cascade data. This is the data structure that is used to bounce lighting against and create reflections.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SDFGI_PROBES" value="17" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_SDFGI_PROBES" value="18" enum="ViewportDebugDraw">
 			Draws SDFGI probe data. This is the data structure that is used to give indirect lighting dynamic objects moving within the scene.
 			When in the editor, left-clicking a probe will display additional bright dots that show its occlusion information. A white dot means the light is not occluded at all at the dot's position, while a red dot means the light is fully occluded. Intermediate values are possible.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_GI_BUFFER" value="18" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_GI_BUFFER" value="19" enum="ViewportDebugDraw">
 			Draws the global illumination buffer from [VoxelGI] or SDFGI. Requires [VoxelGI] (at least one visible baked VoxelGI node) or SDFGI ([member Environment.sdfgi_enabled]) to be enabled to have a visible effect.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_DISABLE_LOD" value="19" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_DISABLE_LOD" value="20" enum="ViewportDebugDraw">
 			Disable mesh LOD. All meshes are drawn with full detail, which can be used to compare performance.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_OMNI_LIGHTS" value="20" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_OMNI_LIGHTS" value="21" enum="ViewportDebugDraw">
 			Draws the [OmniLight3D] cluster. Clustering determines where lights are positioned in screen-space, which allows the engine to only process these portions of the screen for lighting.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_SPOT_LIGHTS" value="21" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_SPOT_LIGHTS" value="22" enum="ViewportDebugDraw">
 			Draws the [SpotLight3D] cluster. Clustering determines where lights are positioned in screen-space, which allows the engine to only process these portions of the screen for lighting.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_DECALS" value="22" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_DECALS" value="23" enum="ViewportDebugDraw">
 			Draws the [Decal] cluster. Clustering determines where decals are positioned in screen-space, which allows the engine to only process these portions of the screen for decals.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_REFLECTION_PROBES" value="23" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_CLUSTER_REFLECTION_PROBES" value="24" enum="ViewportDebugDraw">
 			Draws the [ReflectionProbe] cluster. Clustering determines where reflection probes are positioned in screen-space, which allows the engine to only process these portions of the screen for reflection probes.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_OCCLUDERS" value="24" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_OCCLUDERS" value="25" enum="ViewportDebugDraw">
 			Draws the occlusion culling buffer. This low-resolution occlusion culling buffer is rasterized on the CPU and is used to check whether instances are occluded by other objects.
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_MOTION_VECTORS" value="25" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_MOTION_VECTORS" value="26" enum="ViewportDebugDraw">
 			Draws the motion vectors buffer. This is used by temporal antialiasing to correct for motion that occurs during gameplay.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_INTERNAL_BUFFER" value="26" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_INTERNAL_BUFFER" value="27" enum="ViewportDebugDraw">
 			Internal buffer is drawn instead of regular scene so you can see the per-pixel output that will be used by post-processing effects.
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SSCS_WAVE_INDEX" value="29" enum="ViewportDebugDraw">
+		<constant name="VIEWPORT_DEBUG_DRAW_SSCS_WAVE_INDEX" value="30" enum="ViewportDebugDraw">
 			Colors screen-space contact shadow output by compute wavefront index instead of computing real shadows, so the wavefront layout can be visually verified (wavefronts should appear aligned and projected towards the light).
 			[b]Note:[/b] Only supported when using the Forward+ rendering method. Requires screen-space contact shadows to be enabled (see [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled] and [member Environment.sscs_enabled]) to have a visible effect.
 		</constant>
@@ -5917,6 +5939,36 @@
 		</constant>
 		<constant name="ENV_GTAO_QUALITY_ULTRA" value="4" enum="EnvironmentGTAOQuality">
 			Highest quality ground-truth ambient occlusion, searching the most directions and steps around each pixel.
+		</constant>
+		<constant name="ENV_HMAO_QUALITY_LOW" value="0" enum="EnvironmentHMAOQuality">
+			Lowest quality height map based ambient occlusion, gathering the fewest directions and steps over the height map.
+		</constant>
+		<constant name="ENV_HMAO_QUALITY_MEDIUM" value="1" enum="EnvironmentHMAOQuality">
+			Medium quality height map based ambient occlusion.
+		</constant>
+		<constant name="ENV_HMAO_QUALITY_HIGH" value="2" enum="EnvironmentHMAOQuality">
+			High quality height map based ambient occlusion.
+		</constant>
+		<constant name="ENV_HMAO_QUALITY_ULTRA" value="3" enum="EnvironmentHMAOQuality">
+			Highest quality height map based ambient occlusion, gathering the most directions and steps over the height map.
+		</constant>
+		<constant name="ENV_HMAO_QUALITY_MAX" value="4" enum="EnvironmentHMAOQuality">
+			Represents the size of the [enum EnvironmentHMAOQuality] enum.
+		</constant>
+		<constant name="ENV_HMAO_RESOLUTION_256" value="0" enum="EnvironmentHMAOResolution">
+			Draw the height map based ambient occlusion height map at 256×256.
+		</constant>
+		<constant name="ENV_HMAO_RESOLUTION_512" value="1" enum="EnvironmentHMAOResolution">
+			Draw the height map based ambient occlusion height map at 512×512.
+		</constant>
+		<constant name="ENV_HMAO_RESOLUTION_1024" value="2" enum="EnvironmentHMAOResolution">
+			Draw the height map based ambient occlusion height map at 1024×1024.
+		</constant>
+		<constant name="ENV_HMAO_RESOLUTION_2048" value="3" enum="EnvironmentHMAOResolution">
+			Draw the height map based ambient occlusion height map at 2048×2048.
+		</constant>
+		<constant name="ENV_HMAO_RESOLUTION_MAX" value="4" enum="EnvironmentHMAOResolution">
+			Represents the size of the [enum EnvironmentHMAOResolution] enum.
 		</constant>
 		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT" value="0" enum="ScreenSpaceContactShadowsLength">
 			Cast shorter screen-space shadow rays. Fastest option, but the effect will not be able to reach as far.

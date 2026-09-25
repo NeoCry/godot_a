@@ -906,6 +906,11 @@ public:
 	PagedArray<Instance *> instance_cull_result;
 	PagedArray<Instance *> instance_shadow_cull_result;
 
+	// Scratch lists for _cull_height_map_ao(), which runs while scene_cull_result already holds the results
+	// this frame's scene render is about to be handed, so it can't borrow them.
+	PagedArray<Instance *> instance_hmao_cull_result;
+	PagedArray<RenderGeometryInstance *> hmao_geometry_instances;
+
 	struct InstanceCullResult {
 		PagedArray<RenderGeometryInstance *> geometry_instances;
 		PagedArray<Instance *> lights;
@@ -1208,6 +1213,8 @@ public:
 	void render_camera(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_camera, RID p_scenario, RID p_viewport, Size2 p_viewport_size, uint32_t p_jitter_phase_count, float p_screen_mesh_lod_threshold, RID p_shadow_atlas, float p_window_output_max_value, RenderingServerTypes::RenderInfo *r_render_info = nullptr);
 	void update_dirty_instances() const;
 
+	void _cull_height_map_ao(const Vector3 &p_camera_position, RID p_environment, Scenario *p_scenario, uint32_t p_visible_layers);
+
 	void render_particle_colliders();
 	virtual void render_probes();
 
@@ -1378,6 +1385,16 @@ public:
 	PASS1RC(float, environment_get_gtao_ao_channel_affect, RID)
 
 	PASS4(environment_set_gtao_quality, RSE::EnvironmentGTAOQuality, bool, float, float)
+
+	// HMAO (height map ambient occlusion)
+	PASS5(environment_set_hmao, RID, bool, float, float, RSE::EnvironmentHMAOResolution)
+
+	PASS1RC(bool, environment_get_hmao_enabled, RID)
+	PASS1RC(float, environment_get_hmao_amount, RID)
+	PASS1RC(float, environment_get_hmao_range, RID)
+	PASS1RC(RSE::EnvironmentHMAOResolution, environment_get_hmao_resolution, RID)
+
+	PASS2(environment_set_hmao_quality, RSE::EnvironmentHMAOQuality, bool)
 
 	// SSCS (screen space contact shadows)
 	PASS4(environment_set_sscs, RID, bool, RSE::ScreenSpaceContactShadowsLength, float)

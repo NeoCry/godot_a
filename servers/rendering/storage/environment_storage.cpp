@@ -762,6 +762,46 @@ float RendererEnvironmentStorage::environment_get_gtao_ao_channel_affect(RID p_e
 	return env->gtao_ao_channel_affect;
 }
 
+// HMAO (height map ambient occlusion)
+
+void RendererEnvironmentStorage::environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+#ifdef DEBUG_ENABLED
+	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
+		WARN_PRINT_ONCE_ED("Height map ambient occlusion (HMAO) is only available when using the Forward+ renderer.");
+	}
+#endif
+	env->hmao_enabled = p_enable;
+	env->hmao_amount = p_amount;
+	env->hmao_range = p_range;
+	env->hmao_resolution = p_resolution;
+}
+
+bool RendererEnvironmentStorage::environment_get_hmao_enabled(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, false);
+	return env->hmao_enabled;
+}
+
+float RendererEnvironmentStorage::environment_get_hmao_amount(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 1.0);
+	return env->hmao_amount;
+}
+
+float RendererEnvironmentStorage::environment_get_hmao_range(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 500.0);
+	return env->hmao_range;
+}
+
+RSE::EnvironmentHMAOResolution RendererEnvironmentStorage::environment_get_hmao_resolution(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, RSE::ENV_HMAO_RESOLUTION_512);
+	return env->hmao_resolution;
+}
+
 // SSCS (screen space contact shadows)
 
 void RendererEnvironmentStorage::environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) {

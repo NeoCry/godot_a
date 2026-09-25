@@ -284,6 +284,16 @@ public:
 
 	virtual void environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
+	// HMAO (height map ambient occlusion)
+	virtual void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) = 0;
+
+	virtual bool environment_get_hmao_enabled(RID p_env) const = 0;
+	virtual float environment_get_hmao_amount(RID p_env) const = 0;
+	virtual float environment_get_hmao_range(RID p_env) const = 0;
+	virtual RSE::EnvironmentHMAOResolution environment_get_hmao_resolution(RID p_env) const = 0;
+
+	virtual void environment_set_hmao_quality(RSE::EnvironmentHMAOQuality p_quality, bool p_half_size) = 0;
+
 	// SSCS (screen space contact shadows)
 	virtual void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) = 0;
 
