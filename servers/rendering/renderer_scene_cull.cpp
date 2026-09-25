@@ -2175,7 +2175,7 @@ void RendererSceneCull::_update_instance_lightmap_captures(Instance *p_instance)
 	geom->geometry_instance->set_lightmap_capture(p_instance->lightmap_sh.ptr());
 }
 
-void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect) {
+void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh) {
 	// For later tight culling, the light culler needs to know the details of the directional light.
 	light_culler->prepare_directional_light_begin(p_instance, p_shadow_index);
 
@@ -2420,7 +2420,12 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 			// was last baked in (e.g. a moving sun), so a slow update interval can't leave a stale
 			// shadow direction for a whole cycle.
 			bool force_refresh = !light->cached_shadow_valid[0] || light_dir.dot(light->cached_shadow_light_direction) < 0.9998;
-			bool do_refresh = force_refresh || frame >= light->cached_shadow_next_refresh_frame[0];
+			// Only the view the cache belongs to may re-fit it. A ReflectionProbe renders the scene
+			// from its own cube face cameras, and committing that fit would both point the cache at
+			// the wrong frustum and push next_refresh_frame forward, leaving the main view stuck
+			// with it until the interval elapses -- a flicker on every probe refresh. The probe can
+			// still sample whatever the main view has already cached below.
+			bool do_refresh = p_allow_shadow_cache_refresh && (force_refresh || frame >= light->cached_shadow_next_refresh_frame[0]);
 
 			if (do_refresh) {
 				RENDER_TIMESTAMP("Cull DirectionalLight3D, Cached Cascade");
@@ -3605,7 +3610,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		RSG::light_storage->set_directional_shadow_cache_count(lights_with_cached_shadow);
 
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
-			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect);
+			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_reflection_probe.is_null());
 		}
 	}
 
