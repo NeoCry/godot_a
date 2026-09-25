@@ -143,6 +143,8 @@ class TimeOfDay : public Node {
 	DirectionalLight3D *_get_sun() const;
 	DirectionalLight3D *_get_moon() const;
 	WorldEnvironment *_get_world_environment() const;
+	// Whether the environment's atmosphere tints the directional lights.
+	bool _is_atmosphere_lighting() const;
 
 	double _get_sun_declination() const;
 	Vector3 _get_celestial_direction(double p_hour_angle, double p_declination) const;

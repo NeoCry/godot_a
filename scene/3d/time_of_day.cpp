@@ -529,6 +529,15 @@ void TimeOfDay::_apply_binding(const Binding &p_binding, double p_hour) {
 	}
 }
 
+bool TimeOfDay::_is_atmosphere_lighting() const {
+	const WorldEnvironment *world_environment = _get_world_environment();
+	if (!world_environment || world_environment->get_environment().is_null()) {
+		return false;
+	}
+	const Ref<Environment> environment = world_environment->get_environment();
+	return environment->is_atmosphere_enabled() && environment->is_atmosphere_affecting_directional_lights();
+}
+
 void TimeOfDay::_apply_celestial_light(DirectionalLight3D *p_light, const Vector3 &p_direction) {
 	if (!p_light || !p_light->is_inside_tree()) {
 		return;
@@ -550,7 +559,11 @@ void TimeOfDay::_apply_celestial_light(DirectionalLight3D *p_light, const Vector
 	// Below the horizon a light would only shine up through the ground, and at
 	// no energy it would still darken the sky shaders around where it stands,
 	// so it is hidden instead. That also spares its shadow maps all night.
-	const bool visible = p_direction.y > 0.0f && p_light->get_param(Light3D::PARAM_ENERGY) > 0.0f;
+	// An atmosphere that tints the lights takes a light below the horizon out
+	// of the scene's lighting itself, while it still lights the sky from
+	// below: then it stays for as long as twilight lasts.
+	const float min_elevation = _is_atmosphere_lighting() ? -0.17f : 0.0f; // sin(-10 degrees)
+	const bool visible = p_direction.y > min_elevation && p_light->get_param(Light3D::PARAM_ENERGY) > 0.0f;
 	if (p_light->is_visible() != visible) {
 		p_light->set_visible(visible);
 	}
@@ -712,6 +725,17 @@ int TimeOfDay::key_changed_values() {
 
 Ref<TimeOfDayProfile> TimeOfDay::make_default_profile() const {
 	Ref<TimeOfDayProfile> default_profile = TimeOfDayProfile::create_default();
+
+	// With an atmosphere, the sky's colors and the sun's color and strength
+	// all come from the air itself: a curve would only fight it.
+	if (_is_atmosphere_lighting()) {
+		for (int i = default_profile->get_track_count() - 1; i >= 0; i--) {
+			const TimeOfDayProfile::Target target = default_profile->get_track_target(i);
+			if (target == TimeOfDayProfile::TARGET_SKY_MATERIAL || target == TimeOfDayProfile::TARGET_SUN) {
+				default_profile->remove_track(i);
+			}
+		}
+	}
 
 	const Object *sky_material = get_target_object(TimeOfDayProfile::TARGET_SKY_MATERIAL);
 	if (sky_material) {

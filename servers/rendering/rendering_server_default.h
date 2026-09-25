@@ -878,6 +878,10 @@ public:
 
 	FUNC9(environment_set_gtao, RID, bool, float, float, float, float, float, float, float)
 	FUNC4(environment_set_gtao_quality, RSE::EnvironmentGTAOQuality, bool, float, float)
+	FUNC10(environment_set_atmosphere, RID, bool, float, float, const Color &, float, const Color &, float, float, bool)
+	FUNC4(environment_set_atmosphere_rayleigh, RID, const Color &, float, float)
+	FUNC7(environment_set_atmosphere_mie, RID, const Color &, float, const Color &, float, float, float)
+	FUNC5(environment_set_atmosphere_ozone, RID, const Color &, float, float, float)
 	FUNC5(environment_set_hmao, RID, bool, float, float, RSE::EnvironmentHMAOResolution)
 	FUNC2(environment_set_hmao_quality, RSE::EnvironmentHMAOQuality, bool)
 

@@ -285,6 +285,11 @@ public:
 	virtual void environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
 	// HMAO (height map ambient occlusion)
+	virtual void environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights) = 0;
+	virtual void environment_set_atmosphere_rayleigh(RID p_env, const Color &p_scattering, float p_scattering_scale, float p_exponential_distribution) = 0;
+	virtual void environment_set_atmosphere_mie(RID p_env, const Color &p_scattering, float p_scattering_scale, const Color &p_absorption, float p_absorption_scale, float p_anisotropy, float p_exponential_distribution) = 0;
+	virtual void environment_set_atmosphere_ozone(RID p_env, const Color &p_absorption, float p_absorption_scale, float p_tip_altitude, float p_width) = 0;
+
 	virtual void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) = 0;
 
 	virtual bool environment_get_hmao_enabled(RID p_env) const = 0;

@@ -349,7 +349,9 @@ struct ImplementationData {
 	bool volumetric_fog_enabled;
 	float volumetric_fog_inv_length;
 	float volumetric_fog_detail_spread;
-	uint volumetric_fog_pad;
+	// Turns a distance in world units into the aerial perspective volume's
+	// depth coordinate, squared; 0 without an atmosphere.
+	float atmosphere_aerial_perspective_scale;
 };
 
 layout(set = 1, binding = 1, std140) uniform ImplementationDataBlock {
@@ -502,6 +504,10 @@ layout(set = 1, binding = 40) uniform texture2D hmao_buffer;
 // share a clear with the live ones. Declared only in this (non-MODE_RENDER_SDF) branch, like the
 // other bindings above it in this branch: the SDF voxelization pass's uniform set doesn't supply it.
 layout(set = 1, binding = 39) uniform texture2D directional_shadow_cache_atlas;
+
+// The atmosphere's luminance and transmittance through the view frustum (see
+// AtmosphereRD), for everything seen through the air.
+layout(set = 1, binding = 41) uniform texture3D atmosphere_aerial_perspective_volume;
 
 #endif
 
