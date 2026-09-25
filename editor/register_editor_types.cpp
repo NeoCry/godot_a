@@ -108,6 +108,7 @@
 #include "editor/scene/3d/polygon_3d_editor_plugin.h"
 #include "editor/scene/3d/skeleton_3d_editor_plugin.h"
 #include "editor/scene/3d/landscape_3d_editor_plugin.h"
+#include "editor/scene/3d/time_of_day_editor_plugin.h"
 #include "editor/scene/3d/vertex_paint_3d_editor_plugin.h"
 #include "editor/scene/3d/voxel_gi_editor_plugin.h"
 #include "editor/scene/curve_editor_plugin.h"
@@ -294,6 +295,7 @@ void register_editor_types() {
 	EditorPlugins::add_by_type<Polygon3DEditorPlugin>();
 	EditorPlugins::add_by_type<Skeleton3DEditorPlugin>();
 	EditorPlugins::add_by_type<Landscape3DEditorPlugin>();
+	EditorPlugins::add_by_type<TimeOfDayEditorPlugin>();
 	EditorPlugins::add_by_type<VertexPaint3DEditorPlugin>();
 	EditorPlugins::add_by_type<VoxelGIEditorPlugin>();
 	// 3D physics editor plugins.

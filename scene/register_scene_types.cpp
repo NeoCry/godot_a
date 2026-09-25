@@ -282,6 +282,8 @@
 #include "scene/3d/landscape_3d.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/3d/terrain_layer.h"
+#include "scene/3d/time_of_day.h"
+#include "scene/3d/time_of_day_profile.h"
 #include "scene/3d/trail_3d.h"
 #include "scene/3d/two_bone_ik_3d.h"
 #include "scene/3d/visible_on_screen_notifier_3d.h"
@@ -788,6 +790,8 @@ void register_scene_types() {
 	GDREGISTER_CLASS(VisibleOnScreenNotifier3D);
 	GDREGISTER_CLASS(VisibleOnScreenEnabler3D);
 	GDREGISTER_CLASS(WorldEnvironment);
+	GDREGISTER_CLASS(TimeOfDayProfile);
+	GDREGISTER_CLASS(TimeOfDay);
 	GDREGISTER_CLASS(FogVolume);
 	GDREGISTER_CLASS(FogMaterial);
 	GDREGISTER_CLASS(RemoteTransform3D);
