@@ -109,6 +109,28 @@ public:
 
 	static constexpr int MAX_CROSS_SEGMENTS = 64;
 
+	// What a spline covers, seen along the landscape's up axis, for keeping
+	// other things off it (FoliageSpawner3D keeps foliage off roads and out of
+	// the water with it). In global space: a strip is its centerline, with the
+	// strip's half width at every point (a closed curve's last point repeats
+	// its first); a filled area is its shoreline, closed implicitly, and the
+	// level of its surface. The same outline apply_to_landscape() carves and
+	// paints along.
+	struct GroundCoverage {
+		Vector3 up = Vector3(0, 1, 0);
+		LocalVector<Vector3> points;
+		LocalVector<float> half_widths; // Strips only.
+		bool filled = false;
+		// Fills only: where the surface is along up, i.e. up.dot() of any point
+		// on it. Ground inside the shoreline but above this is dry.
+		float level = 0.0;
+	};
+
+	// Every LandscapeSpline3D in the tree is in this group, for whatever has to
+	// find them all. Internal: not saved with the scene, nor listed in the
+	// editor.
+	static StringName get_group_name() { return SNAME("_landscape_splines"); }
+
 private:
 	// One cross-section of the strip, sampled every segment_length along the
 	// curve, in this node's local space.
@@ -468,6 +490,10 @@ public:
 	// The terrain regions (in heightmap samples, Landscape3D::CHUNK_QUADS on a
 	// side) apply_to_landscape() changes, e.g. to snapshot them for undo.
 	TypedArray<Rect2i> get_landscape_footprint() const;
+	// See GroundCoverage. False, with nothing filled in, when the spline covers
+	// nothing yet (fewer than two points) or is outside the tree. Plain C++,
+	// not bound.
+	bool get_ground_coverage(GroundCoverage &r_coverage);
 	// Shapes the landscape to the spline: cuts or fills the ground under it to
 	// the curve's own height (and carve_depth below that for a river bed),
 	// blending back to the untouched terrain over carve_falloff, and paints
