@@ -3014,6 +3014,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DIRECTIONAL_SHADOW_ATLAS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SCENE_LUMINANCE);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_GTAO);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_HMAO);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SSIL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DECAL_ATLAS);
@@ -3107,6 +3108,8 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_ssr_half_size", "half_size"), &RenderingServer::environment_set_ssr_half_size);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr_roughness_quality", "quality"), &RenderingServer::environment_set_ssr_roughness_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_gtao_quality", "quality", "half_size", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_gtao_quality);
+	ClassDB::bind_method(D_METHOD("environment_set_hmao", "env", "enable", "amount", "range", "resolution"), &RenderingServer::environment_set_hmao);
+	ClassDB::bind_method(D_METHOD("environment_set_hmao_quality", "quality", "half_size"), &RenderingServer::environment_set_hmao_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_ssil_quality", "quality", "half_size", "adaptive_target", "blur_passes", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_ssil_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_ray_count", "ray_count"), &RenderingServer::environment_set_sdfgi_ray_count);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_frames_to_converge", "frames"), &RenderingServer::environment_set_sdfgi_frames_to_converge);
@@ -3163,6 +3166,18 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_MEDIUM);
 	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_HIGH);
 	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_ULTRA);
+
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_LOW);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_MEDIUM);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_HIGH);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_ULTRA);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_MAX);
+
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_256);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_512);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_1024);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_2048);
+	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT);
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM);
@@ -3787,6 +3802,9 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/environment/gtao/half_size", true);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/gtao/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/gtao/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
+
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/hmao/quality", PROPERTY_HINT_ENUM, "Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 1);
+	GLOBAL_DEF("rendering/environment/hmao/half_size", true);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

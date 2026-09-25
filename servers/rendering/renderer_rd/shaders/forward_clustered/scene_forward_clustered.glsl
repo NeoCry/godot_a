@@ -2108,6 +2108,20 @@ void fragment_shader(in SceneData scene_data) {
 		ao_light_affect = mix(ao_light_affect, max(ao_light_affect, implementation_data.gtao_light_affect), implementation_data.gtao_ao_affect);
 	}
 
+	if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_HMAO)) {
+		// Height map ambient occlusion (effects/hmao.h): large scale occlusion gathered in world space from
+		// a top-down height map, so it darkens valleys and courtyards that GTAO above can't see at all.
+		// Whichever of the two occludes more wins, the same way two occluders never brighten each other.
+#ifdef USE_MULTIVIEW
+		float hmao = texture(sampler2DArray(hmao_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex)).r;
+#else
+		float hmao = texture(sampler2D(hmao_buffer, SAMPLER_LINEAR_CLAMP), screen_uv).r;
+#endif
+		ao = min(ao, hmao);
+		// Deliberately leaves ao_light_affect alone: this is occlusion of the sky and of bounced light over
+		// hundreds of metres, which is an ambient term, not something that should dim a lamp in the room.
+	}
+
 	{ // process reflections
 
 		vec4 reflection_accum = vec4(0.0, 0.0, 0.0, 0.0);

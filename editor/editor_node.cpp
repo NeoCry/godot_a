@@ -506,6 +506,7 @@ void EditorNode::_update_from_settings() {
 	bool dof_jitter = GLOBAL_GET("rendering/camera/depth_of_field/depth_of_field_use_jitter");
 	RS::get_singleton()->camera_attributes_set_dof_blur_quality(dof_quality, dof_jitter);
 	RS::get_singleton()->environment_set_gtao_quality(RSE::EnvironmentGTAOQuality(int(GLOBAL_GET("rendering/environment/gtao/quality"))), GLOBAL_GET("rendering/environment/gtao/half_size"), GLOBAL_GET("rendering/environment/gtao/fadeout_from"), GLOBAL_GET("rendering/environment/gtao/fadeout_to"));
+	RS::get_singleton()->environment_set_hmao_quality(RSE::EnvironmentHMAOQuality(int(GLOBAL_GET("rendering/environment/hmao/quality"))), GLOBAL_GET("rendering/environment/hmao/half_size"));
 	RS::get_singleton()->screen_space_roughness_limiter_set_active(GLOBAL_GET("rendering/anti_aliasing/screen_space_roughness_limiter/enabled"), GLOBAL_GET("rendering/anti_aliasing/screen_space_roughness_limiter/amount"), GLOBAL_GET("rendering/anti_aliasing/screen_space_roughness_limiter/limit"));
 	bool glow_bicubic = int(GLOBAL_GET("rendering/environment/glow/upscale_mode")) > 0;
 	RS::get_singleton()->environment_set_ssil_quality(RSE::EnvironmentSSILQuality(int(GLOBAL_GET("rendering/environment/ssil/quality"))), GLOBAL_GET("rendering/environment/ssil/half_size"), GLOBAL_GET("rendering/environment/ssil/adaptive_target"), GLOBAL_GET("rendering/environment/ssil/blur_passes"), GLOBAL_GET("rendering/environment/ssil/fadeout_from"), GLOBAL_GET("rendering/environment/ssil/fadeout_to"));

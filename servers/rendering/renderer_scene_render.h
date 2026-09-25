@@ -230,6 +230,31 @@ public:
 
 	virtual void environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
+	// HMAO (height map ambient occlusion)
+	void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution);
+	bool environment_get_hmao_enabled(RID p_env) const;
+	float environment_get_hmao_amount(RID p_env) const;
+	float environment_get_hmao_range(RID p_env) const;
+	RSE::EnvironmentHMAOResolution environment_get_hmao_resolution(RID p_env) const;
+
+	virtual void environment_set_hmao_quality(RSE::EnvironmentHMAOQuality p_quality, bool p_half_size) = 0;
+
+	// Square texture resolution an RSE::EnvironmentHMAOResolution stands for. Lives here because both sides
+	// of the effect need it: the renderer to size the height map, and the culler to work out the texel size
+	// it snaps the map's footprint to.
+	static _FORCE_INLINE_ uint32_t environment_hmao_resolution_size(RSE::EnvironmentHMAOResolution p_resolution) {
+		const uint32_t sizes[RSE::ENV_HMAO_RESOLUTION_MAX] = { 256, 512, 1024, 2048 };
+		return sizes[CLAMP(int(p_resolution), 0, int(RSE::ENV_HMAO_RESOLUTION_MAX) - 1)];
+	}
+
+	// Whether this renderer implements height map ambient occlusion at all: the culler skips gathering
+	// occluders for a map nothing would ever render or read.
+	virtual bool is_hmao_supported() const { return false; }
+
+	// Renders the top-down height map the effect gathers from. Called once per frame, right before the
+	// scene render it feeds, with the geometry the culler found inside p_bounds.
+	virtual void render_height_map_ao(RID p_environment, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances) {}
+
 	// SSCS (screen space contact shadows)
 	void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness);
 	bool environment_get_sscs_enabled(RID p_env) const;

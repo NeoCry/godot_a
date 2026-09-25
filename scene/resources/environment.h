@@ -90,6 +90,13 @@ public:
 		GLOW_BLEND_MODE_MIX,
 	};
 
+	enum HMAOResolution {
+		HMAO_RESOLUTION_256,
+		HMAO_RESOLUTION_512,
+		HMAO_RESOLUTION_1024,
+		HMAO_RESOLUTION_2048,
+	};
+
 	enum SSCSLength {
 		SSCS_LENGTH_SHORT,
 		SSCS_LENGTH_MEDIUM,
@@ -145,6 +152,13 @@ private:
 	float gtao_direct_light_affect = 0.0;
 	float gtao_ao_channel_affect = 0.0;
 	void _update_gtao();
+
+	// HMAO (height map ambient occlusion)
+	bool hmao_enabled = false;
+	float hmao_amount = 1.0;
+	float hmao_range = 500.0;
+	HMAOResolution hmao_resolution = HMAO_RESOLUTION_512;
+	void _update_hmao();
 
 	// SSCS (screen space shadows)
 	bool sscs_enabled = false;
@@ -321,6 +335,16 @@ public:
 	void set_gtao_ao_channel_affect(float p_ao_channel_affect);
 	float get_gtao_ao_channel_affect() const;
 
+	// HMAO (height map ambient occlusion)
+	void set_hmao_enabled(bool p_enabled);
+	bool is_hmao_enabled() const;
+	void set_hmao_amount(float p_amount);
+	float get_hmao_amount() const;
+	void set_hmao_range(float p_range);
+	float get_hmao_range() const;
+	void set_hmao_resolution(HMAOResolution p_resolution);
+	HMAOResolution get_hmao_resolution() const;
+
 	// SSCS (screen space shadows)
 	void set_sscs_enabled(bool p_enabled);
 	bool is_sscs_enabled() const;
@@ -479,3 +503,4 @@ VARIANT_ENUM_CAST(Environment::SDFGIYScale)
 VARIANT_ENUM_CAST(Environment::GlowBlendMode)
 VARIANT_ENUM_CAST(Environment::FogMode)
 VARIANT_ENUM_CAST(Environment::SSCSLength)
+VARIANT_ENUM_CAST(Environment::HMAOResolution)

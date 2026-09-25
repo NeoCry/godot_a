@@ -333,6 +333,9 @@ bool RenderForwardClustered::free(RID p_rid) {
 
 void RenderForwardClustered::update() {
 	RendererSceneRenderRD::update();
+	if (hmao != nullptr) {
+		hmao->frame_update();
+	}
 	_update_global_pipeline_data_requirements_from_project();
 	_update_global_pipeline_data_requirements_from_light_storage();
 }
@@ -813,6 +816,7 @@ uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render
 		uint32_t ss_flags = 0;
 		if (p_opaque_render_buffers) {
 			ss_flags |= environment_get_gtao_enabled(p_render_data->environment) ? SCREEN_SPACE_EFFECTS_FLAGS_USE_GTAO : 0;
+			ss_flags |= environment_get_hmao_enabled(p_render_data->environment) ? SCREEN_SPACE_EFFECTS_FLAGS_USE_HMAO : 0;
 			ss_flags |= environment_get_ssil_enabled(p_render_data->environment) ? SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL : 0;
 			ss_flags |= environment_get_ssr_enabled(p_render_data->environment) ? SCREEN_SPACE_EFFECTS_FLAGS_USE_SSR : 0;
 			ss_flags |= (bool(GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/contact_shadow/enabled")) || environment_get_sscs_enabled(p_render_data->environment)) ? SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS : 0;
@@ -1519,6 +1523,27 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 	}
 }
 
+void RenderForwardClustered::_process_hmao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform) {
+	ERR_FAIL_COND(p_render_buffers.is_null());
+	ERR_FAIL_COND(p_environment.is_null());
+	ERR_FAIL_NULL(hmao);
+
+	Ref<RenderBufferDataForwardClustered> rb_data = p_render_buffers->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+	ERR_FAIL_COND(rb_data.is_null());
+
+	RENDER_TIMESTAMP("Process HMAO");
+
+	RendererRD::HeightMapAO::Settings settings;
+	settings.amount = environment_get_hmao_amount(p_environment);
+	settings.full_screen_size = p_render_buffers->get_internal_size();
+
+	hmao->allocate_buffers(p_render_buffers, rb_data->hmao_data, settings);
+
+	for (uint32_t v = 0; v < p_render_buffers->get_view_count(); v++) {
+		hmao->generate(p_render_buffers, rb_data->hmao_data, v, p_normal_buffers[v], p_projections[v], p_transform, settings);
+	}
+}
+
 void RenderForwardClustered::_process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform) {
 	ERR_FAIL_NULL(ss_effects);
 	ERR_FAIL_COND(p_render_buffers.is_null());
@@ -1631,7 +1656,7 @@ void RenderForwardClustered::_copy_framebuffer_to_ss_effects(Ref<RenderSceneBuff
 	ss_effects->copy_internal_texture_to_last_frame(p_render_buffers, *copy_effects);
 }
 
-void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_gtao, bool p_use_ssil, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
+void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_gtao, bool p_use_hmao, bool p_use_ssil, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
 	// Render shadows while GI is rendering, due to how barriers are handled, this should happen at the same time
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -1825,6 +1850,19 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
 				rb_data->gtao_data.history_valid[v] = false;
 			}
+		}
+
+		if (p_use_hmao) {
+			// Height map ambient occlusion reads the same depth and normal buffers GTAO does, but gathers
+			// from the world space height map rendered before this frame's scene render (see
+			// render_height_map_ao()) rather than from the screen.
+			_process_hmao(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection, p_render_data->scene_data->cam_transform);
+		} else if (rb->has_texture(RB_SCOPE_HMAO, RB_HMAO_FINAL)) {
+			// Same reasoning as the GTAO context above: nothing writes these while the effect is off, so
+			// holding on to them only keeps a stale frame (and its memory) alive.
+			rb->clear_context(RB_SCOPE_HMAO);
+			rb_data->hmao_data.buffer_width = 0;
+			rb_data->hmao_data.buffer_height = 0;
 		}
 
 		if (p_use_ssil) {
@@ -2144,6 +2182,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			if (using_ssr ||
 					using_sdfgi ||
 					environment_get_gtao_enabled(p_render_data->environment) ||
+					environment_get_hmao_enabled(p_render_data->environment) ||
 					using_ssil ||
 					using_sscs ||
 					ce_needs_normal_roughness ||
@@ -2332,6 +2371,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	base_specialization.use_depth_fog = p_render_data->environment.is_valid() && environment_get_fog_mode(p_render_data->environment) == RSE::EnvironmentFogMode::ENV_FOG_MODE_DEPTH;
 
 	bool using_gtao = depth_pre_pass && !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_gtao_enabled(p_render_data->environment);
+	// The height map is rendered by the culler right before this scene render (render_height_map_ao()); if
+	// that didn't happen - nothing to put in the map, or a camera that isn't the one HMAO was set up for -
+	// there is nothing to gather from and the effect sits this frame out.
+	bool using_hmao = depth_pre_pass && !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_hmao_enabled(p_render_data->environment) && hmao != nullptr && hmao->is_height_map_valid();
 
 	if (depth_pre_pass) { //depth pre pass
 		bool needs_pre_resolve = _needs_post_prepass_render(p_render_data, using_sdfgi || using_voxelgi);
@@ -2352,7 +2395,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, nullptr, is_multiview, RID(), samplers, depth_prepass_uniform_buffer_index);
 
-		bool finish_depth = using_gtao || using_ssil || using_sdfgi || using_voxelgi || ce_pre_opaque_resolved_depth || ce_post_opaque_resolved_depth;
+		bool finish_depth = using_gtao || using_hmao || using_ssil || using_sdfgi || using_voxelgi || ce_pre_opaque_resolved_depth || ce_post_opaque_resolved_depth;
 		RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, depth_pass_mode, 0, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization, !is_reflection_probe);
 		_render_list_with_draw_list(&render_list_params, depth_framebuffer, RD::DrawFlags(needs_pre_resolve ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_ALL), depth_pass_clear, 0.0f, 0u, p_render_data->render_region);
 
@@ -2395,7 +2438,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			normal_roughness_views[v] = rb_data->get_normal_roughness(v);
 		}
 	}
-	_pre_opaque_render(p_render_data, using_gtao, using_ssil, using_ssr, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
+	_pre_opaque_render(p_render_data, using_gtao, using_hmao, using_ssil, using_ssr, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
 
 	if (current_cluster_builder) {
 		base_specialization.cluster_has_area_light = current_cluster_builder->get_cluster_count_by_type(ClusterBuilderRD::ELEMENT_TYPE_AREA_LIGHT) != 0;
@@ -2823,6 +2866,12 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 
 	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_GTAO && rb->has_texture(RB_SCOPE_GTAO, RB_GTAO_FINAL)) {
 		RID final = rb->get_texture_slice(RB_SCOPE_GTAO, RB_GTAO_FINAL, 0, 0);
+		Size2i rtsize = texture_storage->render_target_get_size(render_target);
+		copy_effects->copy_to_fb_rect(final, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, true);
+	}
+
+	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_HMAO && rb->has_texture(RB_SCOPE_HMAO, RB_HMAO_FINAL)) {
+		RID final = rb->get_texture_slice(RB_SCOPE_HMAO, RB_HMAO_FINAL, 0, 0);
 		Size2i rtsize = texture_storage->render_target_get_size(render_target);
 		copy_effects->copy_to_fb_rect(final, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, true);
 	}
@@ -3294,6 +3343,94 @@ void RenderForwardClustered::_render_particle_collider_heightfield(RID p_fb, con
 		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), false, pass_mode, 0, true, false, rp_uniform_set);
 		_render_list_with_draw_list(&render_list_params, p_fb, RD::DRAW_CLEAR_ALL);
 	}
+	RD::get_singleton()->draw_command_end_label();
+}
+
+void RenderForwardClustered::render_height_map_ao(RID p_environment, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances) {
+	ERR_FAIL_NULL(hmao);
+
+	// Anything that leaves without a map rendered has to say so: the gather refuses to run against a map
+	// that doesn't describe this frame's world (see RenderForwardClustered::_render_scene()'s using_hmao).
+	if (p_environment.is_null() || !environment_get_hmao_enabled(p_environment) || p_bounds.size.x <= 0.0 || p_bounds.size.y <= 0.0) {
+		hmao->invalidate_height_map();
+		return;
+	}
+
+	uint32_t resolution = RendererSceneRender::environment_hmao_resolution_size(environment_get_hmao_resolution(p_environment));
+	RID fb = hmao->prepare_height_map(resolution);
+	if (fb.is_null()) {
+		hmao->invalidate_height_map();
+		return;
+	}
+
+	// An orthographic camera on the top face of the box, looking straight down, so that the depth it leaves
+	// behind is the height of the tallest surface over each texel. Set up exactly like the particle collider
+	// heightfield above, with the box the culler gathered occluders in standing in for the collider's extents.
+	Vector3 extents = p_bounds.size * 0.5;
+	Projection cm;
+	cm.set_orthogonal(-extents.x, extents.x, -extents.z, extents.z, 0, p_bounds.size.y);
+
+	Vector3 cam_pos = p_bounds.get_center();
+	cam_pos.y = p_bounds.position.y + p_bounds.size.y;
+
+	Transform3D cam_xform;
+	cam_xform.set_look_at(cam_pos, cam_pos - Vector3(0.0, 1.0, 0.0), Vector3(0.0, 0.0, -1.0));
+
+	_render_height_map_ao_depth(fb, cam_xform, cm, p_instances);
+
+	hmao->height_map_rendered(p_bounds);
+}
+
+void RenderForwardClustered::_render_height_map_ao_depth(RID p_fb, const Transform3D &p_cam_transform, const Projection &p_cam_projection, const PagedArray<RenderGeometryInstance *> &p_instances) {
+	RENDER_TIMESTAMP("Setup Height Map AO");
+
+	RD::get_singleton()->draw_command_begin_label("Render Height Map AO");
+
+	RenderSceneDataRD scene_data;
+	scene_data.flip_y = true;
+	scene_data.cam_projection = p_cam_projection;
+	scene_data.cam_transform = p_cam_transform;
+	scene_data.view_projection[0] = p_cam_projection;
+	scene_data.z_near = 0.0;
+	scene_data.z_far = p_cam_projection.get_z_far();
+	scene_data.dual_paraboloid_side = 0;
+	scene_data.opaque_prepass_threshold = 0.0;
+	scene_data.time = time;
+	scene_data.time_step = time_step;
+	scene_data.main_cam_transform = p_cam_transform;
+	scene_data.shadow_pass = true; // Not a shadow pass, but should be treated like one (depth-only, no color).
+
+	RenderDataRD render_data;
+	render_data.scene_data = &scene_data;
+	render_data.cluster_size = 1;
+	render_data.cluster_max_elements = 32;
+	render_data.instances = &p_instances;
+
+	_update_render_base_uniform_set();
+
+	Size2i screen_size = RD::get_singleton()->framebuffer_get_size(p_fb);
+	uint32_t uniform_buffer_index = _setup_environment(&render_data, true, screen_size, screen_size, Color(), false, false, false);
+
+	PassMode pass_mode = PASS_MODE_SHADOW;
+
+	// This runs outside of _render_shadow_begin()/_render_shadow_end(), which is what normally leaves the
+	// secondary list empty, so it is cleared here directly (as _render_sscs_exclusion_depth() does).
+	render_list[RENDER_LIST_SECONDARY].clear();
+	_fill_render_list(RENDER_LIST_SECONDARY, &render_data, pass_mode);
+	render_list[RENDER_LIST_SECONDARY].sort_by_key();
+	_fill_instance_data(RENDER_LIST_SECONDARY);
+
+	RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_SECONDARY, nullptr, false, RID(), RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default(), uniform_buffer_index);
+
+	RENDER_TIMESTAMP("Render Height Map AO");
+
+	{
+		// Always clears, including for an empty list: under reverse Z a cleared depth of 0.0 is the far
+		// (bottom) plane of the box, which the gather reads as "nothing above this point here".
+		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), false, pass_mode, 0, true, false, rp_uniform_set);
+		_render_list_with_draw_list(&render_list_params, p_fb, RD::DRAW_CLEAR_ALL);
+	}
+
 	RD::get_singleton()->draw_command_end_label();
 }
 
@@ -4142,6 +4279,19 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		uniforms.push_back(u);
 	}
 #endif // MODULE_TEXTURE_STREAMING_ENABLED
+	{
+		RD::Uniform u;
+		u.binding = 40;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		RID hmao_tex = rb.is_valid() && rb->has_texture(RB_SCOPE_HMAO, RB_HMAO_FINAL) ? rb->get_texture(RB_SCOPE_HMAO, RB_HMAO_FINAL) : RID();
+		// White, not black, when there is no buffer: this one holds visibility rather than occlusion, and the
+		// lighting pass takes the minimum of it and the other ambient occlusion terms. A black stand-in would
+		// read as "fully occluded" and black out the frame in every case where the effect is switched on but
+		// its buffer isn't there yet - the frame it is enabled on, or a frame whose height map came up empty.
+		RID texture = hmao_tex.is_valid() ? hmao_tex : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_WHITE : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
+		u.append_id(texture);
+		uniforms.push_back(u);
+	}
 
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.get_default_shader_rd(is_multiview), RENDER_PASS_UNIFORM_SET, uniforms);
 }
@@ -4383,6 +4533,13 @@ void RenderForwardClustered::environment_set_gtao_quality(RSE::EnvironmentGTAOQu
 	ERR_FAIL_NULL(gtao);
 	ERR_FAIL_COND(p_quality < RSE::EnvironmentGTAOQuality::ENV_GTAO_QUALITY_VERY_LOW || p_quality > RSE::EnvironmentGTAOQuality::ENV_GTAO_QUALITY_ULTRA);
 	gtao->set_quality(p_quality, p_half_size, p_fadeout_from, p_fadeout_to);
+}
+
+void RenderForwardClustered::environment_set_hmao_quality(RSE::EnvironmentHMAOQuality p_quality, bool p_half_size) {
+	RendererRD::HeightMapAO *height_map_ao = RendererRD::HeightMapAO::get_singleton();
+	ERR_FAIL_NULL(height_map_ao);
+	ERR_FAIL_COND(p_quality < RSE::EnvironmentHMAOQuality::ENV_HMAO_QUALITY_LOW || p_quality >= RSE::EnvironmentHMAOQuality::ENV_HMAO_QUALITY_MAX);
+	height_map_ao->set_quality(p_quality, p_half_size);
 }
 
 void RenderForwardClustered::environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) {
@@ -5649,6 +5806,7 @@ RenderForwardClustered::RenderForwardClustered() {
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
 	gtao = memnew(RendererRD::GTAO);
+	hmao = memnew(RendererRD::HeightMapAO);
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
@@ -5666,6 +5824,11 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (gtao != nullptr) {
 		memdelete(gtao);
 		gtao = nullptr;
+	}
+
+	if (hmao != nullptr) {
+		memdelete(hmao);
+		hmao = nullptr;
 	}
 
 	if (taa != nullptr) {

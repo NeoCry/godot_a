@@ -878,6 +878,8 @@ public:
 
 	FUNC9(environment_set_gtao, RID, bool, float, float, float, float, float, float, float)
 	FUNC4(environment_set_gtao_quality, RSE::EnvironmentGTAOQuality, bool, float, float)
+	FUNC5(environment_set_hmao, RID, bool, float, float, RSE::EnvironmentHMAOResolution)
+	FUNC2(environment_set_hmao_quality, RSE::EnvironmentHMAOQuality, bool)
 
 	FUNC4(environment_set_sscs, RID, bool, RSE::ScreenSpaceContactShadowsLength, float)
 

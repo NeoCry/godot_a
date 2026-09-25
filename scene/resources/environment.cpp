@@ -402,6 +402,54 @@ void Environment::_update_gtao() {
 			gtao_ao_channel_affect);
 }
 
+// HMAO (height map ambient occlusion)
+
+void Environment::set_hmao_enabled(bool p_enabled) {
+	hmao_enabled = p_enabled;
+	_update_hmao();
+}
+
+bool Environment::is_hmao_enabled() const {
+	return hmao_enabled;
+}
+
+void Environment::set_hmao_amount(float p_amount) {
+	hmao_amount = p_amount;
+	_update_hmao();
+}
+
+float Environment::get_hmao_amount() const {
+	return hmao_amount;
+}
+
+void Environment::set_hmao_range(float p_range) {
+	hmao_range = p_range;
+	_update_hmao();
+}
+
+float Environment::get_hmao_range() const {
+	return hmao_range;
+}
+
+void Environment::set_hmao_resolution(HMAOResolution p_resolution) {
+	ERR_FAIL_INDEX(p_resolution, HMAO_RESOLUTION_2048 + 1);
+	hmao_resolution = p_resolution;
+	_update_hmao();
+}
+
+Environment::HMAOResolution Environment::get_hmao_resolution() const {
+	return hmao_resolution;
+}
+
+void Environment::_update_hmao() {
+	RS::get_singleton()->environment_set_hmao(
+			environment,
+			hmao_enabled,
+			hmao_amount,
+			hmao_range,
+			RSE::EnvironmentHMAOResolution(hmao_resolution));
+}
+
 // SSCS (screen space shadows)
 
 void Environment::set_sscs_enabled(bool p_enabled) {
@@ -1219,6 +1267,12 @@ void Environment::_validate_property(PropertyInfo &p_property) const {
 			}
 			return;
 		}
+
+		// HMAO is Forward+ only in its entirety.
+		if (p_property.name.begins_with("hmao_")) {
+			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+			return;
+		}
 	}
 
 	if (p_property.name == "background_color") {
@@ -1391,6 +1445,22 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_sharpness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_gtao_sharpness", "get_gtao_sharpness");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_light_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_gtao_direct_light_affect", "get_gtao_direct_light_affect");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_ao_channel_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_gtao_ao_channel_affect", "get_gtao_ao_channel_affect");
+
+	// HMAO (height map ambient occlusion)
+	ClassDB::bind_method(D_METHOD("set_hmao_enabled", "enabled"), &Environment::set_hmao_enabled);
+	ClassDB::bind_method(D_METHOD("is_hmao_enabled"), &Environment::is_hmao_enabled);
+	ClassDB::bind_method(D_METHOD("set_hmao_amount", "amount"), &Environment::set_hmao_amount);
+	ClassDB::bind_method(D_METHOD("get_hmao_amount"), &Environment::get_hmao_amount);
+	ClassDB::bind_method(D_METHOD("set_hmao_range", "range"), &Environment::set_hmao_range);
+	ClassDB::bind_method(D_METHOD("get_hmao_range"), &Environment::get_hmao_range);
+	ClassDB::bind_method(D_METHOD("set_hmao_resolution", "resolution"), &Environment::set_hmao_resolution);
+	ClassDB::bind_method(D_METHOD("get_hmao_resolution"), &Environment::get_hmao_resolution);
+
+	ADD_GROUP("HMAO", "hmao_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "hmao_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_hmao_enabled", "is_hmao_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hmao_amount", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_hmao_amount", "get_hmao_amount");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "hmao_range", PROPERTY_HINT_RANGE, "16,4096,1,or_greater,suffix:m"), "set_hmao_range", "get_hmao_range");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "hmao_resolution", PROPERTY_HINT_ENUM, "256 (Fastest),512 (Fast),1024 (Slow),2048 (Slowest)"), "set_hmao_resolution", "get_hmao_resolution");
 
 	// SSCS (screen space shadows)
 	ClassDB::bind_method(D_METHOD("set_sscs_enabled", "enabled"), &Environment::set_sscs_enabled);
@@ -1667,6 +1737,11 @@ void Environment::_bind_methods() {
 	BIND_ENUM_CONSTANT(FOG_MODE_EXPONENTIAL);
 	BIND_ENUM_CONSTANT(FOG_MODE_DEPTH);
 
+	BIND_ENUM_CONSTANT(HMAO_RESOLUTION_256);
+	BIND_ENUM_CONSTANT(HMAO_RESOLUTION_512);
+	BIND_ENUM_CONSTANT(HMAO_RESOLUTION_1024);
+	BIND_ENUM_CONSTANT(HMAO_RESOLUTION_2048);
+
 	BIND_ENUM_CONSTANT(SSCS_LENGTH_SHORT);
 	BIND_ENUM_CONSTANT(SSCS_LENGTH_MEDIUM);
 	BIND_ENUM_CONSTANT(SSCS_LENGTH_LONG);
@@ -1694,6 +1769,7 @@ Environment::Environment() {
 	_update_tonemap();
 	_update_ssr();
 	_update_gtao();
+	_update_hmao();
 	_update_sscs();
 	_update_ssil();
 	_update_sdfgi();

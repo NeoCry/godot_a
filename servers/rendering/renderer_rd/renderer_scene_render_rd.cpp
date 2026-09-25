@@ -1037,6 +1037,7 @@ bool RendererSceneRenderRD::_debug_draw_can_use_effects(RSE::ViewportDebugDraw p
 		// Modes that draws a buffer over viewport needs camera effects because if the buffer is not available it will be equivalent to normal draw mode.
 		case RSE::VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER:
 		case RSE::VIEWPORT_DEBUG_DRAW_GTAO:
+		case RSE::VIEWPORT_DEBUG_DRAW_HMAO:
 		case RSE::VIEWPORT_DEBUG_DRAW_SSIL:
 		case RSE::VIEWPORT_DEBUG_DRAW_SDFGI:
 		case RSE::VIEWPORT_DEBUG_DRAW_GI_BUFFER:
