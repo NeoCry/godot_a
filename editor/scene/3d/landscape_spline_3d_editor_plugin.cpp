@@ -40,6 +40,20 @@
 #include "scene/gui/separator.h"
 #include "scene/resources/curve.h"
 
+void LandscapeSpline3DEditorPlugin::begin_point_action(EditorUndoRedoManager *p_undo_redo, Path3D *p_path) {
+	LandscapeSpline3D *edited = Object::cast_to<LandscapeSpline3D>(p_path);
+	if (edited != nullptr) {
+		p_undo_redo->add_undo_method(edited, "_edit_move_origin", edited->get_position());
+	}
+}
+
+void LandscapeSpline3DEditorPlugin::end_point_action(EditorUndoRedoManager *p_undo_redo, Path3D *p_path) {
+	LandscapeSpline3D *edited = Object::cast_to<LandscapeSpline3D>(p_path);
+	if (edited != nullptr) {
+		p_undo_redo->add_do_method(edited, "_edit_center_origin");
+	}
+}
+
 bool LandscapeSpline3DEditorPlugin::handles(Object *p_object) const {
 	return Object::cast_to<LandscapeSpline3D>(p_object) != nullptr;
 }
@@ -71,6 +85,7 @@ void LandscapeSpline3DEditorPlugin::_snap_points_pressed() {
 
 	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 	ur->create_action(TTR("Snap Spline Points to Terrain"));
+	begin_point_action(ur, spline);
 	for (int i = 0; i < curve->get_point_count(); i++) {
 		const Vector3 position = curve->get_point_position(i);
 		const Vector3 snapped = spline->project_to_landscape(position);
@@ -79,6 +94,7 @@ void LandscapeSpline3DEditorPlugin::_snap_points_pressed() {
 			ur->add_undo_method(curve.ptr(), "set_point_position", i, position);
 		}
 	}
+	end_point_action(ur, spline);
 	ur->commit_action();
 }
 
@@ -150,6 +166,24 @@ void LandscapeSpline3DEditorPlugin::_copy_material_pressed() {
 	ur->commit_action();
 }
 
+void LandscapeSpline3DEditorPlugin::_center_origin_pressed() {
+	if (spline == nullptr) {
+		return;
+	}
+	const Vector3 before = spline->get_position();
+	spline->_edit_center_origin();
+	if (spline->get_position() == before) {
+		// Centered already, or no points to center on: nothing to undo.
+		return;
+	}
+	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
+	ur->create_action(TTR("Center Spline Origin"));
+	ur->add_do_method(spline, "_edit_center_origin");
+	ur->add_undo_method(spline, "_edit_move_origin", before);
+	// Already done above; committing only records it.
+	ur->commit_action(false);
+}
+
 void LandscapeSpline3DEditorPlugin::_undo_redo_inspector_callback(Object *p_undo_redo, Object *p_edited, const String &p_property, const Variant &p_new_value) {
 	LandscapeSpline3D *edited = Object::cast_to<LandscapeSpline3D>(p_edited);
 	if (edited == nullptr || p_property != "spline_type") {
@@ -199,6 +233,13 @@ LandscapeSpline3DEditorPlugin::LandscapeSpline3DEditorPlugin() {
 	copy_material_button->set_tooltip_text(TTR("Assign a copy of the built-in road or water material this spline type renders with by default, with its own copy of the shader, ready to tweak."));
 	copy_material_button->connect(SceneStringName(pressed), callable_mp(this, &LandscapeSpline3DEditorPlugin::_copy_material_pressed));
 	toolbar->add_child(copy_material_button);
+
+	center_origin_button = memnew(Button);
+	center_origin_button->set_theme_type_variation(SceneStringName(FlatButton));
+	center_origin_button->set_text(TTR("Center Origin"));
+	center_origin_button->set_tooltip_text(TTR("Move the spline's origin, and its gizmo with it, to the middle of its curve, without moving the curve. Editing the points with the Path3D tools does this by itself; this is for a spline whose curve was changed some other way, or that was made before it did."));
+	center_origin_button->connect(SceneStringName(pressed), callable_mp(this, &LandscapeSpline3DEditorPlugin::_center_origin_pressed));
+	toolbar->add_child(center_origin_button);
 
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(toolbar);
 

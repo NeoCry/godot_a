@@ -372,6 +372,13 @@ private:
 	void _compute_fill_footprint(Landscape3D *p_landscape, float &r_level, LocalVector<FootprintBlock> &r_blocks) const;
 	void _apply_fill_to_landscape(Landscape3D *p_landscape, bool p_carve, bool p_paint);
 
+#ifdef TOOLS_ENABLED
+	// Moves the node by p_offset in its own space, which puts it at p_position
+	// in its parent's, and the curve's points and the children back by
+	// p_offset, so that none of them moves in the world.
+	void _move_origin(const Vector3 &p_offset, const Vector3 &p_position);
+#endif
+
 protected:
 	static void _bind_methods();
 	void _notification(int p_what);
@@ -508,6 +515,21 @@ public:
 	// Changes exactly when the chunk's mesh is rebuilt.
 	uint64_t get_chunk_hash(int p_index) const;
 	float get_length() const { return total_length; }
+
+#ifdef TOOLS_ENABLED
+	// The editor keeps the node's origin at the center of its curve, so that
+	// its gizmo sits on the road, river or lake rather than wherever the node
+	// was created (see LandscapeSpline3DEditorPlugin::begin_point_action()).
+	// Neither moves the curve, or any child, in the world: the points and the
+	// children are moved back by as much as the node moves. Bound for undo and
+	// redo.
+	//
+	// Moves the node to p_position, in its parent's space (like position).
+	void _edit_move_origin(const Vector3 &p_position);
+	// Moves the node to the center of its curve's points. Does nothing when it
+	// is there already, or the curve has no points.
+	void _edit_center_origin();
+#endif
 
 	PackedStringArray get_configuration_warnings() const override;
 

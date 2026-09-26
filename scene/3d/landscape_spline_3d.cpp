@@ -739,6 +739,11 @@ void LandscapeSpline3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("apply_preset", "type"), &LandscapeSpline3D::apply_preset);
 	ClassDB::bind_method(D_METHOD("get_chunk_count"), &LandscapeSpline3D::get_chunk_count);
 
+#ifdef TOOLS_ENABLED
+	ClassDB::bind_method(D_METHOD("_edit_move_origin", "position"), &LandscapeSpline3D::_edit_move_origin);
+	ClassDB::bind_method(D_METHOD("_edit_center_origin"), &LandscapeSpline3D::_edit_center_origin);
+#endif
+
 	ClassDB::bind_static_method("LandscapeSpline3D", D_METHOD("get_preset", "type"), &LandscapeSpline3D::get_preset);
 	ClassDB::bind_static_method("LandscapeSpline3D", D_METHOD("get_default_material", "type"), &LandscapeSpline3D::get_default_material);
 	ClassDB::bind_static_method("LandscapeSpline3D", D_METHOD("create_default_material", "type"), &LandscapeSpline3D::create_default_material);
@@ -2533,6 +2538,62 @@ void LandscapeSpline3D::apply_to_landscape() {
 		landscape->paint_layer_regions(regions, paint_layer, weights);
 	}
 }
+
+#ifdef TOOLS_ENABLED
+// The origin, in the editor.
+
+void LandscapeSpline3D::_move_origin(const Vector3 &p_offset, const Vector3 &p_position) {
+	const Ref<Curve3D> source_curve = get_curve();
+	if (source_curve.is_valid()) {
+		// One change for the whole curve rather than one a point: some of
+		// what listens bakes the curve anew on every change (the transform
+		// gizmo while points are selected, and any PathFollow3D child).
+		const bool was_blocking = source_curve->is_blocking_signals();
+		source_curve->set_block_signals(true);
+		for (int i = 0; i < source_curve->get_point_count(); i++) {
+			source_curve->set_point_position(i, source_curve->get_point_position(i) - p_offset);
+		}
+		source_curve->set_block_signals(was_blocking);
+		source_curve->emit_changed();
+	}
+	for (int i = 0; i < get_child_count(); i++) {
+		Node3D *child = Object::cast_to<Node3D>(get_child(i));
+		// A PathFollow3D places itself on the curve, and a top-level node is
+		// not placed relative to this one at all.
+		if (child == nullptr || child->is_set_as_top_level() || Object::cast_to<PathFollow3D>(child) != nullptr) {
+			continue;
+		}
+		child->set_position(child->get_position() - p_offset);
+	}
+	set_position(p_position);
+}
+
+void LandscapeSpline3D::_edit_move_origin(const Vector3 &p_position) {
+	const Transform3D xform = get_transform();
+	if (p_position == xform.origin || xform.basis.determinant() == 0) {
+		return;
+	}
+	_move_origin(xform.affine_inverse().xform(p_position), p_position);
+}
+
+void LandscapeSpline3D::_edit_center_origin() {
+	const Ref<Curve3D> source_curve = get_curve();
+	if (source_curve.is_null() || source_curve->get_point_count() == 0) {
+		return;
+	}
+	AABB bounds(source_curve->get_point_position(0), Vector3());
+	for (int i = 1; i < source_curve->get_point_count(); i++) {
+		bounds.expand_to(source_curve->get_point_position(i));
+	}
+	const Vector3 center = bounds.get_center();
+	// Centering again what already is would only nudge everything by rounding
+	// error, and rebuild every chunk for it.
+	if (center.length() <= MAX(bounds.size.length(), (real_t)1.0) * (real_t)1e-5) {
+		return;
+	}
+	_move_origin(center, get_transform().xform(center));
+}
+#endif // TOOLS_ENABLED
 
 // Properties.
 
