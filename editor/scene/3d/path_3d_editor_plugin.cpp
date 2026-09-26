@@ -38,6 +38,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/scene/3d/landscape_spline_3d_editor_plugin.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "editor/scene/3d/node_3d_editor_viewport.h"
 #include "editor/settings/editor_settings.h"
@@ -264,13 +265,19 @@ void Path3DGizmo::commit_handle(int p_id, bool p_secondary, const Variant &p_res
 	if (!p_secondary && !Path3DEditorPlugin::singleton->curve_edit->is_pressed()) {
 		// Special case for primary handle, the handle id equals control point id.
 		const int idx = p_id;
+		// A move still waiting for the physics frame would land after the
+		// point is restored or recorded below, and in the space of a
+		// LandscapeSpline3D whose origin has been re-centered meanwhile.
+		Path3DEditorPlugin::singleton->_edit.waiting_handle_physics = false;
 		if (p_cancel) {
 			c->set_point_position(idx, p_restore);
 			return;
 		}
 		ur->create_action(TTR("Set Curve Point Position"));
+		LandscapeSpline3DEditorPlugin::begin_point_action(ur, path);
 		ur->add_do_method(c.ptr(), "set_point_position", idx, c->get_point_position(idx));
 		ur->add_undo_method(c.ptr(), "set_point_position", idx, p_restore);
+		LandscapeSpline3DEditorPlugin::end_point_action(ur, path);
 		ur->commit_action();
 
 		return;
@@ -700,8 +707,10 @@ EditorPlugin::AfterGUIInput Path3DEditorPlugin::forward_3d_gui_input(Camera3D *p
 				//subdivide
 
 				ur->create_action(TTR("Split Path"));
+				LandscapeSpline3DEditorPlugin::begin_point_action(ur, path);
 				ur->add_do_method(c.ptr(), "add_point", closest_seg_point, Vector3(), Vector3(), closest_seg + 1);
 				ur->add_undo_method(c.ptr(), "remove_point", closest_seg + 1);
+				LandscapeSpline3DEditorPlugin::end_point_action(ur, path);
 				ur->commit_action();
 				return EditorPlugin::AFTER_GUI_INPUT_STOP;
 
@@ -730,8 +739,10 @@ EditorPlugin::AfterGUIInput Path3DEditorPlugin::forward_3d_gui_input(Camera3D *p
 				Vector3 inters;
 				if (p.intersects_ray(ray_from, ray_dir, &inters)) {
 					ur->create_action(TTR("Add Point to Curve"));
+					LandscapeSpline3DEditorPlugin::begin_point_action(ur, path);
 					ur->add_do_method(c.ptr(), "add_point", it.xform(inters), Vector3(), Vector3(), -1);
 					ur->add_undo_method(c.ptr(), "remove_point", c->get_point_count());
+					LandscapeSpline3DEditorPlugin::end_point_action(ur, path);
 					ur->commit_action();
 					return EditorPlugin::AFTER_GUI_INPUT_STOP;
 				}
@@ -752,8 +763,10 @@ EditorPlugin::AfterGUIInput Path3DEditorPlugin::forward_3d_gui_input(Camera3D *p
 				if (dist_to_p < click_dist) {
 					EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 					ur->create_action(TTR("Remove Path Point"));
+					LandscapeSpline3DEditorPlugin::begin_point_action(ur, path);
 					ur->add_do_method(c.ptr(), "remove_point", i);
 					ur->add_undo_method(c.ptr(), "add_point", c->get_point_position(i), c->get_point_in(i), c->get_point_out(i), i);
+					LandscapeSpline3DEditorPlugin::end_point_action(ur, path);
 					ur->commit_action();
 					return EditorPlugin::AFTER_GUI_INPUT_STOP;
 				} else if (dist_to_p_out < click_dist) {
@@ -986,8 +999,10 @@ void Path3DEditorPlugin::_notification(int p_what) {
 					}
 					if (hit_something) {
 						ur->create_action(TTR("Add Point to Curve"));
+						LandscapeSpline3DEditorPlugin::begin_point_action(ur, path);
 						ur->add_do_method(c.ptr(), "add_point", it.xform(inters), Vector3(), Vector3(), -1);
 						ur->add_undo_method(c.ptr(), "remove_point", c->get_point_count());
+						LandscapeSpline3DEditorPlugin::end_point_action(ur, path);
 						ur->commit_action();
 					}
 				}
@@ -1293,12 +1308,14 @@ void Path3DGizmoPlugin::commit_subgizmos(const EditorNode3DGizmo *p_gizmo, const
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 
 	undo_redo->create_action(TTR("Set Curve Point Position"));
+	LandscapeSpline3DEditorPlugin::begin_point_action(undo_redo, path);
 
 	for (int i = 0; i < p_ids.size(); ++i) {
 		const int idx = p_ids[i];
 		undo_redo->add_do_method(curve.ptr(), "set_point_position", idx, curve->get_point_position(idx));
 		undo_redo->add_undo_method(curve.ptr(), "set_point_position", idx, p_restore[i].origin);
 	}
+	LandscapeSpline3DEditorPlugin::end_point_action(undo_redo, path);
 	undo_redo->commit_action();
 }
 

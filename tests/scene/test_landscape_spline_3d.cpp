@@ -32,6 +32,7 @@
 
 TEST_FORCE_LINK(test_landscape_spline_3d)
 
+#include "core/object/undo_redo.h"
 #include "scene/3d/landscape_3d.h"
 #include "scene/3d/landscape_spline_3d.h"
 #include "scene/3d/terrain_data.h"
@@ -620,5 +621,173 @@ TEST_CASE("[SceneTree][LandscapeSpline3D] Presets") {
 	memdelete(fresh);
 	memdelete(spline);
 }
+
+#ifdef TOOLS_ENABLED
+static PackedVector3Array global_points(LandscapeSpline3D *p_spline) {
+	PackedVector3Array points;
+	const Ref<Curve3D> curve = p_spline->get_curve();
+	for (int i = 0; i < curve->get_point_count(); i++) {
+		points.push_back(p_spline->get_global_transform().xform(curve->get_point_position(i)));
+	}
+	return points;
+}
+
+static bool points_equal_approx(const PackedVector3Array &p_a, const PackedVector3Array &p_b) {
+	if (p_a.size() != p_b.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_a.size(); i++) {
+		if (!p_a[i].is_equal_approx(p_b[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Where the strip is drawn, in global space.
+static AABB global_mesh_bounds(LandscapeSpline3D *p_spline) {
+	AABB bounds;
+	bool empty = true;
+	for (int i = 0; i < p_spline->get_chunk_count(); i++) {
+		for (const Vector3 &v : chunk_vertices(p_spline, i)) {
+			const Vector3 global = p_spline->get_global_transform().xform(v);
+			if (empty) {
+				bounds = AABB(global, Vector3());
+				empty = false;
+			} else {
+				bounds.expand_to(global);
+			}
+		}
+	}
+	return bounds;
+}
+
+TEST_CASE("[SceneTree][LandscapeSpline3D] Centering the origin on the curve moves nothing in the world") {
+	SplineScene scene(make_terrain(6.0f));
+	// Turned and moved on the landscape, so the center has to be found in the
+	// spline's own space, and the node moved in its parent's.
+	const Transform3D placed(Basis(Vector3(0, 1, 0), 0.3f), Vector3(20, 0, 30));
+	scene.spline->set_transform(placed);
+	const Ref<Curve3D> curve = make_line(Vector3(100, 2, 150), Vector3(300, 8, 180), 4);
+	scene.spline->set_curve(curve);
+	Node3D *child = memnew(Node3D);
+	child->set_position(Vector3(150, 1, 160));
+	scene.spline->add_child(child);
+	PathFollow3D *follower = memnew(PathFollow3D);
+	scene.spline->add_child(follower);
+	follower->set_progress(50.0f);
+	scene.spline->update_mesh();
+
+	const PackedVector3Array points_before = global_points(scene.spline);
+	const Transform3D child_before = child->get_global_transform();
+	const Transform3D follower_before = follower->get_global_transform();
+	const AABB mesh_before = global_mesh_bounds(scene.spline);
+	REQUIRE(mesh_before.size.x > 100.0f);
+
+	scene.spline->_edit_center_origin();
+	scene.spline->update_mesh();
+
+	// Halfway along the line, which is the middle of its bounds.
+	CHECK(scene.spline->get_transform().is_equal_approx(Transform3D(placed.basis, placed.xform(Vector3(200, 5, 165)))));
+	CHECK(curve->get_point_position(0).is_equal_approx(Vector3(-100, -3, -15)));
+	CHECK(curve->get_point_position(3).is_equal_approx(Vector3(100, 3, 15)));
+
+	CHECK(points_equal_approx(global_points(scene.spline), points_before));
+	CHECK(child->get_global_transform().is_equal_approx(child_before));
+	// Placed along the moved curve again, which is baked anew.
+	CHECK(follower->get_global_position().distance_to(follower_before.origin) < 0.001f);
+	// Rebuilt around the new origin, the strip lies where it did (to within
+	// its vertex compression and simplification).
+	const AABB mesh_after = global_mesh_bounds(scene.spline);
+	CHECK(mesh_after.position.distance_to(mesh_before.position) < 0.05f);
+	CHECK(mesh_after.get_end().distance_to(mesh_before.get_end()) < 0.05f);
+
+	// Centered already: nothing moves, and nothing is rebuilt.
+	const Vector3 centered = scene.spline->get_position();
+	Vector<uint64_t> hashes;
+	for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+		hashes.push_back(scene.spline->get_chunk_hash(i));
+	}
+	scene.spline->_edit_center_origin();
+	scene.spline->update_mesh();
+	CHECK(scene.spline->get_position() == centered);
+	REQUIRE(scene.spline->get_chunk_count() == hashes.size());
+	for (int i = 0; i < hashes.size(); i++) {
+		CHECK(scene.spline->get_chunk_hash(i) == hashes[i]);
+	}
+
+	// And back where it was, as undoing it does.
+	scene.spline->_edit_move_origin(placed.origin);
+	CHECK(scene.spline->get_position() == placed.origin);
+	CHECK(curve->get_point_position(0).is_equal_approx(Vector3(100, 2, 150)));
+	CHECK(points_equal_approx(global_points(scene.spline), points_before));
+	CHECK(child->get_position().is_equal_approx(Vector3(150, 1, 160)));
+
+	// Nothing to center on.
+	curve->clear_points();
+	scene.spline->_edit_center_origin();
+	CHECK(scene.spline->get_position() == placed.origin);
+}
+
+TEST_CASE("[SceneTree][LandscapeSpline3D] The origin follows the curve through undo and redo") {
+	SplineScene scene(make_terrain());
+	const Ref<Curve3D> curve = make_line(Vector3(100, 0, 256), Vector3(200, 0, 256), 3);
+	scene.spline->set_curve(curve);
+	const PackedVector3Array original = global_points(scene.spline);
+
+	// What the editor wraps every edit of the points in (see
+	// LandscapeSpline3DEditorPlugin::begin_point_action()): the origin is put
+	// back first when undoing, since the edit's own undo is in the space it
+	// was made in, and centered last when doing.
+	UndoRedo *undo_redo = memnew(UndoRedo);
+	auto edit = [&](const Callable &p_do, const Callable &p_undo) {
+		undo_redo->create_action("Edit Points");
+		undo_redo->add_undo_method(Callable(scene.spline, "_edit_move_origin").bind(scene.spline->get_position()));
+		undo_redo->add_do_method(p_do);
+		undo_redo->add_undo_method(p_undo);
+		undo_redo->add_do_method(Callable(scene.spline, "_edit_center_origin"));
+		undo_redo->commit_action();
+	};
+	const Callable set_position = Callable(curve.ptr(), "set_point_position");
+
+	// The spline starts out at its landscape's origin, far from its points.
+	edit(set_position.bind(2, Vector3(300, 0, 256)), set_position.bind(2, Vector3(200, 0, 256)));
+	CHECK(scene.spline->get_position().is_equal_approx(Vector3(200, 0, 256)));
+	const PackedVector3Array first = global_points(scene.spline);
+	CHECK(first[2].is_equal_approx(Vector3(300, 0, 256)));
+
+	// Made in the centered space, like every edit after the first.
+	const Vector3 local = curve->get_point_position(2);
+	edit(set_position.bind(2, local + Vector3(100, 0, 0)), set_position.bind(2, local));
+	CHECK(scene.spline->get_position().is_equal_approx(Vector3(250, 0, 256)));
+	const PackedVector3Array second = global_points(scene.spline);
+	CHECK(second[2].is_equal_approx(Vector3(400, 0, 256)));
+
+	const Vector3 added = scene.spline->get_global_transform().affine_inverse().xform(Vector3(100, 0, 356));
+	edit(Callable(curve.ptr(), "add_point").bind(added, Vector3(), Vector3(), -1), Callable(curve.ptr(), "remove_point").bind(3));
+	CHECK(scene.spline->get_position().is_equal_approx(Vector3(250, 0, 306)));
+	const PackedVector3Array third = global_points(scene.spline);
+	CHECK(third[3].is_equal_approx(Vector3(100, 0, 356)));
+
+	undo_redo->undo();
+	CHECK(scene.spline->get_position() == Vector3(250, 0, 256));
+	CHECK(points_equal_approx(global_points(scene.spline), second));
+	undo_redo->undo();
+	CHECK(points_equal_approx(global_points(scene.spline), first));
+	undo_redo->undo();
+	CHECK(scene.spline->get_position() == Vector3());
+	CHECK(points_equal_approx(global_points(scene.spline), original));
+
+	undo_redo->redo();
+	CHECK(points_equal_approx(global_points(scene.spline), first));
+	undo_redo->redo();
+	CHECK(points_equal_approx(global_points(scene.spline), second));
+	undo_redo->redo();
+	CHECK(scene.spline->get_position().is_equal_approx(Vector3(250, 0, 306)));
+	CHECK(points_equal_approx(global_points(scene.spline), third));
+
+	memdelete(undo_redo);
+}
+#endif // TOOLS_ENABLED
 
 } // namespace TestLandscapeSpline3D
