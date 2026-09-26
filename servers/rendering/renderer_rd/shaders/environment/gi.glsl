@@ -702,18 +702,10 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 // Each tile has a second probe (SCREEN_PROBES_PER_TILE, from GI), for a second surface in it: one the
 // first probe fits (see screen_probe_fit()) less than this.
 #define SCREEN_PROBE_SECOND_FIT 0.25
-// A pixel's light that changes by more than SCREEN_PROBE_CHANGE_RELATIVE from its history (relative
-// to the larger of the two, plus a small absolute margin for the dark), two frames in a row, keeps
-// only SCREEN_PROBE_CHANGE_FRAMES frames of it, and goes on doing so for as long as it keeps changing
-// the same way by more than SCREEN_PROBE_TREND_RELATIVE a frame. The states in between are kept in
-// the fraction of the frame count the history holds.
-#define SCREEN_PROBE_CHANGE_RELATIVE 0.5
-#define SCREEN_PROBE_TREND_RELATIVE 0.1
-#define SCREEN_PROBE_CHANGE_ABSOLUTE 0.002
-#define SCREEN_PROBE_CHANGE_FRAMES 3.0
-#define SCREEN_PROBE_STATE_FALLING 0.25
-#define SCREEN_PROBE_STATE_SUSPECT 0.5
-#define SCREEN_PROBE_STATE_RISING 0.75
+// How far a pixel's history may be from the light it gathers in a frame, as a factor either way
+// (plus a small absolute margin for the dark), before it is pulled in towards it.
+#define SCREEN_PROBE_HISTORY_RANGE 2.0
+#define SCREEN_PROBE_HISTORY_MARGIN 0.005
 
 // What the SDFGI probe maps hold (see MODE_STORE in sdfgi_integrate.glsl) is 4 / PI times the light
 // it stands for. The screen probes take what they sample from them back to radiance, to add it up
@@ -1699,42 +1691,24 @@ void main() {
 
 		// The light each frame gathers is noisy, and each pixel averages it over up to
 		// 1 / screen_probe_blend frames, fewer while its history is young (after a disocclusion),
-		// so that it settles quickly and then keeps still. Light that changes suddenly and by
-		// much (switched on or off) cuts the history short to catch up within a few frames, and
-		// keeps it short while it goes on changing that way (as the SDFGI probes, and the light
-		// they bounce, settle behind it). It takes two frames in a row of such a change to tell it
-		// from the odd frame whose probes happened to land badly for the pixel (at the edge of an
-		// object far away, which no probe of its own covers in every frame). Light that changes
-		// gradually is only ever followed at the full length: steady rather than quick.
+		// so that it settles quickly and then keeps still. Light that changes by much at once
+		// (switched on or off) is followed within a frame or two all the same: the history is kept
+		// within a factor of this frame's light, scaled as a whole so that it keeps its color. The
+		// noise from one frame to the next rarely goes that far. Unlike cutting the history short
+		// past some threshold, this acts smoothly from one pixel to the next, so the pixels it
+		// acts on do not stand out in patches from the ones it leaves be.
 		float frames = 1.0;
-		float state = 0.0;
 		if (history_valid) {
-			frames = floor(history_ambient.a);
-			float history_state = history_ambient.a - frames;
+			frames = min(floor(history_ambient.a + 0.5) + 1.0, 1.0 / params.screen_probe_blend);
 			float current = dot(ambient_light.rgb, vec3(0.2126, 0.7152, 0.0722));
 			float previous = dot(history_ambient.rgb, vec3(0.2126, 0.7152, 0.0722));
-			float change = current - previous;
-			float scale = max(current, previous);
-			bool sudden = abs(change) > scale * SCREEN_PROBE_CHANGE_RELATIVE + SCREEN_PROBE_CHANGE_ABSOLUTE;
-			bool going_on = abs(change) > scale * SCREEN_PROBE_TREND_RELATIVE + SCREEN_PROBE_CHANGE_ABSOLUTE;
-
-			if (sudden && abs(history_state - SCREEN_PROBE_STATE_SUSPECT) < 0.125) {
-				frames = min(frames, SCREEN_PROBE_CHANGE_FRAMES);
-				state = change < 0.0 ? SCREEN_PROBE_STATE_FALLING : SCREEN_PROBE_STATE_RISING;
-			} else if (going_on && abs(history_state - (change < 0.0 ? SCREEN_PROBE_STATE_FALLING : SCREEN_PROBE_STATE_RISING)) < 0.125) {
-				frames = min(frames, SCREEN_PROBE_CHANGE_FRAMES);
-				state = history_state;
-			} else if (sudden) {
-				state = SCREEN_PROBE_STATE_SUSPECT;
-			}
-
-			frames = min(frames + 1.0, 1.0 / params.screen_probe_blend);
-			ambient_light.rgb = mix(history_ambient.rgb, ambient_light.rgb, 1.0 / frames);
+			float limited = clamp(previous, current / SCREEN_PROBE_HISTORY_RANGE - SCREEN_PROBE_HISTORY_MARGIN, current * SCREEN_PROBE_HISTORY_RANGE + SCREEN_PROBE_HISTORY_MARGIN);
+			vec3 history = previous > 0.0 ? history_ambient.rgb * (limited / previous) : history_ambient.rgb;
+			ambient_light.rgb = mix(history, ambient_light.rgb, 1.0 / frames);
 			reflection_light = trace ? mix(history_reflection, reflection_light, params.temporal_blend) : history_reflection;
 		}
 		ambient_light.a = sdfgi_ambient_alpha(world_vertex);
-		// Where it is in that, in the fraction of the frame count.
-		ambient_history = vec4(ambient_light.rgb, frames + state);
+		ambient_history = vec4(ambient_light.rgb, frames);
 	}
 #endif
 
