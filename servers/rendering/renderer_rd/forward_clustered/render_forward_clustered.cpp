@@ -1356,6 +1356,9 @@ void RenderForwardClustered::_update_sdfgi(RenderDataRD *p_render_data) {
 		for (int i = 0; i < p_render_data->render_sdfgi_region_count; i++) {
 			sdfgi->render_region(rb, p_render_data->render_sdfgi_regions[i].region, p_render_data->render_sdfgi_regions[i].instances, exposure_normalization);
 		}
+		if (p_render_data->render_sdfgi_region_count > 0) {
+			sdfgi->reinit_rebuilt_probes();
+		}
 		if (p_render_data->sdfgi_update_data->update_static) {
 			sdfgi->render_static_lights(p_render_data, rb, p_render_data->sdfgi_update_data->static_cascade_count, p_render_data->sdfgi_update_data->static_cascade_indices, p_render_data->sdfgi_update_data->static_positional_lights);
 		}
@@ -1830,7 +1833,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		// This should allow most of the processing to happen in parallel even if we're doing
 		// drawcalls per eye/view. It will all sync up at the barrier.
 
-		if (p_use_ssil || p_use_ssr) {
+		// SDFGI's screen probes trace rays against the previous frame's image, too.
+		const bool use_screen_probes = p_use_gi && gi.sdfgi_screen_probes && rb->has_custom_data(RB_SCOPE_SDFGI);
+		if (p_use_ssil || p_use_ssr || use_screen_probes) {
 			ss_effects->allocate_last_frame_buffer(rb, p_use_ssil, p_use_ssr);
 		}
 
@@ -2736,7 +2741,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	RD::get_singleton()->draw_command_end_label();
 
 	RD::get_singleton()->draw_command_begin_label("Copy Framebuffer for SSIL/SSR");
-	if (using_ssil || using_ssr) {
+	if (using_ssil || using_ssr || (using_sdfgi && gi.sdfgi_screen_probes)) {
 		RENDER_TIMESTAMP("Copy Final Framebuffer (SSIL/SSR)");
 		_copy_framebuffer_to_ss_effects(rb, using_ssil, using_ssr);
 	}
@@ -4189,6 +4194,21 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 	}
 	{
 		RD::Uniform u;
+		u.binding = 41;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		RID t;
+		if (rb.is_valid() && rb->has_custom_data(RB_SCOPE_SDFGI)) {
+			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+			t = sdfgi->probe_state_texture;
+		}
+		if (t.is_null()) {
+			t = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_WHITE);
+		}
+		u.append_id(t);
+		uniforms.push_back(u);
+	}
+	{
+		RD::Uniform u;
 		u.binding = 32;
 		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
 		RID voxel_gi;
@@ -4629,6 +4649,17 @@ void RenderForwardClustered::sdfgi_update(const Ref<RenderSceneBuffers> &p_rende
 	}
 }
 
+void RenderForwardClustered::sdfgi_mark_dirty(const Ref<RenderSceneBuffers> &p_render_buffers, const LocalVector<AABB> &p_aabbs) {
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	ERR_FAIL_COND(rb.is_null());
+
+	if (!rb->has_custom_data(RB_SCOPE_SDFGI)) {
+		return; // Voxelized from scratch when created.
+	}
+	Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+	sdfgi->mark_dirty(p_aabbs);
+}
+
 int RenderForwardClustered::sdfgi_get_pending_region_count(const Ref<RenderSceneBuffers> &p_render_buffers) const {
 	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
 	ERR_FAIL_COND_V(rb.is_null(), 0);
@@ -4638,20 +4669,7 @@ int RenderForwardClustered::sdfgi_get_pending_region_count(const Ref<RenderScene
 	}
 	Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
 
-	int dirty_count = 0;
-	for (const RendererRD::GI::SDFGI::Cascade &c : sdfgi->cascades) {
-		if (c.dirty_regions == RendererRD::GI::SDFGI::Cascade::DIRTY_ALL) {
-			dirty_count++;
-		} else {
-			for (int j = 0; j < 3; j++) {
-				if (c.dirty_regions[j] != 0) {
-					dirty_count++;
-				}
-			}
-		}
-	}
-
-	return dirty_count;
+	return sdfgi->get_pending_region_count();
 }
 
 AABB RenderForwardClustered::sdfgi_get_pending_region_bounds(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const {
