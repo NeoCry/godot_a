@@ -1387,6 +1387,11 @@ public:
 	PASS4(environment_set_gtao_quality, RSE::EnvironmentGTAOQuality, bool, float, float)
 
 	// HMAO (height map ambient occlusion)
+	PASS10(environment_set_atmosphere, RID, bool, float, float, const Color &, float, const Color &, float, float, bool)
+	PASS4(environment_set_atmosphere_rayleigh, RID, const Color &, float, float)
+	PASS7(environment_set_atmosphere_mie, RID, const Color &, float, const Color &, float, float, float)
+	PASS5(environment_set_atmosphere_ozone, RID, const Color &, float, float, float)
+
 	PASS5(environment_set_hmao, RID, bool, float, float, RSE::EnvironmentHMAOResolution)
 
 	PASS1RC(bool, environment_get_hmao_enabled, RID)

@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="TimeOfDay" inherits="Node" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Runs a day/night cycle over the sun, the moon, the environment and anything else in the scene.
+	</brief_description>
+	<description>
+		[TimeOfDay] drives the [DirectionalLight3D] that plays the sun ([member sun_light_path]), optionally a second one for the moon ([member moon_light_path]), and the [Environment] of a [WorldEnvironment] ([member world_environment_path]) through a whole day, similar to the Time of Day of CryEngine.
+		The sun and the moon are placed in the sky from [member time], [member latitude] and [member day_of_year], the way they really move: the sun rises in the east, is highest at noon, and the length of the day follows the seasons. Each light is hidden while it is below the horizon or has no energy, which also saves rendering its shadows.
+		Everything else comes from [member profile], a [TimeOfDayProfile]: a list of tracks that tie a number, boolean or color property to a [Curve] or a [Gradient] over the 24 hours of the day. A track can target the sun, the moon, the [Environment] (fog density and color, ambient light, exposure...), its sky material (the colors of a [ProceduralSkyMaterial]...), its [CameraAttributes], or any other node, such as the energy of street lamps that light up at dusk. Use [b]Create Default Profile[/b] in the Inspector for a complete day to start from.
+		Weather is another [TimeOfDayProfile], set as [member weather], that only lists the tracks it changes (a denser fog, a dimmer sun, a grey sky) and is blended over the base profile by [member weather_intensity]. [method transition_to_weather] fades from one weather to another over time.
+		The Inspector shows the whole day on a timeline that can be dragged to change the time. To shape the day by eye, pause, pick a time, adjust the lights or the environment directly, then press [b]Key Changed Values[/b] ([method key_changed_values]) to write those changes into the profile at that time.
+		With an [Environment] that has an atmosphere ([member Environment.atmosphere_enabled]) and an [AtmosphereSkyMaterial], the air itself colors the sky and reddens the sun: [b]Create Default Profile[/b] then leaves the sun and the sky out of the profile, and the sun is only hidden once twilight is over, since the atmosphere keeps it from lighting the scene from below the horizon.
+		Everything [TimeOfDay] changes is restored to its original value when the scene is saved in the editor, when a track stops driving it, and when the node is removed in the editor, so the saved scene never contains the state of the cycle.
+		[b]Note:[/b] Moving the sun or changing sky colors every frame makes the sky's radiance update every frame. Set [member Sky.process_mode] to [constant Sky.PROCESS_MODE_INCREMENTAL] or [constant Sky.PROCESS_MODE_REALTIME], or raise [member update_interval], to keep that affordable.
+		[codeblock]
+		# A fog that rolls in over half a minute.
+		var fog = TimeOfDayProfile.new()
+		var track = fog.add_track(TimeOfDayProfile.TARGET_ENVIRONMENT, &amp;"fog_density")
+		var density = Curve.new()
+		density.max_domain = 24.0
+		density.max_value = 0.1
+		density.add_point(Vector2(0, 0.05))
+		density.add_point(Vector2(24, 0.05))
+		fog.set_track_curve(track, density)
+		$TimeOfDay.transition_to_weather(fog, 30.0)
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="advance_time">
+			<return type="void" />
+			<param index="0" name="hours" type="float" />
+			<description>
+				Moves time forward by [param hours], emitting [signal sunrise], [signal sunset] and [signal day_passed] for every one it passes, in order. Useful to skip a night.
+			</description>
+		</method>
+		<method name="force_update">
+			<return type="void" />
+			<description>
+				Applies the profile, the weather and the positions of the sun and the moon right away, instead of at the end of the frame.
+			</description>
+		</method>
+		<method name="get_moon_direction" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+				Returns the unit vector pointing from the ground towards the moon, in global space.
+			</description>
+		</method>
+		<method name="get_sun_direction" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+				Returns the unit vector pointing from the ground towards the sun, in global space.
+			</description>
+		</method>
+		<method name="get_sunrise_time" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the hour the sun rises at, or [code]-1.0[/code] if it doesn't rise or set on [member day_of_year] at [member latitude].
+			</description>
+		</method>
+		<method name="get_sunset_time" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the hour the sun sets at, or [code]-1.0[/code] if it doesn't rise or set on [member day_of_year] at [member latitude].
+			</description>
+		</method>
+		<method name="is_daytime" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the sun is above the horizon.
+			</description>
+		</method>
+		<method name="is_weather_transitioning" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] while [method transition_to_weather] is fading between weathers.
+			</description>
+		</method>
+		<method name="key_changed_values">
+			<return type="int" />
+			<description>
+				For every track of [member profile] whose property no longer has the value the profile gives at the current time, writes that value into the track's [Curve] or [Gradient] as a key at the current time, replacing a key within five minutes of it. Returns how many tracks were keyed. Fails while a weather is blended in, since its changes would end up in the profile.
+			</description>
+		</method>
+		<method name="transition_to_weather">
+			<return type="void" />
+			<param index="0" name="weather" type="TimeOfDayProfile" />
+			<param index="1" name="duration" type="float" />
+			<param index="2" name="intensity" type="float" default="1.0" />
+			<description>
+				Fades from the current weather to [param weather] at [param intensity] over [param duration] seconds. Pass [code]null[/code] to clear the weather. A transition started during another one carries on from where it is. [signal weather_transition_finished] is emitted at the end.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="align_curves_to_sun" type="bool" setter="set_align_curves_to_sun" getter="is_aligning_curves_to_sun" default="true">
+			If [code]true[/code], profiles are sampled as if the sun always rose at 6:00 and set at 18:00: the daylight and the night are stretched to fit, so dawn colors stay at dawn through the seasons. If [code]false[/code], curves are sampled at the actual [member time].
+		</member>
+		<member name="day_duration" type="float" setter="set_day_duration" getter="get_day_duration" default="1440.0">
+			How many seconds of real time a whole day lasts while it runs. The default is an hour of the day per minute.
+		</member>
+		<member name="day_of_year" type="int" setter="set_day_of_year" getter="get_day_of_year" default="80">
+			The day of the year, from [code]1[/code] (1 January) to [code]365[/code], which sets the season. The default is the spring equinox, when the sun rises at 6:00 and sets at 18:00 everywhere. To let seasons pass, increase it on [signal day_passed].
+		</member>
+		<member name="latitude" type="float" setter="set_latitude" getter="get_latitude" default="45.0">
+			How far north (positive) or south (negative) of the equator the scene is, in degrees. It sets how high the sun climbs, and together with [member day_of_year], how long days are. Near the poles, the sun may not rise or set at all.
+		</member>
+		<member name="moon_light_path" type="NodePath" setter="set_moon_light_path" getter="get_moon_light_path" default="NodePath(&quot;&quot;)">
+			The [DirectionalLight3D] that plays the moon, if any. It must be another light than the sun. Its rotation follows [member moon_phase], and tracks with [constant TimeOfDayProfile.TARGET_MOON] drive its other properties.
+		</member>
+		<member name="moon_phase" type="float" setter="set_moon_phase" getter="get_moon_phase" default="0.5">
+			The phase of the moon, from [code]0.0[/code] (new moon, next to the sun) through [code]0.5[/code] (full moon, opposite the sun, up all night) to [code]1.0[/code]. It sets where the moon is, not how bright it is.
+		</member>
+		<member name="north_offset" type="float" setter="set_north_offset" getter="get_north_offset" default="0.0">
+			Turns the compass around the vertical axis, in degrees. At [code]0.0[/code], north is [code]-Z[/code] and the sun rises towards [code]+X[/code].
+		</member>
+		<member name="paused" type="bool" setter="set_paused" getter="is_paused" default="false">
+			If [code]true[/code], time stands still. The profile is still applied when [member time] or anything else changes.
+		</member>
+		<member name="profile" type="TimeOfDayProfile" setter="set_profile" getter="get_profile">
+			The tracks that describe the day. See [TimeOfDayProfile].
+		</member>
+		<member name="run_in_editor" type="bool" setter="set_run_in_editor" getter="is_running_in_editor" default="false">
+			If [code]true[/code], time also passes in the editor, which previews the whole cycle in the viewport. Otherwise it only passes while the game runs.
+		</member>
+		<member name="sun_light_path" type="NodePath" setter="set_sun_light_path" getter="get_sun_light_path" default="NodePath(&quot;&quot;)">
+			The [DirectionalLight3D] that plays the sun. Its rotation and visibility are driven by [TimeOfDay], and tracks with [constant TimeOfDayProfile.TARGET_SUN] drive its other properties.
+		</member>
+		<member name="time" type="float" setter="set_time" getter="get_time" default="12.0">
+			The time of day, in hours from [code]0.0[/code] (midnight) to [code]24.0[/code]. Values outside that range wrap around. Setting it jumps to that time without emitting [signal sunrise], [signal sunset] or [signal day_passed]; use [method advance_time] for that.
+		</member>
+		<member name="update_interval" type="float" setter="set_update_interval" getter="get_update_interval" default="0.0">
+			The minimum time, in seconds, between two updates of the lights and the environment while time passes. [code]0.0[/code] updates every frame. Raise it to spend less time on sky updates in slow cycles.
+		</member>
+		<member name="weather" type="TimeOfDayProfile" setter="set_weather" getter="get_weather">
+			A [TimeOfDayProfile] blended over [member profile] by [member weather_intensity]. It only needs the tracks it changes. A property that only the weather drives blends from its own value in the scene. Setting this replaces the current weather at once; use [method transition_to_weather] to fade.
+		</member>
+		<member name="weather_intensity" type="float" setter="set_weather_intensity" getter="get_weather_intensity" default="1.0">
+			How strongly [member weather] applies, from [code]0.0[/code] to [code]1.0[/code]. Numbers and colors blend; booleans and integers take the value of whichever side weighs more.
+		</member>
+		<member name="world_environment_path" type="NodePath" setter="set_world_environment_path" getter="get_world_environment_path" default="NodePath(&quot;&quot;)">
+			The [WorldEnvironment] whose [Environment], sky material and [CameraAttributes] the tracks can drive.
+		</member>
+	</members>
+	<signals>
+		<signal name="day_passed">
+			<description>
+				Emitted when time passes midnight.
+			</description>
+		</signal>
+		<signal name="sunrise">
+			<description>
+				Emitted when time passes the sunrise. Not emitted when [member time] is set directly.
+			</description>
+		</signal>
+		<signal name="sunset">
+			<description>
+				Emitted when time passes the sunset. Not emitted when [member time] is set directly.
+			</description>
+		</signal>
+		<signal name="weather_transition_finished">
+			<description>
+				Emitted when [method transition_to_weather] is done.
+			</description>
+		</signal>
+	</signals>
+</class>
