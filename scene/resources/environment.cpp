@@ -362,6 +362,15 @@ float Environment::get_gtao_horizon() const {
 	return gtao_horizon;
 }
 
+void Environment::set_gtao_thickness(float p_thickness) {
+	gtao_thickness = p_thickness;
+	_update_gtao();
+}
+
+float Environment::get_gtao_thickness() const {
+	return gtao_thickness;
+}
+
 void Environment::set_gtao_sharpness(float p_sharpness) {
 	gtao_sharpness = p_sharpness;
 	_update_gtao();
@@ -397,6 +406,7 @@ void Environment::_update_gtao() {
 			gtao_intensity,
 			gtao_power,
 			gtao_horizon,
+			gtao_thickness,
 			gtao_sharpness,
 			gtao_direct_light_affect,
 			gtao_ao_channel_affect);
@@ -1643,6 +1653,8 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_gtao_power"), &Environment::get_gtao_power);
 	ClassDB::bind_method(D_METHOD("set_gtao_horizon", "horizon"), &Environment::set_gtao_horizon);
 	ClassDB::bind_method(D_METHOD("get_gtao_horizon"), &Environment::get_gtao_horizon);
+	ClassDB::bind_method(D_METHOD("set_gtao_thickness", "thickness"), &Environment::set_gtao_thickness);
+	ClassDB::bind_method(D_METHOD("get_gtao_thickness"), &Environment::get_gtao_thickness);
 	ClassDB::bind_method(D_METHOD("set_gtao_sharpness", "sharpness"), &Environment::set_gtao_sharpness);
 	ClassDB::bind_method(D_METHOD("get_gtao_sharpness"), &Environment::get_gtao_sharpness);
 	ClassDB::bind_method(D_METHOD("set_gtao_direct_light_affect", "amount"), &Environment::set_gtao_direct_light_affect);
@@ -1656,6 +1668,7 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_gtao_intensity", "get_gtao_intensity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_power", PROPERTY_HINT_EXP_EASING, "positive_only"), "set_gtao_power", "get_gtao_power");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_horizon", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_gtao_horizon", "get_gtao_horizon");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_thickness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_gtao_thickness", "get_gtao_thickness");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_sharpness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_gtao_sharpness", "get_gtao_sharpness");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_light_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_gtao_direct_light_affect", "get_gtao_direct_light_affect");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gtao_ao_channel_affect", PROPERTY_HINT_RANGE, "0.00,1,0.01"), "set_gtao_ao_channel_affect", "get_gtao_ao_channel_affect");

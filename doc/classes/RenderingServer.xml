@@ -1466,9 +1466,10 @@
 			<param index="3" name="intensity" type="float" />
 			<param index="4" name="power" type="float" />
 			<param index="5" name="horizon" type="float" />
-			<param index="6" name="sharpness" type="float" />
-			<param index="7" name="light_affect" type="float" />
-			<param index="8" name="ao_channel_affect" type="float" />
+			<param index="6" name="thickness" type="float" />
+			<param index="7" name="sharpness" type="float" />
+			<param index="8" name="light_affect" type="float" />
+			<param index="9" name="ao_channel_affect" type="float" />
 			<description>
 				Sets the variables to be used with the Ground-Truth Ambient Occlusion (GTAO) post-process effect. See [Environment] for more details.
 			</description>

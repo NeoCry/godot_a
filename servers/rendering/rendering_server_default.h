@@ -876,7 +876,7 @@ public:
 	FUNC1(environment_set_ssr_half_size, bool)
 	FUNC1(environment_set_ssr_roughness_quality, RSE::EnvironmentSSRRoughnessQuality)
 
-	FUNC9(environment_set_gtao, RID, bool, float, float, float, float, float, float, float)
+	FUNC10(environment_set_gtao, RID, bool, float, float, float, float, float, float, float, float)
 	FUNC4(environment_set_gtao_quality, RSE::EnvironmentGTAOQuality, bool, float, float)
 	FUNC10(environment_set_atmosphere, RID, bool, float, float, const Color &, float, const Color &, float, float, bool)
 	FUNC4(environment_set_atmosphere_rayleigh, RID, const Color &, float, float)

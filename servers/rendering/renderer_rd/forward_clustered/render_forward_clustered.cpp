@@ -1517,6 +1517,7 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 	settings.intensity = environment_get_gtao_intensity(p_environment);
 	settings.power = environment_get_gtao_power(p_environment);
 	settings.horizon = environment_get_gtao_horizon(p_environment);
+	settings.thickness = environment_get_gtao_thickness(p_environment);
 	settings.sharpness = environment_get_gtao_sharpness(p_environment);
 	settings.full_screen_size = p_render_buffers->get_internal_size();
 

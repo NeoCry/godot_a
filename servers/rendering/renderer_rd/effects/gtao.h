@@ -89,6 +89,7 @@ public:
 		float intensity = 1.0;
 		float power = 1.0;
 		float horizon = 0.06;
+		float thickness = 0.5;
 		float sharpness = 0.9;
 
 		Size2i full_screen_size;
@@ -153,7 +154,7 @@ private:
 
 		int32_t full_screen_size[2];
 		float depth_texture_pixel_size[2];
-		float thin_occluder_compensation;
+		float thickness;
 		float pad;
 	};
 

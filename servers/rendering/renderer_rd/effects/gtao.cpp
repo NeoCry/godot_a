@@ -291,7 +291,10 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		gather.push_constant.full_screen_size[1] = full_size.y;
 		gather.push_constant.depth_texture_pixel_size[0] = 1.0 / working_size.x;
 		gather.push_constant.depth_texture_pixel_size[1] = 1.0 / working_size.y;
-		gather.push_constant.thin_occluder_compensation = 0.15;
+		// The bitmask needs an occluder depth to bound each wedge with. Expressing it relative to the search
+		// radius keeps it scale-independent: the radius already states the size of the geometry this pass is
+		// meant to resolve, and thickness is only meaningful on that same scale.
+		gather.push_constant.thickness = p_settings.radius * p_settings.thickness;
 
 		RID shader = gather.shader.version_get_shader(gather.shader_version, 0);
 

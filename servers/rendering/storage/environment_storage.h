@@ -180,6 +180,7 @@ private:
 		float gtao_intensity = 2.0;
 		float gtao_power = 1.5;
 		float gtao_horizon = 0.06;
+		float gtao_thickness = 0.5;
 		float gtao_sharpness = 0.98;
 		float gtao_direct_light_affect = 0.0;
 		float gtao_ao_channel_affect = 0.0;
@@ -336,12 +337,13 @@ public:
 	float environment_get_ssr_depth_tolerance(RID p_env) const;
 
 	// GTAO
-	void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect);
+	void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_thickness, float p_sharpness, float p_light_affect, float p_ao_channel_affect);
 	bool environment_get_gtao_enabled(RID p_env) const;
 	float environment_get_gtao_radius(RID p_env) const;
 	float environment_get_gtao_intensity(RID p_env) const;
 	float environment_get_gtao_power(RID p_env) const;
 	float environment_get_gtao_horizon(RID p_env) const;
+	float environment_get_gtao_thickness(RID p_env) const;
 	float environment_get_gtao_sharpness(RID p_env) const;
 	float environment_get_gtao_direct_light_affect(RID p_env) const;
 	float environment_get_gtao_ao_channel_affect(RID p_env) const;

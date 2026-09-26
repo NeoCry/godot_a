@@ -276,7 +276,7 @@
 			[b]Note:[/b] GTAO is only supported in the Forward+ rendering method. The Compatibility rendering method uses a separate screen-space ambient occlusion (SSAO) implementation instead, and Mobile does not support this effect at all.
 		</member>
 		<member name="gtao_horizon" type="float" setter="set_gtao_horizon" getter="get_gtao_horizon" default="0.06">
-			The threshold for considering whether a given point on a surface is occluded or not represented as an angle from the horizon mapped into the [code]0.0-1.0[/code] range. A value of [code]1.0[/code] results in no occlusion.
+			Angle in radians by which each occluder is narrowed at the end facing the camera. This keeps a surface from occluding itself where depth precision or a normal map disagrees with the underlying geometry. A value of [code]0.0[/code] applies no bias; large values progressively erase contact occlusion.
 		</member>
 		<member name="gtao_intensity" type="float" setter="set_gtao_intensity" getter="get_gtao_intensity" default="2.0">
 			The primary screen-space ambient occlusion intensity. Acts as a multiplier for the screen-space ambient occlusion effect. A higher value results in darker occlusion.
@@ -289,6 +289,10 @@
 		</member>
 		<member name="gtao_radius" type="float" setter="set_gtao_radius" getter="get_gtao_radius" default="1.0">
 			The distance at which objects can occlude each other when calculating screen-space ambient occlusion. Higher values will result in occlusion over a greater distance at the cost of performance and quality.
+		</member>
+		<member name="gtao_thickness" type="float" setter="set_gtao_thickness" getter="get_gtao_thickness" default="0.5">
+			How deep occluders are assumed to be, as a fraction of [member gtao_radius]. The depth buffer only records the front of each surface, so the ground-truth ambient occlusion pass has to assume a thickness for what lies behind it: each sample then occludes a bounded wedge rather than everything behind itself, which is what keeps a thin railing or a leaf from shadowing the whole wall behind it.
+			Low values under-occlude, because consecutive samples along a surface stop overlapping and leave gaps; [code]0.0625[/code] and below measures worse than assuming infinite thickness. Values above [code]0.5[/code] change little, since the assumed wedge already covers the rest of the hemisphere.
 		</member>
 		<member name="gtao_sharpness" type="float" setter="set_gtao_sharpness" getter="get_gtao_sharpness" default="0.98">
 			The amount that the screen-space ambient occlusion effect is allowed to blur over the edges of objects. Setting too high will result in aliasing around the edges of objects. Setting too low will make object edges appear blurry.

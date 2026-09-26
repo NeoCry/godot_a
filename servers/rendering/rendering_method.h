@@ -271,13 +271,14 @@ public:
 	virtual void environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) = 0;
 
 	// GTAO
-	virtual void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) = 0;
+	virtual void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_thickness, float p_sharpness, float p_light_affect, float p_ao_channel_affect) = 0;
 
 	virtual bool environment_get_gtao_enabled(RID p_env) const = 0;
 	virtual float environment_get_gtao_radius(RID p_env) const = 0;
 	virtual float environment_get_gtao_intensity(RID p_env) const = 0;
 	virtual float environment_get_gtao_power(RID p_env) const = 0;
 	virtual float environment_get_gtao_horizon(RID p_env) const = 0;
+	virtual float environment_get_gtao_thickness(RID p_env) const = 0;
 	virtual float environment_get_gtao_sharpness(RID p_env) const = 0;
 	virtual float environment_get_gtao_direct_light_affect(RID p_env) const = 0;
 	virtual float environment_get_gtao_ao_channel_affect(RID p_env) const = 0;

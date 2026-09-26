@@ -148,6 +148,7 @@ private:
 	float gtao_intensity = 2.0;
 	float gtao_power = 1.5;
 	float gtao_horizon = 0.06;
+	float gtao_thickness = 0.5;
 	float gtao_sharpness = 0.98;
 	float gtao_direct_light_affect = 0.0;
 	float gtao_ao_channel_affect = 0.0;
@@ -353,6 +354,8 @@ public:
 	float get_gtao_power() const;
 	void set_gtao_horizon(float p_horizon);
 	float get_gtao_horizon() const;
+	void set_gtao_thickness(float p_thickness);
+	float get_gtao_thickness() const;
 	void set_gtao_sharpness(float p_sharpness);
 	float get_gtao_sharpness() const;
 	void set_gtao_direct_light_affect(float p_direct_light_affect);

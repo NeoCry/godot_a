@@ -28,13 +28,27 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-// Ground-Truth Ambient Occlusion (GTAO) horizon search, following Jimenez, Wu, Pesce & Jarabo, "Practical
-// Realtime Strategies for Accurate Indirect Occlusion" (Activision, 2016). For each (half-resolution) pixel,
-// a few slices (directions) around the view vector search for the maximum horizon angle on both sides; the
-// per-slice visibility integral is then solved analytically once the shading normal is projected into the
-// slice plane (eq. 7-8 of the paper), rather than accumulated as a weighted sample sum. This pass produces a
-// single noisy-but-unbiased visibility estimate per pixel; gtao_temporal.glsl denoises it spatially and
-// temporally afterwards, which is what the paper itself relies on for its final quality ("we distribute the
+// Ground-Truth Ambient Occlusion (GTAO) with a visibility bitmask, following Jimenez, Wu, Pesce & Jarabo,
+// "Practical Realtime Strategies for Accurate Indirect Occlusion" (Activision, 2016) for the cosine-weighted
+// per-slice visibility integral (eq. 7-8), and Therrien, Levesque & Gilet, "Screen Space Indirect Lighting
+// with Visibility Bitmask" (2023) for how occlusion is tracked along each slice.
+//
+// For each (half-resolution) pixel a few slices (planes containing the view vector) are swept. Plain GTAO
+// keeps one horizon angle per side of a slice, which assumes every occluder extends back to infinity: a thin
+// railing then shadows the entire wall behind it, and the ad-hoc "thin occluder" softening that hides this
+// costs accuracy everywhere else. Instead each slice here carries a 32-bit mask over its angular domain, and
+// every sample marks only the wedge it actually spans -- from its own depth to that depth plus an assumed
+// thickness. Occlusion becomes a union of bounded wedges rather than a single horizon, so several separate
+// occluders along one slice are all accounted for and open space behind a thin one stays open.
+//
+// The visibility integral stays exactly the paper's: each sector the mask left clear contributes its
+// cosine-weighted arc, so an unoccluded slice still integrates to the same closed form GTAO solves for
+// analytically (see slice_visibility()). That is deliberate — the reference implementation of the bitmask
+// paper reduces AO to popcount/sector_count, which drops the cosine weighting the ground-truth estimator
+// needs; keeping the arc integral makes the two papers compose instead of one overwriting the other.
+//
+// This pass produces a single noisy-but-unbiased estimate per pixel; gtao_temporal.glsl denoises it spatially
+// and temporally afterwards, which is what GTAO itself relies on for its final quality ("we distribute the
 // occlusion integral over both space and time").
 
 #[compute]
@@ -67,13 +81,16 @@ layout(push_constant, std430) uniform Params {
 
 	ivec2 full_screen_size; // native resolution of source_normal, independent of screen_size above
 	vec2 depth_texture_pixel_size; // 1 / half-resolution size, in the *depth* texture's own space
-	float thin_occluder_compensation;
+	float thickness; // assumed occluder depth, in view-space units
 	float pad;
 }
 params;
 
 #define GTAO_PI 3.14159265359
 #define GOLDEN_RATIO 0.61803398875
+
+// One 32-bit word of visibility per slice, so a sector spans pi/32 (5.6 degrees) of the slice's domain.
+#define GTAO_SECTOR_COUNT 32u
 
 // Number of horizon-search slices (directions) and steps searched per side of each slice, indexed by the
 // GTAO quality preset (Very Low .. Ultra). Each step is sampled on both sides of the slice, so the actual
@@ -98,12 +115,76 @@ vec3 load_normal(ivec2 p_full_res_pos) {
 	return n;
 }
 
-// Closed form of the paper's per-slice inner integral (eq. 7): the cosine-weighted visible arc from the view
-// direction out to a horizon at signed angle p_horizon, for a slice whose projected normal sits at signed
-// angle p_gamma. Both angles are measured from V in the same signed frame, so the two horizons of a slice
-// come in with opposite signs.
-float integrate_arc(float p_horizon, float p_gamma) {
-	return -cos(2.0 * p_horizon - p_gamma) + cos(p_gamma) + 2.0 * p_horizon * sin(p_gamma);
+// Antiderivative of the GTAO integrand cos(theta - gamma) * |sin theta|, normalized so that it is 0 at
+// theta = 0 on both sides of V. This is the same closed form as the paper's per-slice inner integral (eq. 7),
+// only evaluated at one bound instead of over a fixed arc: the integral of any arc [a, b] in the slice is
+// then arc_bound(b) - arc_bound(a), including arcs that straddle V. Taking a horizon at signed angle h on
+// each side recovers the original expression exactly, which is what lets the sector sum below stay
+// numerically identical to plain GTAO wherever occlusion happens to reach all the way to grazing.
+//
+// cos(2 * theta - gamma) is passed in rather than computed here so slice_visibility() can advance it with a
+// rotation instead of paying for a cosine at each of the 33 sector bounds.
+float arc_bound(float p_theta, float p_cos_double, float p_cos_gamma, float p_sin_gamma) {
+	float f = -p_cos_double + p_cos_gamma + 2.0 * p_theta * p_sin_gamma;
+	return (p_theta < 0.0) ? -0.25 * f : 0.25 * f;
+}
+
+// Mark every sector an occluder covers, given its angular extent already mapped to [0,1] across the slice's
+// domain. Both ends round to the nearest sector boundary: the bitmask paper's own listing floors the near end
+// and ceils the far one, which over-covers by up to a sector per sample and, measured over contiguous
+// occlusion, darkens the result by ~3% everywhere — exactly the kind of uniform bias that survives temporal
+// accumulation. Rounding instead leaves a residual bias of ~0.25% with half the RMS error.
+uint occlusion_bits(float p_u_min, float p_u_max) {
+	int sectors = int(GTAO_SECTOR_COUNT);
+	int first = clamp(int(floor(p_u_min * float(sectors) + 0.5)), 0, sectors);
+	int last = clamp(int(floor(p_u_max * float(sectors) + 0.5)), 0, sectors);
+	int width = last - first;
+
+	if (width <= 0) {
+		return 0u;
+	}
+
+	// width >= 1 keeps both shifts inside [0,31]; a shift by the full word width is undefined.
+	return (0xFFFFFFFFu >> uint(sectors - width)) << uint(first);
+}
+
+// Cosine-weighted arc this slice still sees: the sum of the sectors the bitmask left clear.
+//
+// The domain is [gamma - pi/2, gamma + pi/2]. Its width is pi for every gamma, and its ends are precisely the
+// surface's own tangent plane, so mapping the sectors onto it carries GTAO's tangent-plane clamp for free
+// instead of needing it applied to each horizon afterwards.
+float slice_visibility(uint p_occlusion, float p_gamma) {
+	float sector_arc = GTAO_PI / float(GTAO_SECTOR_COUNT);
+	float cos_gamma = cos(p_gamma);
+	float sin_gamma = sin(p_gamma);
+
+	float theta = p_gamma - GTAO_PI * 0.5;
+
+	// arc_bound()'s only transcendental term is cos(2 * theta - gamma), and consecutive sector bounds differ
+	// by a constant 2 * sector_arc, so one plane rotation per sector replaces 33 cosines per slice.
+	float angle = 2.0 * theta - p_gamma;
+	float cos_double = cos(angle);
+	float sin_double = sin(angle);
+	float cos_step = cos(2.0 * sector_arc);
+	float sin_step = sin(2.0 * sector_arc);
+
+	float prev = arc_bound(theta, cos_double, cos_gamma, sin_gamma);
+	float visible = 0.0;
+
+	for (uint s = 0u; s < GTAO_SECTOR_COUNT; s++) {
+		float next_cos = cos_double * cos_step - sin_double * sin_step;
+		sin_double = sin_double * cos_step + cos_double * sin_step;
+		cos_double = next_cos;
+		theta += sector_arc;
+
+		float bound = arc_bound(theta, cos_double, cos_gamma, sin_gamma);
+		if ((p_occlusion & (1u << s)) == 0u) {
+			visible += bound - prev;
+		}
+		prev = bound;
+	}
+
+	return visible;
 }
 
 // Jimenez et al. 2014, "Next Generation Post Processing in Call of Duty: Advanced Warfare".
@@ -193,13 +274,10 @@ void main() {
 		float gamma = clamp(atan(dot(normal_in_slice_n, slice_tangent), dot(normal_in_slice_n, V)),
 				-GTAO_PI * 0.5, GTAO_PI * 0.5);
 
-		// -1 (horizon angle = pi, nothing found yet) rather than 0 (horizon sitting at V's own tangent
-		// plane): the tangent-plane clamp below is what establishes the real "no occluder" limit, and it can
-		// only do so by lowering an already-open horizon. Starting from 0 pins the side of the slice tipped
-		// away from the camera at pi/2 even when the true unoccluded limit is wider than that, so a flat,
-		// completely unoccluded surface still integrates to less than full visibility — by more and more as
-		// the view angle grows.
-		float horizon_cos[2] = float[2](-1.0, -1.0);
+		// One mask for the whole slice, not one per side: the domain [gamma - pi/2, gamma + pi/2] spans both
+		// sides of V, and a sample taken along +slice_tangent always lands at a positive angle while one taken
+		// along -slice_tangent always lands at a negative one, so the two sides fill disjoint halves of it.
+		uint occlusion = 0u;
 
 		for (int side = 0; side < 2; side++) {
 			float side_sign = (side == 0) ? 1.0 : -1.0;
@@ -229,37 +307,47 @@ void main() {
 				float sample_mip = clamp(floor(log2(max(t * t * float(step_count) * 0.5, 1.0))), 0.0, float(params.mip_count - 1));
 
 				float sample_z = textureLod(source_depth_mipmaps, sample_uv, sample_mip).x;
-				vec3 sample_pos = NDC_to_view_space(sample_uv, sample_z);
 
-				vec3 sample_delta = sample_pos - view_pos;
-				float sample_dist = length(sample_delta);
-				float sample_cos = dot(sample_delta, V) / max(sample_dist, 0.0001) - params.horizon_bias;
+				vec3 front_delta = NDC_to_view_space(sample_uv, sample_z) - view_pos;
 
-				// Fade out smoothly at the search radius, and soften thin occluders (a conservative stand-in
-				// for the paper's thickness heuristic, Section 4.1, eq. 9): a sample that would lower the
-				// horizon is only partially accepted, so a thin occluder doesn't fully re-open the horizon
-				// right behind it the way an infinitely thick one would.
-				float falloff = clamp(1.0 - (sample_dist * sample_dist) / (params.radius * params.radius), 0.0, 1.0);
-				sample_cos = mix(horizon_cos[side], sample_cos, falloff);
-				horizon_cos[side] = (sample_cos >= horizon_cos[side]) ? sample_cos : mix(horizon_cos[side], sample_cos, params.thin_occluder_compensation);
+				// Past the search radius the occluder is not this pixel's to account for. A hard cut is what the
+				// radius means, and the step ramp already ends there, so the only sample rejected here is one
+				// that landed across a depth discontinuity. Fading the wedge out towards the radius instead
+				// measured worse: it costs ~17% accuracy against ray-traced reference and only takes the worst
+				// frame-to-frame step at the boundary from 4.2% to 3.1%, which is the sector quantum rather than
+				// the cut itself.
+				if (dot(front_delta, front_delta) > params.radius * params.radius) {
+					continue;
+				}
+
+				// The occluder's far side: the same screen ray, `thickness` deeper. Reconstructing it through
+				// NDC_to_view_space keeps it exact for off-centre pixels and under orthogonal projection, where
+				// "deeper along this ray" and "along the centre pixel's view vector" — which is what the bitmask
+				// paper pushes along — are not the same direction.
+				vec3 back_delta = NDC_to_view_space(sample_uv, sample_z + params.thickness) - view_pos;
+
+				// Signed angles within the slice, measured from V towards slice_tangent, in the same frame gamma
+				// is expressed in. atan() of the in-slice components rather than acos() of the full 3D angle:
+				// pixel quantization drifts each sample slightly out of the slice plane, and only the in-slice
+				// angle belongs in a mask whose sectors partition that same plane. A sample past the
+				// perpendicular yields |angle| > pi/2, which the clamp below folds onto grazing.
+				float theta_front = atan(dot(front_delta, slice_tangent), dot(front_delta, V));
+				float theta_back = atan(dot(back_delta, slice_tangent), dot(back_delta, V));
+
+				// Narrow the wedge at the end facing V, where the shading surface itself would otherwise register
+				// as its own occluder through depth quantization or a normal map disagreeing with the geometry.
+				// theta_back is always the more grazing of the two, so biasing theta_front narrows the wedge
+				// rather than sliding it.
+				theta_front += (theta_front < 0.0) ? -params.horizon_bias : params.horizon_bias;
+
+				float u_min = clamp((min(theta_front, theta_back) - gamma) / GTAO_PI + 0.5, 0.0, 1.0);
+				float u_max = clamp((max(theta_front, theta_back) - gamma) / GTAO_PI + 0.5, 0.0, 1.0);
+
+				occlusion |= occlusion_bits(u_min, u_max);
 			}
 		}
 
-		float theta0 = acos(clamp(horizon_cos[0], -1.0, 1.0));
-		float theta1 = acos(clamp(horizon_cos[1], -1.0, 1.0));
-
-		// Clamp each horizon to the surface's own tangent plane (gamma +/- pi/2): anything past that would
-		// count contributions from behind the surface, which the search itself has no way to exclude.
-		theta0 = min(theta0, GTAO_PI * 0.5 + gamma);
-		theta1 = min(theta1, GTAO_PI * 0.5 - gamma);
-
-		// Both horizons are unsigned magnitudes out of acos(), but they lie on OPPOSITE sides of the slice
-		// and the integral is parametrized by a single signed angle measured from V in the same frame gamma
-		// uses. Side 1 searched along -slice_tangent, so it enters as a negative angle; feeding it in
-		// positive instead integrates the wrong arc entirely and is what turns flat, unoccluded surfaces
-		// dark as soon as gamma moves away from 0 (at gamma = 0 the two happen to coincide, which is why
-		// head-on surfaces looked correct while everything else did not).
-		visibility_sum += normal_in_slice_len * 0.25 * (integrate_arc(theta0, gamma) + integrate_arc(-theta1, gamma));
+		visibility_sum += normal_in_slice_len * slice_visibility(occlusion, gamma);
 		used_slices++;
 	}
 

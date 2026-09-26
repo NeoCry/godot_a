@@ -696,7 +696,7 @@ float RendererEnvironmentStorage::environment_get_ssr_depth_tolerance(RID p_env)
 
 // GTAO
 
-void RendererEnvironmentStorage::environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) {
+void RendererEnvironmentStorage::environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_thickness, float p_sharpness, float p_light_affect, float p_ao_channel_affect) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 #ifdef DEBUG_ENABLED
@@ -709,6 +709,7 @@ void RendererEnvironmentStorage::environment_set_gtao(RID p_env, bool p_enable, 
 	env->gtao_intensity = p_intensity;
 	env->gtao_power = p_power;
 	env->gtao_horizon = p_horizon;
+	env->gtao_thickness = p_thickness;
 	env->gtao_sharpness = p_sharpness;
 	env->gtao_direct_light_affect = p_light_affect;
 	env->gtao_ao_channel_affect = p_ao_channel_affect;
@@ -742,6 +743,12 @@ float RendererEnvironmentStorage::environment_get_gtao_horizon(RID p_env) const 
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 0.06);
 	return env->gtao_horizon;
+}
+
+float RendererEnvironmentStorage::environment_get_gtao_thickness(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.5);
+	return env->gtao_thickness;
 }
 
 float RendererEnvironmentStorage::environment_get_gtao_sharpness(RID p_env) const {
