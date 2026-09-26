@@ -3122,6 +3122,11 @@
 			This has no effect when rendering multiple views (such as in XR), where each eye has its own view space, or when variable rate shading is active, since most pixels are then filled by replicating a neighbour rather than by an invocation that could store history. Both cases fall back to tracing every pixel every frame.
 			[b]Note:[/b] This property is only read when the project starts.
 		</member>
+		<member name="rendering/global_illumination/sdfgi/adaptive_history" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], each signed distance field global illumination probe compares the light it traces every frame with what the same rays returned one [member rendering/global_illumination/sdfgi/frames_to_converge] period earlier. When they disagree for a couple of frames in a row (a light was switched, moved or changed), the probe drops the history from before the change, so indirect lighting catches up within a few frames instead of over the whole period. A difference lasting a single frame is taken for noise and averaged in as usual.
+			If [code]false[/code], probes always average over the full convergence period.
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
 		<member name="rendering/global_illumination/sdfgi/frames_to_converge" type="int" setter="" getter="" default="5">
 			The number of frames to use for converging signed distance field global illumination. Higher values lead to a less noisy result, at the cost of taking a longer time to fully converge. This means the scene's global illumination will be too dark for a longer period of time, especially when the camera moves fast. The actual convergence speed depends on rendered framerate. For example, with the default setting of 30 frames, rendering at 60 FPS will make SDFGI fully converge after 0.5 seconds. See also [member rendering/global_illumination/sdfgi/frames_to_update_lights] and [member rendering/global_illumination/sdfgi/probe_ray_count].
 			[b]Note:[/b] This property is only read when the project starts. To control SDFGI convergence speed at runtime, call [method RenderingServer.environment_set_sdfgi_frames_to_converge] instead.
