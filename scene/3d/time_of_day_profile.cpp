@@ -321,7 +321,7 @@ static Vector<StringName> _get_target_classes(TimeOfDayProfile::Target p_target)
 		case TimeOfDayProfile::TARGET_ENVIRONMENT:
 			return { SNAME("Environment") };
 		case TimeOfDayProfile::TARGET_SKY_MATERIAL:
-			return { SNAME("ProceduralSkyMaterial"), SNAME("PhysicalSkyMaterial"), SNAME("PanoramaSkyMaterial") };
+			return { SNAME("ProceduralSkyMaterial"), SNAME("PhysicalSkyMaterial"), SNAME("AtmosphereSkyMaterial"), SNAME("PanoramaSkyMaterial") };
 		case TimeOfDayProfile::TARGET_CAMERA_ATTRIBUTES:
 			return { SNAME("CameraAttributesPractical"), SNAME("CameraAttributesPhysical") };
 		default:
