@@ -66,6 +66,14 @@
 #define RB_TEX_GI_HISTORY_DEPTH_0 SNAME("gi_history_depth_0")
 #define RB_TEX_GI_HISTORY_DEPTH_1 SNAME("gi_history_depth_1")
 
+// Screen probes (rendering/global_illumination/sdfgi/screen_probes): where each probe sits,
+// the normal of the surface it sits on, and the irradiance its rays found, as traced and as
+// filtered with its neighbors. See MODE_SCREEN_PROBE_TRACE in gi.glsl.
+#define RB_TEX_SCREEN_PROBE_POSITION SNAME("screen_probe_position")
+#define RB_TEX_SCREEN_PROBE_NORMAL SNAME("screen_probe_normal")
+#define RB_TEX_SCREEN_PROBE_SH SNAME("screen_probe_sh")
+#define RB_TEX_SCREEN_PROBE_SH_FILTERED SNAME("screen_probe_sh_filtered")
+
 // SNAME caches per call site, so the pair cannot live in an array; these pick between the
 // two names for a ping-pong index instead.
 static _FORCE_INLINE_ StringName gi_history_ambient_name(uint32_t p_index) {
@@ -573,6 +581,14 @@ public:
 		/* GI buffers */
 		bool using_half_size_gi = false;
 		bool using_temporal_gi = false;
+		// Whether the screen probe buffers were allocated at full size, and which frame of their
+		// placement jitter comes next.
+		bool using_screen_probes = false;
+		Size2i screen_probe_grid;
+		uint32_t screen_probe_frame = 0;
+		// The previous frame's image the uniform sets bind for the screen probes' screen traces,
+		// null while there is none.
+		RID screen_probe_last_frame[RendererSceneRender::MAX_RENDER_VIEWS];
 
 		// Alternates every frame: index 0 of the pair is sampled and index 1 written, or the
 		// other way round. The uniform sets bind those textures, so there is one set per
@@ -866,6 +882,8 @@ public:
 	float sdfgi_view_bias = 1.0;
 	bool sdfgi_per_pixel_visibility = false;
 	uint32_t sdfgi_dynamic_object_updates_per_frame = 1;
+	bool sdfgi_screen_probes = false;
+	uint32_t sdfgi_screen_probe_history_frames = 24;
 
 	float sdfgi_solid_cell_ratio = 0.25;
 	Vector3 sdfgi_debug_probe_pos;
@@ -969,8 +987,16 @@ public:
 
 		float temporal_blend; // Weight of a fresh trace against valid history.
 		uint32_t history_valid; // Whether the textures hold a previous frame worth reading.
-		float pad2;
-		float pad3;
+		uint32_t screen_probe_frame; // Seeds the directions screen probes trace this frame.
+		float screen_probe_blend; // The least weight this frame's screen probe light takes against valid history.
+
+		int32_t screen_probe_grid[2]; // How many screen probes across and down, 0 when they are off.
+		int32_t screen_probe_offset[2]; // Where in its tile each probe goes this frame.
+
+		uint32_t screen_probe_flags; // SCREEN_PROBE_FLAG_*
+		uint32_t pad2;
+		uint32_t pad3;
+		uint32_t pad4;
 	};
 
 	RID sdfgi_ubo;
@@ -986,6 +1012,8 @@ public:
 		MODE_SDFGI,
 		MODE_COMBINED,
 		MODE_COMBINED_WITHOUT_SAMPLER,
+		MODE_SCREEN_PROBE_TRACE,
+		MODE_SCREEN_PROBE_FILTER,
 		MODE_MAX
 	};
 
@@ -1011,6 +1039,19 @@ public:
 	enum { TEMPORAL_SLOT_COUNT = 2 };
 	bool temporal_accumulation = true;
 	float temporal_blend = 1.0;
+
+	// Screen probes: one per SCREEN_PROBE_TILE pixels square, placed at a different pixel of
+	// their tile every frame over SCREEN_PROBE_JITTER_FRAMES frames, plus one more for a second
+	// surface in the tile, where there is one. What they gather is noisy from one frame to the
+	// next, and each pixel averages it over up to sdfgi_screen_probe_history_frames frames.
+	enum {
+		SCREEN_PROBE_TILE = 16,
+		SCREEN_PROBES_PER_TILE = 2,
+		SCREEN_PROBE_JITTER_FRAMES = 16,
+	};
+	enum { // SCREEN_PROBE_FLAG_* in gi.glsl.
+		SCREEN_PROBE_FLAG_SCREEN_TRACES = 1, // The previous frame's image is there to trace rays against.
+	};
 
 	GiShaderRD shader;
 	RID shader_version;

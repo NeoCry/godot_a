@@ -32,6 +32,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/math/geometry_3d.h"
+#include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
@@ -3980,6 +3981,8 @@ GI::GI() {
 	sdfgi_view_bias = MAX(0.0, float(GLOBAL_GET("rendering/global_illumination/sdfgi/view_bias")));
 	sdfgi_per_pixel_visibility = GLOBAL_GET("rendering/global_illumination/sdfgi/per_pixel_visibility");
 	sdfgi_dynamic_object_updates_per_frame = MAX(1, int(GLOBAL_GET("rendering/global_illumination/sdfgi/dynamic_object_updates_per_frame")));
+	sdfgi_screen_probes = GLOBAL_GET("rendering/global_illumination/sdfgi/screen_probes");
+	sdfgi_screen_probe_history_frames = CLAMP(int(GLOBAL_GET("rendering/global_illumination/sdfgi/screen_probe_history_frames")), 1, 256);
 }
 
 GI::~GI() {
@@ -4184,6 +4187,8 @@ void GI::init(SkyRD *p_sky) {
 	{
 		//calculate tables
 		String defines = "\n#define SDFGI_OCT_SIZE " + itos(SDFGI::LIGHTPROBE_OCT_SIZE) + "\n";
+		defines += "\n#define SCREEN_PROBE_TILE " + itos(SCREEN_PROBE_TILE) + "\n";
+		defines += "\n#define SCREEN_PROBES_PER_TILE " + itos(SCREEN_PROBES_PER_TILE) + "\n";
 
 		Vector<ShaderRD::VariantDefine> variants;
 		for (uint32_t vrs = 0; vrs < 2; vrs++) {
@@ -4195,6 +4200,8 @@ void GI::init(SkyRD *p_sky) {
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n", default_enabled)); // MODE_SDFGI
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n", default_enabled)); // MODE_COMBINED
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n", default_enabled)); // MODE_COMBINED_WITHOUT_SAMPLER
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_TRACE\n", default_enabled)); // MODE_SCREEN_PROBE_TRACE
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_FILTER\n", default_enabled)); // MODE_SCREEN_PROBE_FILTER
 		}
 
 		shader.initialize(variants, defines);
@@ -4463,6 +4470,18 @@ void GI::RenderBuffersGI::free_data() {
 	}
 }
 
+// Element p_index (from 1) of the Halton sequence in base p_base, in [0, 1).
+static float _screen_probe_halton(uint32_t p_index, uint32_t p_base) {
+	float f = 1.0;
+	float r = 0.0;
+	while (p_index > 0) {
+		f /= float(p_base);
+		r += f * float(p_index % p_base);
+		p_index /= p_base;
+	}
+	return r;
+}
+
 void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer, RID p_environment, uint32_t p_view_count, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_cam_transform, const PagedArray<RID> &p_voxel_gi_instances) {
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
@@ -4485,8 +4504,11 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	// tracing every pixel every frame.
 	bool has_vrs_texture = p_render_buffers->has_texture(RB_SCOPE_VRS, RB_TEXTURE);
 	const bool use_temporal = temporal_accumulation && p_view_count == 1 && !has_vrs_texture;
+	// Screen probes rely on that history to average what they gather over several frames, so
+	// they are off wherever it is.
+	const bool use_screen_probe_buffers = sdfgi_screen_probes && use_temporal;
 
-	if (rbgi->using_half_size_gi != half_resolution || rbgi->using_temporal_gi != use_temporal) {
+	if (rbgi->using_half_size_gi != half_resolution || rbgi->using_temporal_gi != use_temporal || rbgi->using_screen_probes != use_screen_probe_buffers) {
 		p_render_buffers->clear_context(RB_SCOPE_GI);
 	}
 
@@ -4525,8 +4547,26 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 			}
 		}
 
+		// Screen probes. Like the history, they are always bound, so 1x1 when off. The probes
+		// are written in full every frame before anything reads them, so need no clear.
+		{
+			Size2i grid = Size2i(1, 1);
+			if (use_screen_probe_buffers) {
+				grid = Size2i(Math::division_round_up(internal_size.x, int(SCREEN_PROBE_TILE)), Math::division_round_up(internal_size.y, int(SCREEN_PROBE_TILE)));
+			}
+			// A texel per probe, the probes of a tile side by side.
+			const Size2i probes = grid * Size2i(SCREEN_PROBES_PER_TILE, 1);
+			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_POSITION, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes);
+			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_NORMAL, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes);
+			// 9 spherical harmonics coefficients per probe, in a 3x3 block.
+			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_SH, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes * 3);
+			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_SH_FILTERED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes * 3);
+			rbgi->screen_probe_grid = use_screen_probe_buffers ? grid : Size2i();
+		}
+
 		rbgi->using_half_size_gi = half_resolution;
 		rbgi->using_temporal_gi = use_temporal;
+		rbgi->using_screen_probes = use_screen_probe_buffers;
 		rbgi->history_valid = false;
 	}
 
@@ -4592,8 +4632,6 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	push_constant.trace_slot = rbgi->history_frame % TEMPORAL_SLOT_COUNT;
 	push_constant.temporal_blend = temporal_blend;
 	push_constant.history_valid = history_valid;
-	push_constant.pad2 = 0;
-	push_constant.pad3 = 0;
 
 	// these should be the same for all views
 	push_constant.orthogonal = p_projections[0].is_orthogonal();
@@ -4635,8 +4673,50 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		mode = without_sampler ? MODE_VOXEL_GI_WITHOUT_SAMPLER : MODE_VOXEL_GI;
 	}
 
+	// Screen probes take the place of the SDFGI probe lookup, and nothing else: VoxelGI is
+	// blended over that per pixel in process_gi(), which the pixels the probes cover skip, so
+	// they stand down while a VoxelGI is in view.
+	const bool use_screen_probes = rbgi->using_screen_probes && use_sdfgi && !use_voxel_gi_instances;
+	push_constant.screen_probe_frame = rbgi->screen_probe_frame;
+	push_constant.screen_probe_blend = 1.0 / float(sdfgi_screen_probe_history_frames);
+	push_constant.screen_probe_grid[0] = use_screen_probes ? rbgi->screen_probe_grid.x : 0;
+	push_constant.screen_probe_grid[1] = use_screen_probes ? rbgi->screen_probe_grid.y : 0;
+	push_constant.screen_probe_offset[0] = 0;
+	push_constant.screen_probe_offset[1] = 0;
+	push_constant.screen_probe_flags = 0;
+	push_constant.pad2 = 0;
+	push_constant.pad3 = 0;
+	push_constant.pad4 = 0;
+	if (use_screen_probes) {
+		// A low discrepancy sequence, so that the probes of a few frames in a row sit well apart
+		// in their tiles, and the history they are averaged over covers each tile evenly.
+		const uint32_t jitter = rbgi->screen_probe_frame % SCREEN_PROBE_JITTER_FRAMES + 1;
+		push_constant.screen_probe_offset[0] = MIN(int(_screen_probe_halton(jitter, 2) * float(SCREEN_PROBE_TILE)), int(SCREEN_PROBE_TILE) - 1);
+		push_constant.screen_probe_offset[1] = MIN(int(_screen_probe_halton(jitter, 3) * float(SCREEN_PROBE_TILE)), int(SCREEN_PROBE_TILE) - 1);
+		rbgi->screen_probe_frame++;
+	}
+
 	for (uint32_t v = 0; v < p_view_count; v++) {
 		push_constant.view_index = v;
+
+		// The previous frame's image, for the screen probes to trace rays against. The renderer
+		// keeps it while they are on (see RenderForwardClustered::_pre_opaque_render()), but it
+		// only exists from the frame after they come on, and is made anew whenever its size or
+		// format changes, which the uniform sets must follow.
+		RID last_frame;
+		if (use_screen_probes && p_render_buffers->has_texture(RB_SCOPE_SSLF, RB_LAST_FRAME)) {
+			last_frame = p_render_buffers->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, v, 0);
+		}
+		if (last_frame != rbgi->screen_probe_last_frame[v]) {
+			for (uint32_t i = 0; i < 2; i++) {
+				if (rbgi->uniform_set[i][v].is_valid() && RD::get_singleton()->uniform_set_is_valid(rbgi->uniform_set[i][v])) {
+					RD::get_singleton()->free_rid(rbgi->uniform_set[i][v]);
+				}
+				rbgi->uniform_set[i][v] = RID();
+			}
+			rbgi->screen_probe_last_frame[v] = last_frame;
+		}
+		push_constant.screen_probe_flags = last_frame.is_valid() ? SCREEN_PROBE_FLAG_SCREEN_TRACES : 0;
 
 		// setup our uniform set
 		const uint32_t set_parity = rbgi->history_frame & 1;
@@ -4844,6 +4924,23 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 					uniforms.push_back(u);
 				}
 			}
+			{
+				const StringName screen_probe_names[4] = { RB_TEX_SCREEN_PROBE_POSITION, RB_TEX_SCREEN_PROBE_NORMAL, RB_TEX_SCREEN_PROBE_SH, RB_TEX_SCREEN_PROBE_SH_FILTERED };
+				for (int i = 0; i < 4; i++) {
+					RD::Uniform u;
+					u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+					u.binding = 32 + i;
+					u.append_id(p_render_buffers->get_texture_slice(RB_SCOPE_GI, screen_probe_names[i], v, 0));
+					uniforms.push_back(u);
+				}
+			}
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+				u.binding = 36;
+				u.append_id(last_frame.is_valid() ? last_frame : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
+				uniforms.push_back(u);
+			}
 			if (RendererSceneRenderRD::get_singleton()->is_vrs_supported()) {
 				RD::Uniform u;
 				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
@@ -4856,6 +4953,22 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 			bool vrs_supported = RendererSceneRenderRD::get_singleton()->is_vrs_supported();
 			int variant_base = vrs_supported ? MODE_MAX : 0;
 			rbgi->uniform_set[set_parity][v] = RD::get_singleton()->uniform_set_create(uniforms, shader.version_get_shader(shader_version, variant_base), 0);
+		}
+
+		if (use_screen_probes) {
+			// Trace the probes, one workgroup per tile, then filter them, for the pass below to
+			// gather per pixel. Each step reads what the one before it wrote.
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_TRACE].get_rid());
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+			RD::get_singleton()->compute_list_dispatch(compute_list, rbgi->screen_probe_grid.x, rbgi->screen_probe_grid.y, 1);
+			RD::get_singleton()->compute_list_add_barrier(compute_list);
+
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_FILTER].get_rid());
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+			RD::get_singleton()->compute_list_dispatch_threads(compute_list, rbgi->screen_probe_grid.x * SCREEN_PROBES_PER_TILE, rbgi->screen_probe_grid.y, 1);
+			RD::get_singleton()->compute_list_add_barrier(compute_list);
 		}
 
 		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][mode].get_rid());
