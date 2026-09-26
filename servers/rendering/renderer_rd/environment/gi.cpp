@@ -4340,7 +4340,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 	// Temporal accumulation needs one reprojection matrix for the whole pass and history it
 	// can sample everywhere it writes. Neither holds for multiview, where each eye has its
-	// own view space, or for VRS, where most pixels are filled by replicating a neighbour
+	// own view space, or for VRS, where most pixels are filled by replicating a neighbor
 	// rather than by an invocation that could store history for them. Both fall back to
 	// tracing every pixel every frame.
 	bool has_vrs_texture = p_render_buffers->has_texture(RB_SCOPE_VRS, RB_TEXTURE);

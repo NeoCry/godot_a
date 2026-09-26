@@ -2125,7 +2125,7 @@ void fragment_shader(in SceneData scene_data) {
 #endif
 		ao = min(ao, hmao);
 		// Deliberately leaves ao_light_affect alone: this is occlusion of the sky and of bounced light over
-		// hundreds of metres, which is an ambient term, not something that should dim a lamp in the room.
+		// hundreds of meters, which is an ambient term, not something that should dim a lamp in the room.
 	}
 
 	{ // process reflections
