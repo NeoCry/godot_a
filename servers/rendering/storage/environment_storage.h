@@ -198,12 +198,10 @@ private:
 		RSE::ScreenSpaceContactShadowsLength sscs_length = RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM;
 		float sscs_surface_thickness = 0.01;
 
-		// SSIL
-		bool ssil_enabled = false;
-		float ssil_radius = 5.0;
-		float ssil_intensity = 1.0;
-		float ssil_sharpness = 0.98;
-		float ssil_normal_rejection = 1.0;
+		// SSILVB
+		bool ssilvb_enabled = false;
+		float ssilvb_intensity = 1.0;
+		float ssilvb_normal_rejection = 1.0;
 
 		// SDFGI
 		bool sdfgi_enabled = false;
@@ -369,13 +367,11 @@ public:
 	RSE::ScreenSpaceContactShadowsLength environment_get_sscs_length(RID p_env) const;
 	float environment_get_sscs_surface_thickness(RID p_env) const;
 
-	// SSIL
-	void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection);
-	bool environment_get_ssil_enabled(RID p_env) const;
-	float environment_get_ssil_radius(RID p_env) const;
-	float environment_get_ssil_intensity(RID p_env) const;
-	float environment_get_ssil_sharpness(RID p_env) const;
-	float environment_get_ssil_normal_rejection(RID p_env) const;
+	// SSILVB
+	void environment_set_ssilvb(RID p_env, bool p_enable, float p_intensity, float p_normal_rejection);
+	bool environment_get_ssilvb_enabled(RID p_env) const;
+	float environment_get_ssilvb_intensity(RID p_env) const;
+	float environment_get_ssilvb_normal_rejection(RID p_env) const;
 
 	// SDFGI
 	void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RSE::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias);

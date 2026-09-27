@@ -702,8 +702,8 @@
 		<constant name="DEBUG_DRAW_HMAO" value="13" enum="DebugDraw">
 			Objects are displayed with only the height map based ambient occlusion buffer, the large scale occlusion gathered from a top-down height map of the world around the camera. Requires [member Environment.hmao_enabled] to have a visible effect.
 		</constant>
-		<constant name="DEBUG_DRAW_SSIL" value="14" enum="DebugDraw">
-			Draws the screen-space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].
+		<constant name="DEBUG_DRAW_SSILVB" value="14" enum="DebugDraw">
+			Draws the screen-space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssilvb_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="DEBUG_DRAW_PSSM_SPLITS" value="15" enum="DebugDraw">

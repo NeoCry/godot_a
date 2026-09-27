@@ -1409,16 +1409,12 @@ public:
 	PASS1RC(RSE::ScreenSpaceContactShadowsLength, environment_get_sscs_length, RID)
 	PASS1RC(float, environment_get_sscs_surface_thickness, RID)
 
-	// SSIL
-	PASS6(environment_set_ssil, RID, bool, float, float, float, float)
+	// SSILVB
+	PASS4(environment_set_ssilvb, RID, bool, float, float)
 
-	PASS1RC(bool, environment_get_ssil_enabled, RID)
-	PASS1RC(float, environment_get_ssil_radius, RID)
-	PASS1RC(float, environment_get_ssil_intensity, RID)
-	PASS1RC(float, environment_get_ssil_sharpness, RID)
-	PASS1RC(float, environment_get_ssil_normal_rejection, RID)
-
-	PASS6(environment_set_ssil_quality, RSE::EnvironmentSSILQuality, bool, float, int, float, float)
+	PASS1RC(bool, environment_get_ssilvb_enabled, RID)
+	PASS1RC(float, environment_get_ssilvb_intensity, RID)
+	PASS1RC(float, environment_get_ssilvb_normal_rejection, RID)
 
 	// SDFGI
 

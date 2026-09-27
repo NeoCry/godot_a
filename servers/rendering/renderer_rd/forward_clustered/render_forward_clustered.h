@@ -107,13 +107,9 @@ public:
 		ClusterBuilderRD *cluster_builder = nullptr;
 
 		struct SSEffectsData {
-			Projection ssil_last_frame_projections[RendererSceneRender::MAX_RENDER_VIEWS];
-			Transform3D ssil_last_frame_transform;
-
 			Projection ssr_last_frame_projections[RendererSceneRender::MAX_RENDER_VIEWS];
 			Transform3D ssr_last_frame_transform;
 
-			RendererRD::SSEffects::SSILRenderBuffers ssil;
 			RendererRD::SSEffects::SSRRenderBuffers ssr;
 			RendererRD::SSEffects::SSCSRenderBuffers sscs;
 		} ss_effects_data;
@@ -320,7 +316,7 @@ private:
 	// When changing any of these enums, remember to change the corresponding enums in the shader files as well.
 	enum {
 		SCREEN_SPACE_EFFECTS_FLAGS_USE_GTAO = (1 << 0),
-		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL = (1 << 1),
+		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSILVB = (1 << 1),
 		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSR = (1 << 2),
 		SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR = (1 << 3),
 		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS = (1 << 4),
@@ -831,13 +827,12 @@ private:
 	void _render_sscs_exclusion_depth(RenderDataRD *p_render_data, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer);
 
 	/* Render Scene */
-	void _process_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
+	void _process_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform, bool p_use_indirect_light);
 	void _process_hmao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
-	void _process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
 	void _process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform);
 	void _process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const RID *p_exclusion_depth_textures, RID p_environment, float p_taa_frame_count);
-	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssil, bool p_use_ssr);
-	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_gtao, bool p_use_hmao, bool p_use_ssil, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
+	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssilvb, bool p_use_ssr);
+	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_gtao, bool p_use_hmao, bool p_use_ssilvb, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
 
 	/* Debug */
@@ -851,7 +846,6 @@ protected:
 
 	virtual void environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) override;
 	virtual void environment_set_hmao_quality(RSE::EnvironmentHMAOQuality p_quality, bool p_half_size) override;
-	virtual void environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) override;
 	virtual void environment_set_ssr_half_size(bool p_half_size) override;
 	virtual void environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) override;
 

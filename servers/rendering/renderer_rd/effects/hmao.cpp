@@ -196,8 +196,8 @@ void HeightMapAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuf
 	Size2i full_size = p_settings.full_screen_size;
 	bool is_orthogonal = p_projection.is_orthogonal();
 
-	// Depth linearization constants, derived exactly as effects/gtao.cpp derives its own (which in turn
-	// mirrors shaders/effects/ss_effects_downsample.glsl): both passes below read hardware depth directly.
+	// Depth linearization constants, derived exactly as effects/gtao.cpp derives its own: both passes below
+	// read hardware depth directly.
 	Projection depth_correction;
 	depth_correction.set_depth_correction(false);
 	Projection linearize_source = depth_correction * p_projection;

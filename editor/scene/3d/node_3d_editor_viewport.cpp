@@ -4633,7 +4633,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 		case VIEW_DISPLAY_DEBUG_SCENE_LUMINANCE:
 		case VIEW_DISPLAY_DEBUG_GTAO:
 		case VIEW_DISPLAY_DEBUG_HMAO:
-		case VIEW_DISPLAY_DEBUG_SSIL:
+		case VIEW_DISPLAY_DEBUG_SSILVB:
 		case VIEW_DISPLAY_DEBUG_PSSM_SPLITS:
 		case VIEW_DISPLAY_DEBUG_DECAL_ATLAS:
 		case VIEW_DISPLAY_DEBUG_AREA_LIGHT_ATLAS:
@@ -4666,7 +4666,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				VIEW_DISPLAY_DEBUG_SCENE_LUMINANCE,
 				VIEW_DISPLAY_DEBUG_GTAO,
 				VIEW_DISPLAY_DEBUG_HMAO,
-				VIEW_DISPLAY_DEBUG_SSIL,
+				VIEW_DISPLAY_DEBUG_SSILVB,
 				VIEW_DISPLAY_DEBUG_GI_BUFFER,
 				VIEW_DISPLAY_DEBUG_DISABLE_LOD,
 				VIEW_DISPLAY_DEBUG_PSSM_SPLITS,
@@ -4701,7 +4701,7 @@ void Node3DEditorViewport::_menu_option(int p_option) {
 				Viewport::DEBUG_DRAW_SCENE_LUMINANCE,
 				Viewport::DEBUG_DRAW_GTAO,
 				Viewport::DEBUG_DRAW_HMAO,
-				Viewport::DEBUG_DRAW_SSIL,
+				Viewport::DEBUG_DRAW_SSILVB,
 				Viewport::DEBUG_DRAW_GI_BUFFER,
 				Viewport::DEBUG_DRAW_DISABLE_LOD,
 				Viewport::DEBUG_DRAW_PSSM_SPLITS,
@@ -6983,8 +6983,8 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 			TTRC("Displays the screen-space ambient occlusion buffer. Requires GTAO to be enabled in Environment to have a visible effect."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("HMAO"), VIEW_DISPLAY_DEBUG_HMAO, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Displays the height map ambient occlusion buffer. Requires HMAO to be enabled in Environment to have a visible effect."));
-	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("SSIL"), VIEW_DISPLAY_DEBUG_SSIL, SupportedRenderingMethods::FORWARD_PLUS,
-			TTRC("Displays the screen-space indirect lighting buffer. Requires SSIL to be enabled in Environment to have a visible effect."));
+	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("SSILVB"), VIEW_DISPLAY_DEBUG_SSILVB, SupportedRenderingMethods::FORWARD_PLUS,
+			TTRC("Displays the screen-space indirect lighting buffer. Requires SSILVB to be enabled in Environment to have a visible effect."));
 	_add_advanced_debug_draw_mode_item(display_submenu, TTRC("SSCS Wave Index"), VIEW_DISPLAY_DEBUG_SSCS_WAVE_INDEX, SupportedRenderingMethods::FORWARD_PLUS,
 			TTRC("Colors screen-space contact shadow output by compute wavefront index instead of computing real shadows, to help verify wavefronts are correctly aligned and projected towards the light.\nRequires screen-space contact shadows to be enabled to have a visible effect."));
 	display_submenu->add_separator();

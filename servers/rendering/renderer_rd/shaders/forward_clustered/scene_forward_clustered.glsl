@@ -2305,14 +2305,16 @@ void fragment_shader(in SceneData scene_data) {
 #endif // SPECULAR_OCCLUSION_DISABLED
 		ambient_light *= albedo.rgb;
 
-		if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL)) {
+		if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSILVB)) {
 #ifdef USE_MULTIVIEW
-			vec4 ssil = textureLod(sampler2DArray(ssil_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex), 0.0);
+			vec4 ssilvb = textureLod(sampler2DArray(ssilvb_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex), 0.0);
 #else
-			vec4 ssil = textureLod(sampler2D(ssil_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
+			vec4 ssilvb = textureLod(sampler2D(ssilvb_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
 #endif // USE_MULTIVIEW
-			ambient_light *= 1.0 - ssil.a;
-			ambient_light += ssil.rgb * albedo.rgb;
+			// Single-scattering split: what the visibility bitmask says is blocked stops arriving from the
+			// sky, and what those same blocked sectors bounce back arrives instead.
+			ambient_light *= 1.0 - ssilvb.a;
+			ambient_light += ssilvb.rgb * albedo.rgb;
 		}
 
 		//process ssr

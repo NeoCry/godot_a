@@ -35,10 +35,9 @@
 // wasn't visible last frame, or wasn't there at all) falls back to the spatial-only result instead of
 // blending in stale/wrong history.
 //
-// The reprojection math (NDC round-trip through the `reprojection` matrix) mirrors the proven pattern
-// already used by SSIL's last-frame-color sampling (servers/rendering/renderer_rd/shaders/effects/ssil.glsl)
-// for the same codebase and camera conventions, so it doesn't have to re-derive NDC/Y-flip conventions from
-// scratch. The matrix itself expects a genuine NDC-Z input/output matching the projection's actual hardware
+// The reprojection math is an NDC round-trip through the `reprojection` matrix that effects/gtao.cpp builds
+// from this frame's and last frame's view-projections, so it does not re-derive the NDC or Y-flip conventions
+// here. The matrix expects a genuine NDC-Z input/output matching the projection's actual hardware
 // convention (reverse-Z, Vulkan-remapped to [0,1]) at both ends, not a linear stand-in built from z_near/
 // z_far -- the two are related hyperbolically, not linearly, for a perspective projection, and since the
 // matrix mixes all four components together, feeding or reading the wrong one corrupts the reprojected UV
@@ -57,6 +56,17 @@ layout(set = 0, binding = 1) uniform sampler2D source_depth;
 layout(set = 0, binding = 2) uniform sampler2D source_history;
 
 layout(rg16f, set = 1, binding = 0) uniform restrict writeonly image2D dest_history;
+
+#ifdef USE_INDIRECT_LIGHT
+// The indirect-light half rides the same reprojection and the same disocclusion test as the occlusion half.
+// Denoising them together is not just cheaper: the lighting shader composes them as
+// ambient * (1 - obscurance) + bounce, so a filter that treated them independently would let the two disagree
+// at exactly the depth edges where both are least certain, and the seam would show in the sum.
+layout(set = 0, binding = 3) uniform sampler2D source_raw_light;
+layout(set = 0, binding = 4) uniform sampler2D source_light_history;
+
+layout(rgba16f, set = 1, binding = 1) uniform restrict writeonly image2D dest_light_history;
+#endif
 
 layout(set = 2, binding = 0) uniform ReprojectionConstants {
 	mat4 reprojection;
@@ -84,30 +94,6 @@ float linearize_depth(float p_ndc_z) {
 	return params.depth_linearize_mul / max(params.depth_linearize_add - p_ndc_z, 0.0001);
 }
 
-// Small cross-shaped bilateral gather: cheap, and only meant to take the edge off this frame's raw
-// per-pixel noise before it meets the temporal accumulator (which does the heavy lifting over time).
-float spatial_prefilter(ivec2 p_pos, float p_center_ao, float p_center_depth) {
-	const ivec2 offsets[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
-
-	float sum = p_center_ao;
-	float weight_sum = 1.0;
-
-	// sharpness in [0,1]: higher respects depth discontinuities more strictly (less cross-edge blending).
-	float depth_tolerance = max(p_center_depth * mix(0.05, 0.005, clamp(params.sharpness, 0.0, 1.0)), 0.001);
-
-	for (int i = 0; i < 4; i++) {
-		ivec2 tap_pos = clamp(p_pos + offsets[i], ivec2(0), params.screen_size - 1);
-		float tap_depth = texelFetch(source_depth, tap_pos, 0).x;
-		float tap_ao = texelFetch(source_raw_ao, tap_pos, 0).x;
-
-		float depth_weight = exp2(-abs(tap_depth - p_center_depth) / depth_tolerance);
-		sum += tap_ao * depth_weight;
-		weight_sum += depth_weight;
-	}
-
-	return sum / weight_sum;
-}
-
 void main() {
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(pos, params.screen_size))) {
@@ -115,8 +101,38 @@ void main() {
 	}
 
 	float depth = texelFetch(source_depth, pos, 0).x;
-	float raw_ao = texelFetch(source_raw_ao, pos, 0).x;
-	float spatial_ao = spatial_prefilter(pos, raw_ao, depth);
+
+	// Small cross-shaped bilateral gather: cheap, and only meant to take the edge off this frame's raw
+	// per-pixel noise before it meets the temporal accumulator (which does the heavy lifting over time).
+	// The weights are built once and applied to every channel, so occlusion and bounce are always filtered
+	// over identically shaped neighbourhoods.
+	const ivec2 offsets[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+
+	// sharpness in [0,1]: higher respects depth discontinuities more strictly (less cross-edge blending).
+	float depth_tolerance = max(depth * mix(0.05, 0.005, clamp(params.sharpness, 0.0, 1.0)), 0.001);
+
+	float spatial_ao = texelFetch(source_raw_ao, pos, 0).x;
+	float prefilter_weight = 1.0;
+#ifdef USE_INDIRECT_LIGHT
+	vec3 spatial_light = texelFetch(source_raw_light, pos, 0).rgb;
+#endif
+
+	for (int i = 0; i < 4; i++) {
+		ivec2 tap_pos = clamp(pos + offsets[i], ivec2(0), params.screen_size - 1);
+		float tap_depth = texelFetch(source_depth, tap_pos, 0).x;
+		float depth_weight = exp2(-abs(tap_depth - depth) / depth_tolerance);
+
+		spatial_ao += texelFetch(source_raw_ao, tap_pos, 0).x * depth_weight;
+#ifdef USE_INDIRECT_LIGHT
+		spatial_light += texelFetch(source_raw_light, tap_pos, 0).rgb * depth_weight;
+#endif
+		prefilter_weight += depth_weight;
+	}
+
+	spatial_ao /= prefilter_weight;
+#ifdef USE_INDIRECT_LIGHT
+	spatial_light /= prefilter_weight;
+#endif
 
 	vec2 uv = (vec2(pos) + 0.5) * params.pixel_size;
 
@@ -131,6 +147,9 @@ void main() {
 
 	float result_ao = spatial_ao;
 	float history_confidence = 0.0;
+#ifdef USE_INDIRECT_LIGHT
+	vec3 result_light = spatial_light;
+#endif
 
 	if (params.history_is_valid && clip_prev.w > 0.0001) {
 		vec2 uv_prev = (clip_prev.xy / clip_prev.w) * 0.5 + 0.5;
@@ -150,8 +169,15 @@ void main() {
 			// smoothly rather than with a hard cutoff, to avoid a visible boundary snapping in and out.
 			history_confidence = params.history_weight * clamp(1.0 - depth_error * 8.0, 0.0, 1.0);
 			result_ao = mix(spatial_ao, history_ao, history_confidence);
+#ifdef USE_INDIRECT_LIGHT
+			result_light = mix(spatial_light, textureLod(source_light_history, uv_prev, 0.0).rgb, history_confidence);
+#endif
 		}
 	}
 
 	imageStore(dest_history, pos, vec4(result_ao, depth, 0.0, 0.0));
+
+#ifdef USE_INDIRECT_LIGHT
+	imageStore(dest_light_history, pos, vec4(result_light, 0.0));
+#endif
 }

@@ -1575,18 +1575,6 @@
 				Sets whether screen-space shadows are force-enabled for this [param env], overriding [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled], along with the ray length and assumed surface thickness to use for them. See [Environment] for more details.
 			</description>
 		</method>
-		<method name="environment_set_ssil_quality">
-			<return type="void" />
-			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentSSILQuality" />
-			<param index="1" name="half_size" type="bool" />
-			<param index="2" name="adaptive_target" type="float" />
-			<param index="3" name="blur_passes" type="int" />
-			<param index="4" name="fadeout_from" type="float" />
-			<param index="5" name="fadeout_to" type="float" />
-			<description>
-				Sets the quality level of the screen-space indirect lighting (SSIL) post-process effect. See [Environment] for more details.
-			</description>
-		</method>
 		<method name="environment_set_ssr">
 			<return type="void" />
 			<param index="0" name="env" type="RID" />
@@ -5754,8 +5742,8 @@
 		<constant name="VIEWPORT_DEBUG_DRAW_HMAO" value="13" enum="ViewportDebugDraw">
 			Draws the height map based ambient occlusion buffer (see [member Environment.hmao_enabled]) over the viewport.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SSIL" value="14" enum="ViewportDebugDraw">
-			Draws the screen space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].
+		<constant name="VIEWPORT_DEBUG_DRAW_SSILVB" value="14" enum="ViewportDebugDraw">
+			Draws the screen space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssilvb_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="VIEWPORT_DEBUG_DRAW_PSSM_SPLITS" value="15" enum="ViewportDebugDraw">
@@ -6036,21 +6024,6 @@
 		</constant>
 		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_LONG" value="2" enum="ScreenSpaceContactShadowsLength">
 			Cast longer screen-space shadow rays. Slowest option, but the effect will be able to reach further.
-		</constant>
-		<constant name="ENV_SSIL_QUALITY_VERY_LOW" value="0" enum="EnvironmentSSILQuality">
-			Lowest quality of screen-space indirect lighting.
-		</constant>
-		<constant name="ENV_SSIL_QUALITY_LOW" value="1" enum="EnvironmentSSILQuality">
-			Low quality screen-space indirect lighting.
-		</constant>
-		<constant name="ENV_SSIL_QUALITY_MEDIUM" value="2" enum="EnvironmentSSILQuality">
-			High quality screen-space indirect lighting.
-		</constant>
-		<constant name="ENV_SSIL_QUALITY_HIGH" value="3" enum="EnvironmentSSILQuality">
-			High quality screen-space indirect lighting.
-		</constant>
-		<constant name="ENV_SSIL_QUALITY_ULTRA" value="4" enum="EnvironmentSSILQuality">
-			Highest quality screen-space indirect lighting. Uses the adaptive target setting which can be dynamically adjusted to smoothly balance performance and visual quality.
 		</constant>
 		<constant name="ENV_SDFGI_Y_SCALE_50_PERCENT" value="0" enum="EnvironmentSDFGIYScale">
 			Use 50% scale for SDFGI on the Y (vertical) axis. SDFGI cells will be twice as short as they are wide. This allows providing increased GI detail and reduced light leaking with thin floors and ceilings. This is usually the best choice for scenes that don't feature much verticality.

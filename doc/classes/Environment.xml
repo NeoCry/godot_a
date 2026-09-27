@@ -378,21 +378,16 @@
 		<member name="sscs_surface_thickness" type="float" setter="set_sscs_surface_thickness" getter="get_sscs_surface_thickness" default="0.01">
 			The assumed depth thickness of surfaces, as a fraction of the depth range, used when ray marching screen-space shadows. A larger value widens the depth interval in which an occluder is considered to block light, which can fill in gaps in thin geometry but may also cause shadows to bleed through surfaces if set too high. Only used when [member sscs_enabled] is [code]true[/code]; otherwise, [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/surface_thickness] is used instead.
 		</member>
-		<member name="ssil_enabled" type="bool" setter="set_ssil_enabled" getter="is_ssil_enabled" default="false">
-			If [code]true[/code], the screen-space indirect lighting effect is enabled. Screen space indirect lighting is a form of indirect lighting that allows diffuse light to bounce between nearby objects. Screen-space indirect lighting works very similarly to screen-space ambient occlusion, in that it only affects a limited range. It is intended to be used along with a form of proper global illumination like SDFGI or [VoxelGI]. Screen-space indirect lighting is not affected by individual light's [member Light3D.light_indirect_energy].
-			[b]Note:[/b] SSIL is only supported in the Forward+ rendering method, not Mobile or Compatibility.
+		<member name="ssilvb_enabled" type="bool" setter="set_ssilvb_enabled" getter="is_ssilvb_enabled" default="false">
+			If [code]true[/code], screen-space indirect lighting with a visibility bitmask is enabled. This is a form of indirect lighting that lets diffuse light bounce between nearby objects, over a limited range. It is intended to be used along with a form of proper global illumination like SDFGI or [VoxelGI]. It is not affected by an individual light's [member Light3D.light_indirect_energy].
+			SSILVB is gathered by the same traversal as ground-truth ambient occlusion: the visibility bitmask that tells the occlusion term which directions are blocked also says under what solid angle each occluder is seen, which is the weight its bounced light needs. As a result it takes its search volume and its filtering from GTAO — [member gtao_radius], [member gtao_thickness], [member gtao_sharpness], [member ProjectSettings.rendering/environment/gtao/quality] and [member ProjectSettings.rendering/environment/gtao/half_size] all apply to it — and only the two settings that belong to the bounce itself are its own. Enabling it does not require [member gtao_enabled]: the traversal runs for whichever half is wanted.
+			[b]Note:[/b] SSILVB is only supported in the Forward+ rendering method, not Mobile or Compatibility.
 		</member>
-		<member name="ssil_intensity" type="float" setter="set_ssil_intensity" getter="get_ssil_intensity" default="1.0">
-			The brightness multiplier for the screen-space indirect lighting effect. A higher value will result in brighter light.
+		<member name="ssilvb_intensity" type="float" setter="set_ssilvb_intensity" getter="get_ssilvb_intensity" default="1.0">
+			The brightness multiplier for the bounced light. A higher value will result in brighter light.
 		</member>
-		<member name="ssil_normal_rejection" type="float" setter="set_ssil_normal_rejection" getter="get_ssil_normal_rejection" default="1.0">
-			Amount of normal rejection used when calculating screen-space indirect lighting. Normal rejection uses the normal of a given sample point to reject samples that are facing away from the current pixel. Normal rejection is necessary to avoid light leaking when only one side of an object is illuminated. However, normal rejection can be disabled if light leaking is desirable, such as when the scene mostly contains emissive objects that emit light from faces that cannot be seen from the camera.
-		</member>
-		<member name="ssil_radius" type="float" setter="set_ssil_radius" getter="get_ssil_radius" default="5.0">
-			The distance that bounced lighting can travel when using the screen space indirect lighting effect. A larger value will result in light bouncing further in a scene, but may result in under-sampling artifacts which look like long spikes surrounding light sources.
-		</member>
-		<member name="ssil_sharpness" type="float" setter="set_ssil_sharpness" getter="get_ssil_sharpness" default="0.98">
-			The amount that the screen-space indirect lighting effect is allowed to blur over the edges of objects. Setting too high will result in aliasing around the edges of objects. Setting too low will make object edges appear blurry.
+		<member name="ssilvb_normal_rejection" type="float" setter="set_ssilvb_normal_rejection" getter="get_ssilvb_normal_rejection" default="1.0">
+			How strongly occluders that face away from a pixel are rejected as light sources for it. The buffer this pass reads holds the light each surface sent towards the camera, not towards the pixel being lit, so a surface turned away from that pixel would otherwise still light it. Rejection is necessary to avoid light leaking when only one side of an object is illuminated, but it can be turned down if leaking is desirable, such as when the scene mostly contains emissive objects that emit light from faces the camera cannot see.
 		</member>
 		<member name="ssr_depth_tolerance" type="float" setter="set_ssr_depth_tolerance" getter="get_ssr_depth_tolerance" default="0.5">
 			The depth tolerance for screen-space reflections.
@@ -461,7 +456,7 @@
 		<member name="volumetric_fog_gi_inject" type="float" setter="set_volumetric_fog_gi_inject" getter="get_volumetric_fog_gi_inject" default="1.0">
 			Scales the strength of Global Illumination used in the volumetric fog's albedo color. A value of [code]0.0[/code] means that Global Illumination will not impact the volumetric fog. [member volumetric_fog_gi_inject] has a small performance cost when set above [code]0.0[/code].
 			[b]Note:[/b] This has no visible effect if [member volumetric_fog_density] is [code]0.0[/code] or if [member volumetric_fog_albedo] is a fully black color.
-			[b]Note:[/b] Only [VoxelGI] and SDFGI ([member Environment.sdfgi_enabled]) are taken into account when using [member volumetric_fog_gi_inject]. Global illumination from [LightmapGI], [ReflectionProbe] and SSIL (see [member ssil_enabled]) will be ignored by volumetric fog.
+			[b]Note:[/b] Only [VoxelGI] and SDFGI ([member Environment.sdfgi_enabled]) are taken into account when using [member volumetric_fog_gi_inject]. Global illumination from [LightmapGI], [ReflectionProbe] and SSILVB (see [member ssilvb_enabled]) will be ignored by volumetric fog.
 		</member>
 		<member name="volumetric_fog_length" type="float" setter="set_volumetric_fog_length" getter="get_volumetric_fog_length" default="64.0">
 			The distance over which the volumetric fog is computed. Increase to compute fog over a greater range, decrease to add more detail when a long range is not needed. For best quality fog, keep this as low as possible. See also [member ProjectSettings.rendering/environment/volumetric_fog/volume_depth].

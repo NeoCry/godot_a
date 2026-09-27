@@ -270,15 +270,12 @@ public:
 	RSE::ScreenSpaceContactShadowsLength environment_get_sscs_length(RID p_env) const;
 	float environment_get_sscs_surface_thickness(RID p_env) const;
 
-	// SSIL
-	void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection);
-	bool environment_get_ssil_enabled(RID p_env) const;
-	float environment_get_ssil_radius(RID p_env) const;
-	float environment_get_ssil_intensity(RID p_env) const;
-	float environment_get_ssil_sharpness(RID p_env) const;
-	float environment_get_ssil_normal_rejection(RID p_env) const;
-
-	virtual void environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) = 0;
+	// SSILVB. Radius, quality, half size and fadeout are GTAO's: SSILVB is gathered by the same bitmask
+	// traversal, so it cannot search a different volume than the occlusion it is derived from.
+	void environment_set_ssilvb(RID p_env, bool p_enable, float p_intensity, float p_normal_rejection);
+	bool environment_get_ssilvb_enabled(RID p_env) const;
+	float environment_get_ssilvb_intensity(RID p_env) const;
+	float environment_get_ssilvb_normal_rejection(RID p_env) const;
 
 	// SDFGI
 	void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RSE::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias);

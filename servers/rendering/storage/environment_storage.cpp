@@ -904,51 +904,37 @@ float RendererEnvironmentStorage::environment_get_sscs_surface_thickness(RID p_e
 	return env->sscs_surface_thickness;
 }
 
-// SSIL
+// SSILVB
 
-void RendererEnvironmentStorage::environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection) {
+void RendererEnvironmentStorage::environment_set_ssilvb(RID p_env, bool p_enable, float p_intensity, float p_normal_rejection) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 #ifdef DEBUG_ENABLED
 	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
-		WARN_PRINT_ONCE_ED("Screen-space indirect lighting (SSIL) is only available when using the Forward+ renderer.");
+		WARN_PRINT_ONCE_ED("Screen-space indirect lighting with a visibility bitmask (SSILVB) is only available when using the Forward+ renderer.");
 	}
 #endif
-	env->ssil_enabled = p_enable;
-	env->ssil_radius = p_radius;
-	env->ssil_intensity = p_intensity;
-	env->ssil_sharpness = p_sharpness;
-	env->ssil_normal_rejection = p_normal_rejection;
+	env->ssilvb_enabled = p_enable;
+	env->ssilvb_intensity = p_intensity;
+	env->ssilvb_normal_rejection = p_normal_rejection;
 }
 
-bool RendererEnvironmentStorage::environment_get_ssil_enabled(RID p_env) const {
+bool RendererEnvironmentStorage::environment_get_ssilvb_enabled(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, false);
-	return env->ssil_enabled;
+	return env->ssilvb_enabled;
 }
 
-float RendererEnvironmentStorage::environment_get_ssil_radius(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 5.0);
-	return env->ssil_radius;
-}
-
-float RendererEnvironmentStorage::environment_get_ssil_intensity(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_ssilvb_intensity(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 1.0);
-	return env->ssil_intensity;
+	return env->ssilvb_intensity;
 }
 
-float RendererEnvironmentStorage::environment_get_ssil_sharpness(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 0.98);
-	return env->ssil_sharpness;
-}
-
-float RendererEnvironmentStorage::environment_get_ssil_normal_rejection(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_ssilvb_normal_rejection(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 1.0);
-	return env->ssil_normal_rejection;
+	return env->ssilvb_normal_rejection;
 }
 
 // SDFGI

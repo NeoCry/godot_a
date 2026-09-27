@@ -705,61 +705,45 @@ void Environment::_update_sscs() {
 			sscs_surface_thickness);
 }
 
-// SSIL
+// SSILVB (screen-space indirect lighting with a visibility bitmask)
+//
+// Gathered by the same bitmask traversal as GTAO, so radius, quality, half size, fadeout and denoiser
+// sharpness are GTAO's: one sweep cannot search two different volumes. Only the two settings that belong to
+// the bounce itself live here.
 
-void Environment::set_ssil_enabled(bool p_enabled) {
-	ssil_enabled = p_enabled;
-	_update_ssil();
+void Environment::set_ssilvb_enabled(bool p_enabled) {
+	ssilvb_enabled = p_enabled;
+	_update_ssilvb();
 }
 
-bool Environment::is_ssil_enabled() const {
-	return ssil_enabled;
+bool Environment::is_ssilvb_enabled() const {
+	return ssilvb_enabled;
 }
 
-void Environment::set_ssil_radius(float p_radius) {
-	ssil_radius = p_radius;
-	_update_ssil();
+void Environment::set_ssilvb_intensity(float p_intensity) {
+	ssilvb_intensity = p_intensity;
+	_update_ssilvb();
 }
 
-float Environment::get_ssil_radius() const {
-	return ssil_radius;
+float Environment::get_ssilvb_intensity() const {
+	return ssilvb_intensity;
 }
 
-void Environment::set_ssil_intensity(float p_intensity) {
-	ssil_intensity = p_intensity;
-	_update_ssil();
+void Environment::set_ssilvb_normal_rejection(float p_normal_rejection) {
+	ssilvb_normal_rejection = p_normal_rejection;
+	_update_ssilvb();
 }
 
-float Environment::get_ssil_intensity() const {
-	return ssil_intensity;
+float Environment::get_ssilvb_normal_rejection() const {
+	return ssilvb_normal_rejection;
 }
 
-void Environment::set_ssil_sharpness(float p_sharpness) {
-	ssil_sharpness = p_sharpness;
-	_update_ssil();
-}
-
-float Environment::get_ssil_sharpness() const {
-	return ssil_sharpness;
-}
-
-void Environment::set_ssil_normal_rejection(float p_normal_rejection) {
-	ssil_normal_rejection = p_normal_rejection;
-	_update_ssil();
-}
-
-float Environment::get_ssil_normal_rejection() const {
-	return ssil_normal_rejection;
-}
-
-void Environment::_update_ssil() {
-	RS::get_singleton()->environment_set_ssil(
+void Environment::_update_ssilvb() {
+	RS::get_singleton()->environment_set_ssilvb(
 			environment,
-			ssil_enabled,
-			ssil_radius,
-			ssil_intensity,
-			ssil_sharpness,
-			ssil_normal_rejection);
+			ssilvb_enabled,
+			ssilvb_intensity,
+			ssilvb_normal_rejection);
 }
 
 // SDFGI
@@ -1777,24 +1761,18 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sscs_length", PROPERTY_HINT_ENUM, "Short (Fast),Medium (Average),Long (Slow)"), "set_sscs_length", "get_sscs_length");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sscs_surface_thickness", PROPERTY_HINT_RANGE, "0.001,0.1,0.001"), "set_sscs_surface_thickness", "get_sscs_surface_thickness");
 
-	// SSIL
-	ClassDB::bind_method(D_METHOD("set_ssil_enabled", "enabled"), &Environment::set_ssil_enabled);
-	ClassDB::bind_method(D_METHOD("is_ssil_enabled"), &Environment::is_ssil_enabled);
-	ClassDB::bind_method(D_METHOD("set_ssil_radius", "radius"), &Environment::set_ssil_radius);
-	ClassDB::bind_method(D_METHOD("get_ssil_radius"), &Environment::get_ssil_radius);
-	ClassDB::bind_method(D_METHOD("set_ssil_intensity", "intensity"), &Environment::set_ssil_intensity);
-	ClassDB::bind_method(D_METHOD("get_ssil_intensity"), &Environment::get_ssil_intensity);
-	ClassDB::bind_method(D_METHOD("set_ssil_sharpness", "sharpness"), &Environment::set_ssil_sharpness);
-	ClassDB::bind_method(D_METHOD("get_ssil_sharpness"), &Environment::get_ssil_sharpness);
-	ClassDB::bind_method(D_METHOD("set_ssil_normal_rejection", "normal_rejection"), &Environment::set_ssil_normal_rejection);
-	ClassDB::bind_method(D_METHOD("get_ssil_normal_rejection"), &Environment::get_ssil_normal_rejection);
+	// SSILVB
+	ClassDB::bind_method(D_METHOD("set_ssilvb_enabled", "enabled"), &Environment::set_ssilvb_enabled);
+	ClassDB::bind_method(D_METHOD("is_ssilvb_enabled"), &Environment::is_ssilvb_enabled);
+	ClassDB::bind_method(D_METHOD("set_ssilvb_intensity", "intensity"), &Environment::set_ssilvb_intensity);
+	ClassDB::bind_method(D_METHOD("get_ssilvb_intensity"), &Environment::get_ssilvb_intensity);
+	ClassDB::bind_method(D_METHOD("set_ssilvb_normal_rejection", "normal_rejection"), &Environment::set_ssilvb_normal_rejection);
+	ClassDB::bind_method(D_METHOD("get_ssilvb_normal_rejection"), &Environment::get_ssilvb_normal_rejection);
 
-	ADD_GROUP("SSIL", "ssil_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ssil_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ssil_enabled", "is_ssil_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_radius", PROPERTY_HINT_RANGE, "0.01,16,0.01,or_greater,suffix:m"), "set_ssil_radius", "get_ssil_radius");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ssil_intensity", "get_ssil_intensity");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_sharpness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssil_sharpness", "get_ssil_sharpness");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_normal_rejection", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssil_normal_rejection", "get_ssil_normal_rejection");
+	ADD_GROUP("SSILVB", "ssilvb_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ssilvb_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ssilvb_enabled", "is_ssilvb_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssilvb_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ssilvb_intensity", "get_ssilvb_intensity");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssilvb_normal_rejection", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssilvb_normal_rejection", "get_ssilvb_normal_rejection");
 
 	// SDFGI
 
@@ -2074,7 +2052,7 @@ Environment::Environment() {
 	_update_hmao();
 	_update_atmosphere();
 	_update_sscs();
-	_update_ssil();
+	_update_ssilvb();
 	_update_sdfgi();
 	_update_glow();
 	_update_fog();

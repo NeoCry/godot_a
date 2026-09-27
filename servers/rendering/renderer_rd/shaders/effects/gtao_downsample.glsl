@@ -29,7 +29,7 @@
 /**************************************************************************/
 
 // Dedicated depth downsampler for GTAO (servers/rendering/renderer_rd/effects/gtao.cpp), decoupled from the
-// generic SSIL/SS-effects downsampler. MODE_BASE converts the hardware depth buffer to linear (positive
+// generic SS-effects downsampler. MODE_BASE converts the hardware depth buffer to linear (positive
 // distance from the eye) depth at half resolution; MODE_MIP repeatedly halves that to build a small mip
 // chain. Each 2x2 reduction keeps the closest (minimum distance) sample rather than averaging, so thin
 // foreground occluders survive into the coarser mips instead of being blended away — the horizon search in

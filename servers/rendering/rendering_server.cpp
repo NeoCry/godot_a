@@ -3015,7 +3015,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SCENE_LUMINANCE);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_GTAO);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_HMAO);
-	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SSIL);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SSILVB);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DECAL_ATLAS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SDFGI);
@@ -3114,7 +3114,6 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_ozone", "env", "absorption", "absorption_scale", "tip_altitude", "width"), &RenderingServer::environment_set_atmosphere_ozone);
 	ClassDB::bind_method(D_METHOD("environment_set_hmao", "env", "enable", "amount", "range", "resolution"), &RenderingServer::environment_set_hmao);
 	ClassDB::bind_method(D_METHOD("environment_set_hmao_quality", "quality", "half_size"), &RenderingServer::environment_set_hmao_quality);
-	ClassDB::bind_method(D_METHOD("environment_set_ssil_quality", "quality", "half_size", "adaptive_target", "blur_passes", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_ssil_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_ray_count", "ray_count"), &RenderingServer::environment_set_sdfgi_ray_count);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_frames_to_converge", "frames"), &RenderingServer::environment_set_sdfgi_frames_to_converge);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_frames_to_update_light", "frames"), &RenderingServer::environment_set_sdfgi_frames_to_update_light);
@@ -3186,12 +3185,6 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT);
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM);
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_LONG);
-
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_VERY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_MEDIUM);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_HIGH);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_ULTRA);
 
 	BIND_ENUM_CONSTANT(RSE::ENV_SDFGI_Y_SCALE_50_PERCENT);
 	BIND_ENUM_CONSTANT(RSE::ENV_SDFGI_Y_SCALE_75_PERCENT);
@@ -3809,13 +3802,6 @@ void RenderingServer::init() {
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/hmao/quality", PROPERTY_HINT_ENUM, "Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 1);
 	GLOBAL_DEF("rendering/environment/hmao/half_size", true);
-
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
-	GLOBAL_DEF("rendering/environment/ssil/half_size", true);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssil/adaptive_target", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), 0.5);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/blur_passes", PROPERTY_HINT_RANGE, "0,6"), 4);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssil/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssil/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
 
 	// Move the project setting definitions here so they are available when we init the rendering internals.
 	GLOBAL_DEF_BASIC("rendering/viewport/hdr_2d", false);

@@ -30,12 +30,23 @@
 
 #pragma once
 
-// Self-contained Ground-Truth Ambient Occlusion (GTAO) effect: Jimenez, Wu, Pesce & Jarabo, "Practical
-// Realtime Strategies for Accurate Indirect Occlusion" (Activision, 2016). Deliberately independent of
-// SSEffects (servers/rendering/renderer_rd/effects/ss_effects.h/.cpp): its own depth downsampler, its own
-// horizon-search gather, its own spatial+temporal denoiser, its own upsample — nothing shared with SSIL/SSR
-// beyond generic renderer plumbing (the normal/depth G-buffers, camera reprojection matrices) that every
-// screen-space effect needs regardless of algorithm.
+// Self-contained Ground-Truth Ambient Occlusion (GTAO) with a visibility bitmask, and the screen-space
+// indirect lighting (SSILVB) that falls out of the same traversal: Jimenez, Wu, Pesce & Jarabo, "Practical
+// Realtime Strategies for Accurate Indirect Occlusion" (Activision, 2016) and Therrien, Levesque & Gilet,
+// "Screen Space Indirect Lighting with Visibility Bitmask" (2023).
+//
+// Deliberately independent of SSEffects (servers/rendering/renderer_rd/effects/ss_effects.h/.cpp): its own
+// depth downsampler, its own gather, its own spatial+temporal denoiser, its own upsample — nothing shared
+// with SSR beyond generic renderer plumbing (the normal/depth G-buffers, camera reprojection matrices, the
+// last-frame colour buffer) that every screen-space effect needs regardless of algorithm.
+//
+// Occlusion and indirect light come out of ONE sweep, which is the point of the bitmask: the mask says which
+// sectors of each slice are blocked, so the arc of the sectors a sample is first to block is exactly the solid
+// angle under which this pixel sees that occluder — the weight its bounce light needs. Running them as two
+// passes, as Godot's SSAO and SSIL did, pays for the traversal twice and lets the two results disagree.
+// SSILVB therefore shares the radius, quality and half-size of the occlusion it is derived from and adds only
+// its own intensity and normal rejection; either half can be switched off, and with indirect light off the
+// shaders drop to a variant whose generated code is identical to having no support for it at all.
 
 #include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/shaders/effects/gtao.glsl.gen.h"
@@ -51,6 +62,12 @@
 #define RB_GTAO_HISTORY_A SNAME("history_a")
 #define RB_GTAO_HISTORY_B SNAME("history_b")
 #define RB_GTAO_FINAL SNAME("final")
+
+// Same scope, so clearing RB_SCOPE_GTAO releases the indirect-light buffers along with the occlusion ones.
+#define RB_GTAO_RAW_LIGHT SNAME("raw_light")
+#define RB_GTAO_LIGHT_HISTORY_A SNAME("light_history_a")
+#define RB_GTAO_LIGHT_HISTORY_B SNAME("light_history_b")
+#define RB_SSILVB_FINAL SNAME("ssilvb_final")
 
 class RenderSceneBuffersRD;
 
@@ -70,6 +87,7 @@ public:
 
 	struct RenderBuffers {
 		bool half_size = true;
+		bool indirect_light = false;
 		int buffer_width = 0;
 		int buffer_height = 0;
 		uint32_t mip_count = 1;
@@ -91,6 +109,12 @@ public:
 		float horizon = 0.06;
 		float thickness = 0.5;
 		float sharpness = 0.9;
+
+		// SSILVB. `indirect_light` selects the shader variant, so with it off nothing below is read and no
+		// indirect-light buffer is allocated.
+		bool indirect_light = false;
+		float light_intensity = 1.0;
+		float normal_rejection = 1.0;
 
 		Size2i full_screen_size;
 	};
@@ -124,6 +148,14 @@ private:
 		float pad2[2];
 	};
 
+	// Whether a pass also produces indirect light. LIGHT_DISABLED compiles the shaders with no reference to the
+	// last-frame colour buffer or to the light targets at all.
+	enum LightMode {
+		LIGHT_DISABLED,
+		LIGHT_ENABLED,
+		LIGHT_MODE_MAX
+	};
+
 	enum DownsampleMode {
 		DOWNSAMPLE_BASE,
 		DOWNSAMPLE_MIP,
@@ -155,14 +187,16 @@ private:
 		int32_t full_screen_size[2];
 		float depth_texture_pixel_size[2];
 		float thickness;
-		float pad;
+		float depth_linearize_mul;
+		float depth_linearize_add;
+		float normal_rejection;
 	};
 
 	struct {
 		GatherPushConstant push_constant;
 		GtaoShaderRD shader;
 		RID shader_version;
-		PipelineDeferredRD pipeline;
+		PipelineDeferredRD pipelines[LIGHT_MODE_MAX];
 	} gather;
 
 	struct TemporalPushConstant {
@@ -182,7 +216,7 @@ private:
 		TemporalPushConstant push_constant;
 		GtaoTemporalShaderRD shader;
 		RID shader_version;
-		PipelineDeferredRD pipeline;
+		PipelineDeferredRD pipelines[LIGHT_MODE_MAX];
 		RID reprojection_uniform_buffer;
 	} temporal;
 
@@ -199,13 +233,16 @@ private:
 		float fade_out_mul;
 		float fade_out_add;
 		float sharpness;
+
+		float light_intensity;
+		float pad[3];
 	};
 
 	struct {
 		UpscalePushConstant push_constant;
 		GtaoUpscaleShaderRD shader;
 		RID shader_version;
-		PipelineDeferredRD pipeline;
+		PipelineDeferredRD pipelines[LIGHT_MODE_MAX];
 	} upscale;
 };
 

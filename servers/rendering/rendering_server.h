@@ -703,9 +703,7 @@ public:
 
 	virtual void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) = 0;
 
-	virtual void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection) = 0;
-
-	virtual void environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) = 0;
+	virtual void environment_set_ssilvb(RID p_env, bool p_enable, float p_intensity, float p_normal_rejection) = 0;
 
 	virtual void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RSE::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias) = 0;
 
@@ -1178,7 +1176,6 @@ VARIANT_ENUM_CAST_EXT(RSE::EnvironmentGTAOQuality, RenderingServer::EnvironmentG
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentHMAOQuality, RenderingServer::EnvironmentHMAOQuality);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentHMAOResolution, RenderingServer::EnvironmentHMAOResolution);
 VARIANT_ENUM_CAST_EXT(RSE::ScreenSpaceContactShadowsLength, RenderingServer::ScreenSpaceContactShadowsLength);
-VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSSILQuality, RenderingServer::EnvironmentSSILQuality);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSDFGIFramesToConverge, RenderingServer::EnvironmentSDFGIFramesToConverge);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSDFGIRayCount, RenderingServer::EnvironmentSDFGIRayCount);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSDFGIFramesToUpdateLight, RenderingServer::EnvironmentSDFGIFramesToUpdateLight);

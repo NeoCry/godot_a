@@ -30,6 +30,9 @@
 
 #include "gtao.h"
 
+// Only for RB_SCOPE_SSLF / RB_LAST_FRAME: the last-frame colour buffer is shared renderer plumbing that SSR
+// allocates too, not part of any one algorithm, so SSILVB reads it rather than keeping a second copy.
+#include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
@@ -37,8 +40,8 @@ using namespace RendererRD;
 
 GTAO *GTAO::singleton = nullptr;
 
-// Reprojection matrix, stored as a plain float array rather than relying on sizeof(Projection) — same
-// approach SSIL takes for its own last-frame-projection UBO (SSILProjectionUniforms).
+// Reprojection matrix, stored as a plain float array rather than relying on sizeof(Projection), which is not
+// guaranteed to match the std140 layout the shader expects.
 struct GTAOReprojectionUniforms {
 	float reprojection[16];
 };
@@ -83,30 +86,28 @@ GTAO::GTAO() {
 		}
 	}
 
+	// The gather, the denoiser and the upsample each come in an occlusion-only and an occlusion-plus-indirect
+	// -light variant, in LightMode order.
 	{
 		Vector<String> modes;
 		modes.push_back("\n");
+		modes.push_back("\n#define USE_INDIRECT_LIGHT\n");
+
 		gather.shader.initialize(modes);
 		gather.shader_version = gather.shader.version_create();
-		gather.pipeline.create_compute_pipeline(gather.shader.version_get_shader(gather.shader_version, 0));
-	}
 
-	{
-		Vector<String> modes;
-		modes.push_back("\n");
 		temporal.shader.initialize(modes);
 		temporal.shader_version = temporal.shader.version_create();
-		temporal.pipeline.create_compute_pipeline(temporal.shader.version_get_shader(temporal.shader_version, 0));
-
 		temporal.reprojection_uniform_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(GTAOReprojectionUniforms));
-	}
 
-	{
-		Vector<String> modes;
-		modes.push_back("\n");
 		upscale.shader.initialize(modes);
 		upscale.shader_version = upscale.shader.version_create();
-		upscale.pipeline.create_compute_pipeline(upscale.shader.version_get_shader(upscale.shader_version, 0));
+
+		for (int i = 0; i < LIGHT_MODE_MAX; i++) {
+			gather.pipelines[i].create_compute_pipeline(gather.shader.version_get_shader(gather.shader_version, i));
+			temporal.pipelines[i].create_compute_pipeline(temporal.shader.version_get_shader(temporal.shader_version, i));
+			upscale.pipelines[i].create_compute_pipeline(upscale.shader.version_get_shader(upscale.shader_version, i));
+		}
 	}
 }
 
@@ -116,15 +117,16 @@ GTAO::~GTAO() {
 	}
 	downsample.shader.version_free(downsample.shader_version);
 
-	gather.pipeline.free();
+	for (int i = 0; i < LIGHT_MODE_MAX; i++) {
+		gather.pipelines[i].free();
+		temporal.pipelines[i].free();
+		upscale.pipelines[i].free();
+	}
 	gather.shader.version_free(gather.shader_version);
-
-	temporal.pipeline.free();
 	temporal.shader.version_free(temporal.shader_version);
-	RD::get_singleton()->free_rid(temporal.reprojection_uniform_buffer);
-
-	upscale.pipeline.free();
 	upscale.shader.version_free(upscale.shader_version);
+
+	RD::get_singleton()->free_rid(temporal.reprojection_uniform_buffer);
 
 	RD::get_singleton()->free_rid(nearest_sampler);
 	RD::get_singleton()->free_rid(linear_sampler);
@@ -143,7 +145,7 @@ void GTAO::allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBu
 	Size2i working_size = half_size ? Size2i((p_settings.full_screen_size.x + 1) / 2, (p_settings.full_screen_size.y + 1) / 2) : p_settings.full_screen_size;
 	working_size = working_size.maxi(1);
 
-	if (p_gtao_buffers.half_size != half_size || p_gtao_buffers.buffer_width != working_size.x || p_gtao_buffers.buffer_height != working_size.y) {
+	if (p_gtao_buffers.half_size != half_size || p_gtao_buffers.indirect_light != p_settings.indirect_light || p_gtao_buffers.buffer_width != working_size.x || p_gtao_buffers.buffer_height != working_size.y) {
 		p_render_buffers->clear_context(RB_SCOPE_GTAO);
 		for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
 			p_gtao_buffers.history_valid[v] = false;
@@ -151,6 +153,7 @@ void GTAO::allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBu
 	}
 
 	p_gtao_buffers.half_size = half_size;
+	p_gtao_buffers.indirect_light = p_settings.indirect_light;
 	p_gtao_buffers.buffer_width = working_size.x;
 	p_gtao_buffers.buffer_height = working_size.y;
 
@@ -166,6 +169,16 @@ void GTAO::allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBu
 	p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_GTAO_HISTORY_A, RD::DATA_FORMAT_R16G16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, working_size, view_count);
 	p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_GTAO_HISTORY_B, RD::DATA_FORMAT_R16G16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, working_size, view_count);
 	p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_GTAO_FINAL, RD::DATA_FORMAT_R8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1);
+
+	if (p_settings.indirect_light) {
+		// Radiance needs range and sign headroom that the R8 occlusion target does not, hence 16-bit float
+		// throughout. The light history carries no depth of its own: the disocclusion test runs once in the
+		// temporal pass against the occlusion history's depth channel and both halves reuse the verdict.
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_GTAO_RAW_LIGHT, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, working_size, view_count);
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_GTAO_LIGHT_HISTORY_A, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, working_size, view_count);
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_GTAO_LIGHT_HISTORY_B, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, working_size, view_count);
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_SSILVB_FINAL, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1);
+	}
 }
 
 void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p_gtao_buffers, uint32_t p_view, RID p_normal_buffer, const Projection &p_projection, const Transform3D &p_cam_transform, const Settings &p_settings) {
@@ -176,9 +189,10 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 	Size2i full_size = p_settings.full_screen_size;
 	bool is_orthogonal = p_projection.is_orthogonal();
 
-	// Depth linearization constants, shared by the downsample base pass and the final upscale (both read
-	// hardware depth directly); see servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl
-	// for the equivalent, proven derivation this mirrors.
+	// Depth linearization constants, shared by the downsample base pass and the final upscale, both of which
+	// read hardware depth directly. set_depth_correction(false) leaves the projection's own reverse-Z
+	// convention in place, so columns[3][2] and columns[2][2] are the hyperbolic mul/add pair that maps
+	// hardware depth back to a positive view-space distance.
 	Projection depth_correction;
 	depth_correction.set_depth_correction(false);
 	Projection linearize_source = depth_correction * p_projection;
@@ -199,6 +213,21 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 	bool read_a = (p_gtao_buffers.frame_index[p_view] % 2) == 0;
 	RID history_read = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, read_a ? RB_GTAO_HISTORY_A : RB_GTAO_HISTORY_B, p_view, 0);
 	RID history_write = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, read_a ? RB_GTAO_HISTORY_B : RB_GTAO_HISTORY_A, p_view, 0);
+
+	// SSILVB rides every pass of this sweep, so it ping-pongs on the same parity as the occlusion history.
+	GTAO::LightMode light_mode = p_settings.indirect_light ? LIGHT_ENABLED : LIGHT_DISABLED;
+	RID raw_light_texture, light_history_read, light_history_write, light_final_texture, last_frame_texture;
+
+	if (p_settings.indirect_light) {
+		raw_light_texture = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, RB_GTAO_RAW_LIGHT, p_view, 0);
+		light_history_read = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, read_a ? RB_GTAO_LIGHT_HISTORY_A : RB_GTAO_LIGHT_HISTORY_B, p_view, 0);
+		light_history_write = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, read_a ? RB_GTAO_LIGHT_HISTORY_B : RB_GTAO_LIGHT_HISTORY_A, p_view, 0);
+		light_final_texture = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, RB_SSILVB_FINAL, p_view, 0);
+		// The gather samples a coarse mip of this, so the whole chain has to be in the view, however many
+		// levels the shared allocation actually gave it.
+		uint32_t last_frame_mipmaps = p_render_buffers->get_texture_format(RB_SCOPE_SSLF, RB_LAST_FRAME).mipmaps;
+		last_frame_texture = p_render_buffers->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, p_view, 0, 1, last_frame_mipmaps);
+	}
 
 	// buffer_update() isn't allowed once a compute list is active, so the reprojection UBO has to be filled
 	// before compute_list_begin() below, not inline with the temporal pass that consumes it.
@@ -295,16 +324,31 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		// radius keeps it scale-independent: the radius already states the size of the geometry this pass is
 		// meant to resolve, and thickness is only meaningful on that same scale.
 		gather.push_constant.thickness = p_settings.radius * p_settings.thickness;
+		gather.push_constant.depth_linearize_mul = depth_linearize_mul;
+		gather.push_constant.depth_linearize_add = depth_linearize_add;
+		gather.push_constant.normal_rejection = p_settings.normal_rejection;
 
-		RID shader = gather.shader.version_get_shader(gather.shader_version, 0);
+		RID shader = gather.shader.version_get_shader(gather.shader_version, light_mode);
 
 		RD::Uniform u_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ nearest_sampler, depth_texture }));
 		RD::Uniform u_normal(RD::UNIFORM_TYPE_IMAGE, 1, Vector<RID>({ p_normal_buffer }));
 		RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ raw_texture }));
 
-		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gather.pipeline.get_rid());
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_depth, u_normal), 0);
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest), 1);
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gather.pipelines[light_mode].get_rid());
+		if (p_settings.indirect_light) {
+			// Linear filtering on the last frame: the reprojected read lands at a sub-texel position, and it
+			// is already a coarse mip standing in for the occluder's outgoing irradiance.
+			RD::Uniform u_last_frame(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, Vector<RID>({ linear_sampler, last_frame_texture }));
+			RD::Uniform u_dest_light(RD::UNIFORM_TYPE_IMAGE, 1, Vector<RID>({ raw_light_texture }));
+			RD::Uniform u_reprojection(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, Vector<RID>({ temporal.reprojection_uniform_buffer }));
+
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_depth, u_normal, u_last_frame), 0);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest, u_dest_light), 1);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 2, u_reprojection), 2);
+		} else {
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_depth, u_normal), 0);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest), 1);
+		}
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &gather.push_constant, sizeof(GatherPushConstant));
 		RD::get_singleton()->compute_list_dispatch_threads(compute_list, working_size.x, working_size.y, 1);
 		RD::get_singleton()->compute_list_add_barrier(compute_list);
@@ -327,7 +371,7 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		temporal.push_constant.history_is_valid = p_gtao_buffers.history_valid[p_view];
 		temporal.push_constant.sharpness = p_settings.sharpness;
 
-		RID shader = temporal.shader.version_get_shader(temporal.shader_version, 0);
+		RID shader = temporal.shader.version_get_shader(temporal.shader_version, light_mode);
 
 		RD::Uniform u_raw(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ nearest_sampler, raw_texture }));
 		RID depth_mip0 = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, RB_GTAO_DEPTH, p_view, 0);
@@ -336,9 +380,18 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ history_write }));
 		RD::Uniform u_reprojection(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, Vector<RID>({ temporal.reprojection_uniform_buffer }));
 
-		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, temporal.pipeline.get_rid());
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_raw, u_depth, u_history), 0);
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest), 1);
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, temporal.pipelines[light_mode].get_rid());
+		if (p_settings.indirect_light) {
+			RD::Uniform u_raw_light(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, Vector<RID>({ nearest_sampler, raw_light_texture }));
+			RD::Uniform u_light_history(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 4, Vector<RID>({ linear_sampler, light_history_read }));
+			RD::Uniform u_dest_light(RD::UNIFORM_TYPE_IMAGE, 1, Vector<RID>({ light_history_write }));
+
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_raw, u_depth, u_history, u_raw_light, u_light_history), 0);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest, u_dest_light), 1);
+		} else {
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_raw, u_depth, u_history), 0);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest), 1);
+		}
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 2, u_reprojection), 2);
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &temporal.push_constant, sizeof(TemporalPushConstant));
 		RD::get_singleton()->compute_list_dispatch_threads(compute_list, working_size.x, working_size.y, 1);
@@ -364,16 +417,25 @@ void GTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 		upscale.push_constant.fade_out_mul = -1.0 / (fadeout_to - fadeout_from);
 		upscale.push_constant.fade_out_add = fadeout_from / (fadeout_to - fadeout_from) + 1.0;
 		upscale.push_constant.sharpness = p_settings.sharpness;
+		upscale.push_constant.light_intensity = p_settings.light_intensity;
 
-		RID shader = upscale.shader.version_get_shader(upscale.shader_version, 0);
+		RID shader = upscale.shader.version_get_shader(upscale.shader_version, light_mode);
 
 		RD::Uniform u_full_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ nearest_sampler, depth_hw_texture }));
 		RD::Uniform u_history(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>({ nearest_sampler, history_write }));
 		RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ final_texture }));
 
-		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, upscale.pipeline.get_rid());
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_full_depth, u_history), 0);
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest), 1);
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, upscale.pipelines[light_mode].get_rid());
+		if (p_settings.indirect_light) {
+			RD::Uniform u_light_history(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, Vector<RID>({ nearest_sampler, light_history_write }));
+			RD::Uniform u_dest_light(RD::UNIFORM_TYPE_IMAGE, 1, Vector<RID>({ light_final_texture }));
+
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_full_depth, u_history, u_light_history), 0);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest, u_dest_light), 1);
+		} else {
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_full_depth, u_history), 0);
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest), 1);
+		}
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &upscale.push_constant, sizeof(UpscalePushConstant));
 		RD::get_singleton()->compute_list_dispatch_threads(compute_list, full_size.x, full_size.y, 1);
 		RD::get_singleton()->draw_command_end_label(); // Upscale

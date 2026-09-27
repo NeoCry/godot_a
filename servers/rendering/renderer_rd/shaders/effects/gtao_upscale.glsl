@@ -48,6 +48,15 @@ layout(set = 0, binding = 1) uniform sampler2D source_history; // .x = AO, .y = 
 
 layout(r8, set = 1, binding = 0) uniform restrict writeonly image2D dest_final;
 
+#ifdef USE_INDIRECT_LIGHT
+layout(set = 0, binding = 2) uniform sampler2D source_light_history;
+
+// What the lighting shader reads as ssilvb_buffer: .rgb is the bounce gathered from the occluders, .a the
+// obscurance of the very same sectors, so it composes as ambient * (1 - a) + rgb * albedo without either term
+// double-counting the other.
+layout(rgba16f, set = 1, binding = 1) uniform restrict writeonly image2D dest_light_final;
+#endif
+
 layout(push_constant, std430) uniform Params {
 	ivec2 full_screen_size;
 	ivec2 half_screen_size;
@@ -61,6 +70,9 @@ layout(push_constant, std430) uniform Params {
 	float fade_out_mul;
 	float fade_out_add;
 	float sharpness;
+
+	float light_intensity;
+	float pad[3];
 }
 params;
 
@@ -96,6 +108,9 @@ void main() {
 
 	float ao_sum = 0.0;
 	float weight_sum = 0.0;
+#ifdef USE_INDIRECT_LIGHT
+	vec3 light_sum = vec3(0.0);
+#endif
 
 	// sharpness in [0,1]: higher respects depth discontinuities more strictly (less cross-edge bleeding).
 	float depth_tolerance = max(ref_depth * mix(0.05, 0.005, clamp(params.sharpness, 0.0, 1.0)), 0.001);
@@ -108,6 +123,9 @@ void main() {
 		float weight = bilinear_weights[i] * depth_weight;
 
 		ao_sum += tap.x * weight;
+#ifdef USE_INDIRECT_LIGHT
+		light_sum += texelFetch(source_light_history, tap_pos, 0).rgb * weight;
+#endif
 		weight_sum += weight;
 	}
 
@@ -122,4 +140,14 @@ void main() {
 	float occlusion = pow(clamp(1.0 - obscurance, 0.0, 1.0), params.power);
 
 	imageStore(dest_final, pos, vec4(occlusion));
+
+#ifdef USE_INDIRECT_LIGHT
+	ivec2 nearest = clamp(ivec2(round(half_pos)), ivec2(0), params.half_screen_size - 1);
+	vec3 light = (weight_sum > 0.0001) ? (light_sum / weight_sum) : texelFetch(source_light_history, nearest, 0).rgb;
+
+	// The bounce carries its own intensity and the same distance fadeout, but not `power`: that shapes the
+	// occlusion curve artistically, and applying it to radiance would just darken indirect light non-linearly.
+	// The obscurance written alongside is the unshaped one, so the two halves of the composition agree.
+	imageStore(dest_light_final, pos, vec4(light * (params.light_intensity * fade_out), clamp(1.0 - visibility, 0.0, 1.0) * fade_out));
+#endif
 }
