@@ -1502,7 +1502,7 @@ float LandscapeSpline3D::TerrainSampler::height_at(float p_x, float p_z) const {
 	const float h11 = row[resolution + 1];
 
 	// The two triangles Landscape3D splits each quad into, split along the
-	// same diagonal (from +X to +Z, see Landscape3D::_rebuild_chunk), rather
+	// same diagonal (from +X to +Z, see Landscape3D::_ensure_patch_mesh), rather
 	// than a bilinear blend: bilinear bulges above one of them and sags below
 	// the other by up to a quarter of the quad's twist, which is enough to
 	// bury a road's edge or float it off the ground on uneven terrain.
@@ -2109,7 +2109,7 @@ void LandscapeSpline3D::_compute_footprint(Landscape3D *p_landscape, LocalVector
 	}
 
 	HashMap<Vector2i, uint32_t> block_indices;
-	const int block_size = Landscape3D::CHUNK_QUADS;
+	const int block_size = Landscape3D::BLOCK_QUADS;
 	for (uint32_t i = 0; i + 1 < r_rings.size(); i++) {
 		const RingOnTerrain &a = r_rings[i];
 		const RingOnTerrain &b = r_rings[i + 1];
@@ -2265,7 +2265,7 @@ void LandscapeSpline3D::_compute_fill_footprint(Landscape3D *p_landscape, float 
 	const float reach = MAX(carve_enabled ? _get_carve_shoulder(p_landscape) + carve_falloff : 0.0f, paint ? paint_falloff : 0.0f);
 
 	HashMap<Vector2i, uint32_t> block_indices;
-	const int block_size = Landscape3D::CHUNK_QUADS;
+	const int block_size = Landscape3D::BLOCK_QUADS;
 	auto sample_at = [&](int p_x, int p_z) -> FootprintSample & {
 		const Vector2i block_coord(p_x / block_size, p_z / block_size);
 		uint32_t block_index;

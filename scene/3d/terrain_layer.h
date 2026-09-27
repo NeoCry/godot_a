@@ -37,8 +37,8 @@ class Texture2D;
 
 // One paintable ground material inside a Landscape3D: the textures used to
 // render it (albedo, normal map, a packed occlusion/roughness/metallic map,
-// and an optional heightmap for Parallax Occlusion Mapping - see
-// Landscape3D.pom_enabled) plus scalar tweaks on top of them and how large
+// and an optional heightmap for displacement and Parallax Occlusion Mapping -
+// see displacement and Landscape3D.pom_enabled) plus scalar tweaks on top of them and how large
 // one texture tile is in world space. This is pure configuration;
 // Landscape3D bakes every layer's textures into shared Texture2DArrays and
 // paints this layer's weight into TerrainData's weight maps (see
@@ -82,6 +82,14 @@ class TerrainLayer : public Resource {
 	// full range - see Landscape3D.pom_enabled.
 	float height_min = 0.0;
 	float height_max = 1.0;
+	// How far, in world units, height_texture moves the ground from its
+	// darkest to its brightest texel where this layer is painted: Landscape3D's
+	// micro detail (see Landscape3D.micro_detail_distance) turns it into real
+	// geometry near the camera. Centered on mid-gray, so the ground rises and
+	// sinks by half of it and keeps its average height (and its collision
+	// shape, which ignores displacement, stays on average under it). Zero
+	// turns it off.
+	float displacement = 0.0;
 	// Per-layer Parallax Occlusion Mapping switch (Landscape3D.pom_enabled
 	// is a cheap master switch on top of this: both must be true). Off by
 	// default even when height_texture is set, so assigning a height
@@ -143,6 +151,9 @@ public:
 
 	void set_height_max(float p_max);
 	float get_height_max() const;
+
+	void set_displacement(float p_displacement);
+	float get_displacement() const;
 
 	void set_pom_enabled(bool p_enable);
 	bool is_pom_enabled() const;

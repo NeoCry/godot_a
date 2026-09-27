@@ -446,7 +446,7 @@ void Landscape3DEditorPlugin::_snapshot_chunk_if_needed(const Vector2i &p_chunk)
 		return;
 	}
 	TouchedChunkRegion snap;
-	snap.region = Rect2i(p_chunk.x * Landscape3D::CHUNK_QUADS, p_chunk.y * Landscape3D::CHUNK_QUADS, Landscape3D::CHUNK_QUADS + 1, Landscape3D::CHUNK_QUADS + 1);
+	snap.region = Rect2i(p_chunk.x * Landscape3D::BLOCK_QUADS, p_chunk.y * Landscape3D::BLOCK_QUADS, Landscape3D::BLOCK_QUADS + 1, Landscape3D::BLOCK_QUADS + 1);
 	switch (_get_mode_data_kind()) {
 		case DataKind::WEIGHTS: {
 			const int layer_count = terrain->get_layers().size();
@@ -469,10 +469,10 @@ void Landscape3DEditorPlugin::_snapshot_region_chunks(const Rect2i &p_vertex_reg
 	if (p_vertex_region.size.x <= 0 || p_vertex_region.size.y <= 0) {
 		return;
 	}
-	const int cx0 = (int)Math::floor((float)p_vertex_region.position.x / Landscape3D::CHUNK_QUADS);
-	const int cz0 = (int)Math::floor((float)p_vertex_region.position.y / Landscape3D::CHUNK_QUADS);
-	const int cx1 = (int)Math::floor((float)(p_vertex_region.position.x + p_vertex_region.size.x - 1) / Landscape3D::CHUNK_QUADS);
-	const int cz1 = (int)Math::floor((float)(p_vertex_region.position.y + p_vertex_region.size.y - 1) / Landscape3D::CHUNK_QUADS);
+	const int cx0 = (int)Math::floor((float)p_vertex_region.position.x / Landscape3D::BLOCK_QUADS);
+	const int cz0 = (int)Math::floor((float)p_vertex_region.position.y / Landscape3D::BLOCK_QUADS);
+	const int cx1 = (int)Math::floor((float)(p_vertex_region.position.x + p_vertex_region.size.x - 1) / Landscape3D::BLOCK_QUADS);
+	const int cz1 = (int)Math::floor((float)(p_vertex_region.position.y + p_vertex_region.size.y - 1) / Landscape3D::BLOCK_QUADS);
 	for (int cz = cz0; cz <= cz1; cz++) {
 		for (int cx = cx0; cx <= cx1; cx++) {
 			_snapshot_chunk_if_needed(Vector2i(cx, cz));

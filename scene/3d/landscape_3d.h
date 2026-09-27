@@ -30,9 +30,12 @@
 
 #pragma once
 
+#include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/variant/typed_array.h"
+#include "scene/3d/landscape_gpu.h"
+#include "scene/3d/landscape_quadtree.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/3d/terrain_layer.h"
 #include "scene/3d/visual_instance_3d.h"
@@ -45,27 +48,38 @@ class ShaderMaterial;
 class StaticBody3D;
 class Texture2DArray;
 
-// A large, sculptable, texture-splatted heightfield terrain, in the spirit of
-// CryEngine's terrain system: a single TerrainData heightmap is split into a
-// grid of fixed-size chunks, each its own small ArrayMesh so the renderer's
-// normal frustum culling skips off-screen chunks, and each chunk mesh carries
-// Godot's native distance-based mesh LOD levels (see CHUNK_QUADS) so nearby
-// chunks render at full density while distant ones automatically switch to a
-// cheaper, decimated index buffer with no per-frame CPU work. Neighboring
-// chunks can be at different LOD levels at any time; a "skirt" apron of
-// hidden vertical geometry around each chunk hides the resulting seams.
+// A large, sculptable, texture-splatted heightfield terrain, rendered as a GPU
+// driven quadtree (see LandscapeQuadtree and LandscapeGPUQuadtree).
+//
+// The heightmap, its slopes and its holes live on the GPU as textures, and the
+// whole terrain is drawn from one small grid mesh (a patch of
+// LandscapeQuadtree::PATCH_QUADS quads a side) instanced once per quadtree node
+// that is drawn: the vertex shader reads each instance's node, places its
+// vertices on the heightmap and fits its edges to coarser neighbors. Every
+// frame a compute pass walks the quadtree and picks those nodes by
+// screen-space error (see lod_pixel_error), culls them against the camera's
+// frustum and writes them into two indirect MultiMeshes, one drawn by the
+// camera and one only into shadow maps; the number of patches drawn is never
+// read back to the CPU. Renderers without compute shaders (Compatibility) make
+// the same selection on the CPU.
+//
+// Close to the camera, micro detail refines the ground past the heightmap's
+// own resolution (see micro_detail_levels): the heightmap is interpolated
+// smoothly there, and each TerrainLayer with a height_texture and a
+// displacement moves the surface along it, so pebbles and cracks stand out of
+// the ground in silhouette and in shadow rather than only in shading. Lighting
+// uses per-pixel normals taken from the full resolution heightmap, so distant,
+// coarsely tessellated ground is shaded exactly like close-up ground.
 //
 // Texture layers (see TerrainLayer) are combined into shared Texture2DArrays
 // and blended per-pixel in a single splatting shader, weighted by TerrainData's
-// per-layer weight maps, so any number of layers can overlap smoothly and be
-// painted without extra draw calls. Sculpting (raise/lower/smooth/flatten) and
-// hole cutting edit TerrainData directly and rebuild just the chunks that
-// changed; painting texture layers only re-uploads the affected layers'
-// weight textures. Optionally (see pom_enabled), the same shader also offsets
-// each layer's texture lookups using its TerrainLayer.height_texture
-// (Parallax Occlusion Mapping) for extra apparent depth without more
-// geometry, with an optional self-shadowing pass that darkens crevices
-// facing away from pom_shadow_light_direction.
+// per-layer weight maps. Optionally (see pom_enabled), the same shader also
+// offsets each layer's texture lookups using its TerrainLayer.height_texture
+// (Parallax Occlusion Mapping), with an optional self-shadowing pass.
+//
+// Sculpting, hole cutting and painting edit TerrainData directly and then
+// refresh only the affected region: its quadtree nodes and the matching part of
+// each GPU texture.
 class Landscape3D : public Node3D {
 	GDCLASS(Landscape3D, Node3D);
 
@@ -77,80 +91,115 @@ public:
 		SCULPT_FLATTEN,
 	};
 
-	// Number of quads along each edge of a chunk (so CHUNK_QUADS+1 vertices
-	// per edge). Fixed so that every LOD stride (1, 2, 4, ... CHUNK_QUADS)
-	// divides it evenly, which is what lets every LOD reuse the same,
-	// full-resolution vertex buffer with just a different (strided) index
-	// buffer. Not user-configurable: it is an implementation detail of the
-	// chunking/LOD scheme, not a terrain authoring parameter.
-	static constexpr int CHUNK_QUADS = 32;
+	enum DebugView {
+		DEBUG_VIEW_DISABLED,
+		DEBUG_VIEW_LOD_LEVELS,
+		DEBUG_VIEW_WIREFRAME,
+	};
+
+	// The terrain's occluders are built, and larger edits grouped (the
+	// editor's undo snapshots, LandscapeSpline3D's writes), in square blocks
+	// of this many quads a side.
+	static constexpr int BLOCK_QUADS = 32;
 
 private:
-	struct Chunk {
-		Ref<ArrayMesh> mesh;
-		RID instance;
-		// Simplified stand-in geometry fed to the renderer's occlusion culling
-		// (see _rebuild_chunk_occluder), not drawn by itself.
+	// Simplified stand-in geometry fed to the renderer's occlusion culling
+	// (see _rebuild_occluder_block), not drawn by itself.
+	struct OccluderBlock {
 		RID occluder;
-		RID occluder_instance;
+		RID instance;
 		Vector3 local_origin;
+	};
+
+	enum DrawList {
+		DRAW_CAMERA,
+		DRAW_SHADOW,
+		DRAW_MAX,
 	};
 
 	Ref<TerrainData> terrain_data;
 	TypedArray<TerrainLayer> layers;
 
-	HashMap<Vector2i, Chunk> chunks;
-
 	static inline Ref<Shader> shader;
+	static inline Ref<ArrayMesh> patch_mesh;
+	// Nodes can be built on worker threads (threaded scene loading).
+	static inline Mutex patch_mesh_mutex;
 	Ref<ShaderMaterial> material;
-	Ref<Texture2DArray> weight_array;
+
+	// One MultiMesh per DrawList, both drawing patch_mesh.
+	RID multimeshes[DRAW_MAX];
+	RID draw_instances[DRAW_MAX];
+	// What the MultiMeshes are currently allocated for: filled by the GPU
+	// (indirect, LandscapeGPUQuadtree::CAPACITY instances) or by the CPU
+	// (grown to whatever the selection needs).
+	bool multimeshes_indirect = false;
+	int multimesh_capacity[DRAW_MAX] = {};
+	// Set for good once the compute shaders have failed to build: the device
+	// they failed on is the one every landscape draws with.
+	static inline bool gpu_lod_unavailable = false;
+
+	LandscapeQuadtree quadtree;
+	LandscapeGPUQuadtree gpu_quadtree;
+	LandscapeQuadtree::Selection cpu_selection;
+	Vector<float> cpu_instance_data;
+	ObjectID lod_camera;
+	LandscapeQuadtree::SelectParams last_lod_params;
+	bool lod_dirty = true;
+	bool frame_hook_connected = false;
+
+	LandscapeGPUTexture height_texture;
+	LandscapeGPUTexture gradient_texture;
+	LandscapeGPUTexture hole_texture;
+	LandscapeGPUTexture weight_texture;
+	// Slope of the heightmap (dh/dx, dh/dz) at every sample, FORMAT_RGH with
+	// mipmaps: mipmaps of a slope are the slopes of the averaged heightmap, so
+	// unlike normals they filter correctly.
+	Ref<Image> gradient_image;
+
 	Ref<Texture2DArray> albedo_array;
 	Ref<Texture2DArray> normal_array;
 	Ref<Texture2DArray> orm_array;
 	Ref<Texture2DArray> height_array;
+	// The most any layer's displacement moves the surface, up or down.
+	float displacement_bound = 0.0f;
 
-	float skirt_depth = 2.0;
-	float lod_bias = 1.0;
+	HashMap<Vector2i, OccluderBlock> occluder_blocks;
 
-	// Occlusion culling. Every chunk hands the renderer a decimated,
+	float lod_pixel_error = 2.0;
+	float lod_max_quad_pixels = 48.0;
+	bool frustum_culling = true;
+	bool gpu_lod_enabled = true;
+	float shadow_distance = 0.0;
+
+	int micro_detail_levels = 2;
+	float micro_detail_distance = 48.0;
+	float micro_detail_triangle_size = 6.0;
+
+	DebugView debug_view = DEBUG_VIEW_DISABLED;
+
+	// Occlusion culling. Every block hands the renderer a decimated,
 	// deliberately pessimistic copy of its own surface as an occluder, so that
-	// hills hide whatever stands behind them (foliage especially, which is
-	// both the densest thing a terrain usually carries and the most likely to
-	// be completely hidden by a slope) without anyone having to author and
-	// bake OccluderInstance3D geometry by hand. Only does anything while
-	// occlusion culling is actually on, i.e. with
-	// "rendering/occlusion_culling/use_occlusion_culling" enabled (or
-	// Viewport.use_occlusion_culling on the viewport doing the rendering).
+	// hills hide whatever stands behind them (foliage especially) without
+	// anyone having to author and bake OccluderInstance3D geometry by hand.
+	// Only does anything while occlusion culling is actually on.
 	bool occluder_enabled = true;
-	// Quads per chunk edge in that simplified surface, always a power of two
-	// no larger than CHUNK_QUADS: the occluder for one chunk is a grid of
-	// occluder_detail x occluder_detail quads, whatever the terrain's own
-	// resolution is.
+	// Quads per block edge in that simplified surface, always a power of two
+	// no larger than BLOCK_QUADS.
 	int occluder_detail = 8;
 
 	// Parallax Occlusion Mapping (see TerrainLayer.height_texture/
-	// heightmap_scale for the per-layer half of this). Off by default, like
-	// BaseMaterial3D's own equivalent heightmap_enabled feature this is
-	// modeled on: it only does anything once layers have height textures
-	// assigned, but the ray-marching it adds to every fragment isn't free
-	// even when they don't, so it stays opt-in.
+	// heightmap_scale for the per-layer half of this).
 	bool pom_enabled = false;
 	int pom_min_layers = 8;
 	int pom_max_layers = 32;
 	bool pom_flip_tangent = false;
 	bool pom_flip_binormal = false;
-	// Self-shadowing needs a light direction to march towards, but a
-	// fragment shader (unlike a custom light() processor) has no access to
-	// the scene's actual lights - this is a fixed approximation the user
-	// points at whatever their main light is, not something that tracks a
-	// moving DirectionalLight3D automatically.
+	// A fragment shader has no access to the scene's actual lights, so
+	// self-shadowing marches towards this fixed direction instead.
 	bool pom_self_shadow_enabled = true;
 	int pom_shadow_steps = 8;
 	float pom_shadow_strength = 1.0;
 	Vector3 pom_shadow_light_direction = Vector3(0.5, 0.75, 0.3);
-	// Fades pom_enabled's depth towards flat with distance from the camera,
-	// so a distant chunk's parallax doesn't shimmer/alias as it minifies;
-	// set pom_fade_end <= pom_fade_start to disable.
 	float pom_fade_start = 20.0;
 	float pom_fade_end = 60.0;
 
@@ -161,65 +210,68 @@ private:
 	uint32_t collision_mask = 1;
 
 	// The largest a layer texture is kept at when it has to be resampled into
-	// the shared Texture2DArray (see _rebuild_textures): anything bigger is
-	// scaled down to this, anything smaller is left alone. A set of textures
-	// that already agree on size and format and carry mipmaps skips resampling
-	// altogether and ignores this, keeping whatever VRAM compression it has -
-	// which is what makes 4K layers affordable at all.
+	// the shared Texture2DArray (see _rebuild_layer_textures).
 	int layer_texture_size_limit = 2048;
-
-	bool debug_draw_chunks = false;
 
 	StaticBody3D *collision_body = nullptr;
 	CollisionShape3D *collision_shape_node = nullptr;
 	Ref<HeightMapShape3D> collision_shape;
 
 	// get_global_transform() errors when called outside the tree, but
-	// set_terrain_data()/set_layers() (and, by extension, everything they
-	// rebuild) commonly run before that: scene deserialization sets every
-	// saved property before adding the node to the tree. This substitutes an
-	// identity transform for that case; NOTIFICATION_TRANSFORM_CHANGED
-	// corrects it for real once the node actually enters the tree.
+	// set_terrain_data()/set_layers() commonly run before that (scene
+	// deserialization sets every saved property first).
 	Transform3D _get_safe_global_transform() const;
 
+	static void _ensure_patch_mesh();
 	void _ensure_material();
-	void _rebuild_textures();
-	void _rebuild_all_chunks();
-	void _rebuild_chunks_in_region(const Rect2i &p_vertex_region);
-	// Rebuilds every chunk any of p_vertex_regions touches, each exactly once
-	// however many of the regions it borders - the batched counterpart of
-	// _rebuild_chunks_in_region() for set_height_regions() and friends.
-	void _rebuild_chunks_in_regions(const Vector<Rect2i> &p_vertex_regions);
-	void _add_chunks_in_region(const Rect2i &p_vertex_region, HashSet<Vector2i> &r_chunks) const;
-	void _upload_weight_groups(int p_layer_count);
+	void _ensure_draw_instances();
+	void _free_draw_instances();
+	void _update_draw_instances();
+	void _update_draw_aabb();
+	bool _is_gpu_lod_active();
+	void _allocate_multimeshes(bool p_indirect);
+
+	void _connect_frame_hook();
+	void _disconnect_frame_hook();
+	void _on_frame_pre_draw();
+	bool _make_lod_params(LandscapeQuadtree::SelectParams &r_params);
+	void _write_cpu_instances(DrawList p_list, const LocalVector<LandscapeQuadtree::Patch> &p_patches);
+
+	void _rebuild_terrain();
+	void _clear_terrain();
+	void _refresh_region(const Rect2i &p_samples, bool p_heights_changed, bool p_holes_changed);
+	void _refresh_regions(const Vector<Rect2i> &p_regions, bool p_heights_changed, bool p_holes_changed);
+	void _compute_gradients(const Rect2i &p_samples);
+	void _rebuild_gradients();
+	void _rebuild_weight_texture();
+	void _upload_weight_region(const Rect2i &p_region, int p_first_layer, int p_layer_count);
+	void _rebuild_layer_textures();
+	void _update_material_params();
+	void _update_micro_detail_params();
+	void _update_pom_params();
+
 	Rect2i _get_full_region() const;
 	void _emit_terrain_changed(const Rect2i &p_region);
-	void _rebuild_chunk(const Vector2i &p_coord);
-	void _clear_chunks();
+
+	Vector2i _get_block_grid_size() const;
+	void _add_blocks_in_region(const Rect2i &p_samples, HashSet<Vector2i> &r_blocks) const;
 	int _get_occluder_stride() const;
-	void _rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coord);
-	void _free_chunk_occluder(Chunk &p_chunk);
+	void _rebuild_occluder_block(const Vector2i &p_block);
+	void _free_occluder_block(OccluderBlock &p_block);
 	void _rebuild_all_occluders();
-	void _update_chunk_transform(Chunk &p_chunk);
-	void _apply_render_settings_to_chunk(const Chunk &p_chunk);
-	Vector2i _get_chunk_grid_size() const;
-	Rect2i _get_chunk_range_for_region(const Rect2i &p_vertex_region) const;
+	void _clear_occluders();
+	void _update_occluder_transforms();
 
 	void _ensure_collision_nodes();
 	void _on_layers_changed();
 	void _on_terrain_data_changed();
 
-	// sculpt()/paint_layer()/set_hole()/set_height_region()/set_layer_weight_region()/
-	// set_hole_region() already know exactly which region they touched and refresh precisely
-	// that; _on_terrain_data_changed() is a coarse full-terrain rebuild meant
-	// only for edits made directly to a TerrainData resource (bypassing this
-	// node's own methods, e.g. from a script, or another Landscape3D sharing the
-	// same resource). Without suppressing it here, every self-driven edit
-	// would trigger both the precise update AND a full rebuild of every
-	// chunk/texture/collision sample, which is what made brush strokes slow.
-	// Disconnecting (rather than Object::set_block_signals(), which would
-	// silence the signal for every listener) leaves other nodes sharing this
-	// TerrainData properly notified.
+	// sculpt()/paint_layer()/set_hole() and the region setters already know
+	// exactly which region they touched and refresh precisely that;
+	// _on_terrain_data_changed() is a coarse full rebuild meant only for edits
+	// made directly to a TerrainData resource. Disconnecting (rather than
+	// Object::set_block_signals(), which would silence the signal for every
+	// listener) leaves other nodes sharing this TerrainData properly notified.
 	void _disconnect_terrain_data_changed();
 	void _connect_terrain_data_changed();
 
@@ -237,11 +289,32 @@ public:
 	void set_layers(const TypedArray<TerrainLayer> &p_layers);
 	TypedArray<TerrainLayer> get_layers() const;
 
-	void set_skirt_depth(float p_depth);
-	float get_skirt_depth() const;
+	void set_lod_pixel_error(float p_pixels);
+	float get_lod_pixel_error() const;
 
-	void set_lod_bias(float p_bias);
-	float get_lod_bias() const;
+	void set_lod_max_quad_pixels(float p_pixels);
+	float get_lod_max_quad_pixels() const;
+
+	void set_frustum_culling(bool p_enabled);
+	bool is_frustum_culling_enabled() const;
+
+	void set_gpu_lod_enabled(bool p_enabled);
+	bool is_gpu_lod_enabled() const;
+
+	void set_shadow_distance(float p_distance);
+	float get_shadow_distance() const;
+
+	void set_micro_detail_levels(int p_levels);
+	int get_micro_detail_levels() const;
+
+	void set_micro_detail_distance(float p_distance);
+	float get_micro_detail_distance() const;
+
+	void set_micro_detail_triangle_size(float p_pixels);
+	float get_micro_detail_triangle_size() const;
+
+	void set_debug_view(DebugView p_view);
+	DebugView get_debug_view() const;
 
 	void set_occluder_enabled(bool p_enabled);
 	bool is_occluder_enabled() const;
@@ -263,9 +336,6 @@ public:
 
 	void set_layer_texture_size_limit(int p_size);
 	int get_layer_texture_size_limit() const;
-
-	void set_debug_draw_chunks(bool p_enable);
-	bool is_debug_draw_chunks_enabled() const;
 
 	void set_pom_enabled(bool p_enable);
 	bool is_pom_enabled() const;
@@ -323,25 +393,27 @@ public:
 	// Batched forms of the region accessors above, for edits that touch many
 	// small, scattered regions at once - LandscapeSpline3D writing a road or
 	// river bed along its whole length, and the editor undoing that - where
-	// one call per region would rebuild the chunks along every shared border
-	// several times over, and refresh collision and GPU textures per region.
+	// one call per region would refresh the same quadtree nodes, collision
+	// and GPU textures once per region.
 	TypedArray<PackedFloat32Array> get_height_regions(const TypedArray<Rect2i> &p_regions) const;
 	void set_height_regions(const TypedArray<Rect2i> &p_regions, const TypedArray<PackedFloat32Array> &p_heights, bool p_update_collision = true);
 	TypedArray<PackedFloat32Array> get_layer_weight_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index) const;
 	void set_layer_weight_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights);
 	// Raises p_layer_index's weight to at least the matching value in
 	// p_weights (0-1) at every sample of each region, taking what it gains out
-	// of the other layers the same way paint_layer() does. Painting the same
-	// mask twice changes nothing the second time, unlike paint_layer()'s
-	// additive stamps.
+	// of the other layers the same way paint_layer() does.
 	void paint_layer_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights);
 
 	void update_collision();
 
-	// Plain C++ helpers for the editor plugin/gizmo; not bound to ClassDB.
+	// Plain C++ helpers for the editor plugin/gizmo and tests; not bound to
+	// ClassDB.
 	Vector2i local_position_to_index(const Vector3 &p_local_position) const;
-	Vector<AABB> get_chunk_local_aabbs() const;
 	StaticBody3D *get_collision_body() const { return collision_body; }
+	const LandscapeQuadtree &get_quadtree() const { return quadtree; }
+	// The parameters the next frame's patch selection will use, as seen from
+	// the camera it currently follows. False if there is nothing to select.
+	bool get_lod_params(LandscapeQuadtree::SelectParams &r_params) { return _make_lod_params(r_params); }
 
 	AABB get_aabb() const;
 	PackedStringArray get_configuration_warnings() const override;
@@ -351,3 +423,4 @@ public:
 };
 
 VARIANT_ENUM_CAST(Landscape3D::SculptOperation)
+VARIANT_ENUM_CAST(Landscape3D::DebugView)

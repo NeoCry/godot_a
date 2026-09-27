@@ -66,7 +66,7 @@
 		<method name="get_landscape_footprint" qualifiers="const">
 			<return type="Rect2i[]" />
 			<description>
-				Returns the regions of the landscape's heightmap, in samples, that [method apply_to_landscape] reads and writes: blocks [constant Landscape3D.CHUNK_QUADS] samples on a side, only those the spline comes within reach of. Useful to snapshot the terrain before applying, for example with [method Landscape3D.get_height_regions].
+				Returns the regions of the landscape's heightmap, in samples, that [method apply_to_landscape] reads and writes: blocks of 32 samples on a side, only those the spline comes within reach of. Useful to snapshot the terrain before applying, for example with [method Landscape3D.get_height_regions].
 			</description>
 		</method>
 		<method name="get_preset" qualifiers="static">
