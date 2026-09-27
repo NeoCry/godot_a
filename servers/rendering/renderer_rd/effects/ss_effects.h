@@ -47,12 +47,6 @@
 
 #define RB_FINAL SNAME("final")
 #define RB_LAST_FRAME SNAME("last_frame")
-#define RB_DEINTERLEAVED SNAME("deinterleaved")
-#define RB_DEINTERLEAVED_PONG SNAME("deinterleaved_pong")
-#define RB_EDGES SNAME("edges")
-#define RB_IMPORTANCE_MAP SNAME("importance_map")
-#define RB_IMPORTANCE_PONG SNAME("importance_pong")
-
 #define RB_NORMAL_ROUGHNESS SNAME("normal_roughness")
 #define RB_HIZ SNAME("hiz")
 #define RB_SSR SNAME("ssr")
@@ -80,8 +74,6 @@ public:
 
 	void allocate_last_frame_buffer(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssilvb, bool p_use_ssr);
 	void copy_internal_texture_to_last_frame(Ref<RenderSceneBuffersRD> p_render_buffers, CopyEffects &p_copy_effects);
-
-	/* SS Downsampler */
 
 	/* Screen Space Reflection */
 	void ssr_set_half_size(bool p_half_size);
@@ -134,8 +126,6 @@ private:
 	RSE::SubSurfaceScatteringQuality sss_quality = RSE::SUB_SURFACE_SCATTERING_QUALITY_MEDIUM;
 	float sss_scale = 0.05;
 	float sss_depth_scale = 0.01;
-
-	/* SS Downsampler */
 
 	/* Screen Space Reflection */
 
