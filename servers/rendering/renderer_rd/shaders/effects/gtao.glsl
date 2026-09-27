@@ -286,6 +286,7 @@ void main() {
 
 #ifdef USE_INDIRECT_LIGHT
 	vec3 light_sum = vec3(0.0);
+	float light_weight_sum = 0.0;
 #endif
 
 	for (int slice = 0; slice < slice_count; slice++) {
@@ -432,10 +433,21 @@ void main() {
 						vec2 uv_prev = (clip_prev.xy / clip_prev.w) * 0.5 + 0.5;
 
 						if (all(greaterThanEqual(uv_prev, vec2(0.0))) && all(lessThan(uv_prev, vec2(1.0)))) {
-							// A coarse mip stands in for the irradiance leaving the occluder. Point-sampling a
-							// single lit pixel instead would carry the variance of that pixel's own specular
-							// and shadowing into every pixel it lights.
-							vec3 occluder_light = textureLod(source_last_frame, uv_prev, 5.0).rgb;
+							// Which level to read the occluder's outgoing radiance from. Some blur is wanted:
+							// point-sampling one lit pixel carries the variance of its own specular and
+							// shadowing into every pixel it lights. But a fixed coarse level is not, and a
+							// fixed level 5 — 1/32 resolution, where one texel spans a large part of the
+							// screen — means every occluder returns nearly the same heavily blurred colour, so
+							// the result reads as a blurred copy of the frame rather than localized bounce.
+							// Scaling with the occluder's screen distance instead reads a near occluder
+							// sharply and a far one blurrier. Half the log, not the whole log: each sample
+							// stands for the surface between itself and its neighbours, so the footprint to
+							// average over is the sample SPACING, and under the quadratic step ramp above
+							// that spacing grows as the square root of the distance. The constant folds in
+							// both that ramp's own scale and the step being in this pass's (possibly half)
+							// resolution rather than the last frame's.
+							float light_mip = clamp(0.5 * log2(step_dist) + 1.0, 1.0, 4.0);
+							vec3 occluder_light = textureLod(source_last_frame, uv_prev, light_mip).rgb;
 
 							ivec2 sample_full_res = clamp(ivec2(sample_uv * vec2(params.full_screen_size)), ivec2(0), params.full_screen_size - ivec2(1));
 							vec3 occluder_normal = load_normal(sample_full_res);
@@ -446,7 +458,9 @@ void main() {
 							float facing = -dot(occluder_normal, front_delta) * inversesqrt(max(front_dist_sq, 0.0001));
 							float rejection = mix(1.0, smoothstep(0.0, 0.1, facing), params.normal_rejection);
 
-							light_sum += tonemap_for_average(occluder_light) * (rejection * solid_angle);
+							float light_weight = rejection * solid_angle;
+							light_sum += tonemap_for_average(occluder_light) * light_weight;
+							light_weight_sum += light_weight;
 						}
 					}
 				}
@@ -470,9 +484,19 @@ void main() {
 	imageStore(dest_image, pos, vec4(visibility));
 
 #ifdef USE_INDIRECT_LIGHT
-	// Same per-slice normalization as the visibility above, so the two stay on one scale: what the light term
-	// gathers over a slice's occluded sectors is what the visibility term lost over those same sectors.
-	vec3 light = (used_slices > 0) ? untonemap_average(light_sum / float(used_slices)) : vec3(0.0);
+	// The compressed samples are averaged before being expanded, then the integral's own weight is applied.
+	// Expanding the integral directly does not work: the weights within one slice sum to the whole domain arc
+	// (1.0 head-on, up to 1.57 at grazing), so the integral's luminance crosses 1 exactly where occlusion is
+	// highest, and 1/(1 - luminance) then explodes — measured at 11477 against a correct 12.6 for a
+	// radiance of 10 at gamma = 45 degrees. That is what put blown-out haloes in every corner, and only a
+	// surface facing the camera head-on (gamma = 0, weights summing to exactly 1) escaped it.
+	//
+	// The average's luminance is below 1 by construction, so the expansion recovers the occluders' radiance
+	// exactly; the weight then puts it back on the same per-slice scale the visibility above uses.
+	vec3 light = vec3(0.0);
+	if (used_slices > 0 && light_weight_sum > 0.0001) {
+		light = untonemap_average(light_sum / light_weight_sum) * (light_weight_sum / float(used_slices));
+	}
 	imageStore(dest_light, pos, vec4(light, 0.0));
 #endif
 }
