@@ -4189,6 +4189,7 @@ void GI::init(SkyRD *p_sky) {
 		String defines = "\n#define SDFGI_OCT_SIZE " + itos(SDFGI::LIGHTPROBE_OCT_SIZE) + "\n";
 		defines += "\n#define SCREEN_PROBE_TILE " + itos(SCREEN_PROBE_TILE) + "\n";
 		defines += "\n#define SCREEN_PROBES_PER_TILE " + itos(SCREEN_PROBES_PER_TILE) + "\n";
+		defines += "\n#define SCREEN_PROBE_ADAPTIVE_LEVELS " + itos(SCREEN_PROBE_ADAPTIVE_LEVELS) + "\n";
 
 		Vector<ShaderRD::VariantDefine> variants;
 		for (uint32_t vrs = 0; vrs < 2; vrs++) {
@@ -4200,6 +4201,8 @@ void GI::init(SkyRD *p_sky) {
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n", default_enabled)); // MODE_SDFGI
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n", default_enabled)); // MODE_COMBINED
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n", default_enabled)); // MODE_COMBINED_WITHOUT_SAMPLER
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_PLACE\n", default_enabled)); // MODE_SCREEN_PROBE_PLACE
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_ADAPT\n", default_enabled)); // MODE_SCREEN_PROBE_ADAPT
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_TRACE\n", default_enabled)); // MODE_SCREEN_PROBE_TRACE
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_FILTER\n", default_enabled)); // MODE_SCREEN_PROBE_FILTER
 		}
@@ -4468,6 +4471,32 @@ void GI::RenderBuffersGI::free_data() {
 		RD::get_singleton()->free_rid(voxel_gi_buffer);
 		voxel_gi_buffer = RID();
 	}
+
+	if (screen_probe_count_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(screen_probe_count_buffer);
+		screen_probe_count_buffer = RID();
+	}
+
+	if (screen_probe_dispatch_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(screen_probe_dispatch_buffer);
+		screen_probe_dispatch_buffer = RID();
+	}
+}
+
+RID GI::RenderBuffersGI::get_screen_probe_count_buffer() {
+	if (screen_probe_count_buffer.is_null()) {
+		// Two sets of indirect dispatch arguments (x, y, z, and a pad each), for no probes: the
+		// placement pass resets it the same way every frame before counting them. The uniform set
+		// binds it for storage in every pass, and a buffer can only be used one way within a
+		// compute list, so the indirect dispatches read a copy of it instead.
+		const uint32_t initial[8] = { 0, 1, 1, 0, 0, 1, 1, 0 };
+		Vector<uint8_t> data;
+		data.resize(sizeof(initial));
+		memcpy(data.ptrw(), initial, sizeof(initial));
+		screen_probe_count_buffer = RD::get_singleton()->storage_buffer_create(sizeof(initial), data);
+		screen_probe_dispatch_buffer = RD::get_singleton()->storage_buffer_create(sizeof(initial), data, RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+	}
+	return screen_probe_count_buffer;
 }
 
 // Element p_index (from 1) of the Halton sequence in base p_base, in [0, 1).
@@ -4554,13 +4583,20 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 			if (use_screen_probe_buffers) {
 				grid = Size2i(Math::division_round_up(internal_size.x, int(SCREEN_PROBE_TILE)), Math::division_round_up(internal_size.y, int(SCREEN_PROBE_TILE)));
 			}
-			// A texel per probe, the probes of a tile side by side.
-			const Size2i probes = grid * Size2i(SCREEN_PROBES_PER_TILE, 1);
+			// A texel per probe, the probes of a tile side by side, and as many rows again below
+			// for the adaptive probes.
+			const Size2i probes = grid * Size2i(SCREEN_PROBES_PER_TILE, 2);
 			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_POSITION, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes);
 			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_NORMAL, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes);
 			// 9 spherical harmonics coefficients per probe, in a 3x3 block.
 			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_SH, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes * 3);
 			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_SH_FILTERED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes * 3);
+			const StringName adaptive_index_names[SCREEN_PROBE_ADAPTIVE_LEVELS] = { RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_1, RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_2 };
+			for (int i = 0; i < SCREEN_PROBE_ADAPTIVE_LEVELS; i++) {
+				const int size = SCREEN_PROBE_TILE >> (i + 1);
+				const Size2i tiles = use_screen_probe_buffers ? Size2i(Math::division_round_up(internal_size.x, size), Math::division_round_up(internal_size.y, size)) : Size2i(1, 1);
+				p_render_buffers->create_texture(RB_SCOPE_GI, adaptive_index_names[i], RD::DATA_FORMAT_R32_SINT, RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, tiles);
+			}
 			rbgi->screen_probe_grid = use_screen_probe_buffers ? grid : Size2i();
 		}
 
@@ -4684,7 +4720,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	push_constant.screen_probe_offset[0] = 0;
 	push_constant.screen_probe_offset[1] = 0;
 	push_constant.screen_probe_flags = 0;
-	push_constant.pad2 = 0;
+	push_constant.screen_probe_pass = 0;
 	push_constant.pad3 = 0;
 	push_constant.pad4 = 0;
 	if (use_screen_probes) {
@@ -4941,6 +4977,21 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 				u.append_id(last_frame.is_valid() ? last_frame : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK));
 				uniforms.push_back(u);
 			}
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+				u.binding = 37;
+				u.append_id(p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_1, v, 0));
+				u.append_id(p_render_buffers->get_texture_slice(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_2, v, 0));
+				uniforms.push_back(u);
+			}
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+				u.binding = 38;
+				u.append_id(rbgi->get_screen_probe_count_buffer());
+				uniforms.push_back(u);
+			}
 			if (RendererSceneRenderRD::get_singleton()->is_vrs_supported()) {
 				RD::Uniform u;
 				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
@@ -4956,19 +5007,58 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		}
 
 		if (use_screen_probes) {
-			// Trace the probes, one workgroup per tile, then filter them, for the pass below to
-			// gather per pixel. Each step reads what the one before it wrote.
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_TRACE].get_rid());
+			// Place the uniform probes, then adaptive ones where those leave pixels without a probe,
+			// on tiles of half and then a quarter of the size; trace them all, then filter them all,
+			// for the pass below to gather per pixel. Each step reads what the one before it wrote.
+			// The adaptive probes are counted on the GPU, as the arguments of the dispatches that
+			// work on them. See the passes in gi.glsl.
+			const RID count_buffer = rbgi->get_screen_probe_count_buffer();
+			const Size2i blocks = Size2i(Math::division_round_up(internal_size.x, 8), Math::division_round_up(internal_size.y, 8));
+
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_PLACE].get_rid());
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
 			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
 			RD::get_singleton()->compute_list_dispatch(compute_list, rbgi->screen_probe_grid.x, rbgi->screen_probe_grid.y, 1);
 			RD::get_singleton()->compute_list_add_barrier(compute_list);
 
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_ADAPT].get_rid());
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
+			for (uint32_t level = 1; level <= SCREEN_PROBE_ADAPTIVE_LEVELS; level++) {
+				if (level > 1) {
+					RD::get_singleton()->compute_list_add_barrier(compute_list);
+				}
+				push_constant.screen_probe_pass = level;
+				RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+				RD::get_singleton()->compute_list_dispatch(compute_list, blocks.x, blocks.y, 1);
+			}
+
+			// The copy the indirect dispatches read (see get_screen_probe_count_buffer()), which
+			// has to be made outside of a compute list.
+			RD::get_singleton()->compute_list_end();
+			RD::get_singleton()->buffer_copy(count_buffer, rbgi->screen_probe_dispatch_buffer, 0, 0, sizeof(uint32_t) * 8);
+			compute_list = RD::get_singleton()->compute_list_begin();
+
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_TRACE].get_rid());
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
+			push_constant.screen_probe_pass = 0;
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+			RD::get_singleton()->compute_list_dispatch(compute_list, rbgi->screen_probe_grid.x * SCREEN_PROBES_PER_TILE, rbgi->screen_probe_grid.y, 1);
+			push_constant.screen_probe_pass = 1;
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+			RD::get_singleton()->compute_list_dispatch_indirect(compute_list, rbgi->screen_probe_dispatch_buffer, 0);
+			RD::get_singleton()->compute_list_add_barrier(compute_list);
+
 			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][MODE_SCREEN_PROBE_FILTER].get_rid());
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, rbgi->uniform_set[set_parity][v], 0);
+			push_constant.screen_probe_pass = 0;
 			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, rbgi->screen_probe_grid.x * SCREEN_PROBES_PER_TILE, rbgi->screen_probe_grid.y, 1);
+			push_constant.screen_probe_pass = 1;
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+			RD::get_singleton()->compute_list_dispatch_indirect(compute_list, rbgi->screen_probe_dispatch_buffer, sizeof(uint32_t) * 4);
 			RD::get_singleton()->compute_list_add_barrier(compute_list);
+
+			push_constant.screen_probe_pass = 0;
 		}
 
 		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[pipeline_specialization][mode].get_rid());

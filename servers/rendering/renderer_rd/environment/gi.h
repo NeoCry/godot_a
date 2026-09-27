@@ -73,6 +73,10 @@
 #define RB_TEX_SCREEN_PROBE_NORMAL SNAME("screen_probe_normal")
 #define RB_TEX_SCREEN_PROBE_SH SNAME("screen_probe_sh")
 #define RB_TEX_SCREEN_PROBE_SH_FILTERED SNAME("screen_probe_sh_filtered")
+// The adaptive probe of each tile of half (1) and a quarter (2) of the uniform probes' tile size, as
+// an index, or -1 for none.
+#define RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_1 SNAME("screen_probe_adaptive_index_1")
+#define RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_2 SNAME("screen_probe_adaptive_index_2")
 
 // SNAME caches per call site, so the pair cannot live in an array; these pick between the
 // two names for a ping-pong index instead.
@@ -589,6 +593,11 @@ public:
 		// The previous frame's image the uniform sets bind for the screen probes' screen traces,
 		// null while there is none.
 		RID screen_probe_last_frame[RendererSceneRender::MAX_RENDER_VIEWS];
+		// How many adaptive screen probes there are, written on the GPU as the arguments of the
+		// indirect dispatches that trace and filter them, and the copy those read it from.
+		RID screen_probe_count_buffer;
+		RID screen_probe_dispatch_buffer;
+		RID get_screen_probe_count_buffer();
 
 		// Alternates every frame: index 0 of the pair is sampled and index 1 written, or the
 		// other way round. The uniform sets bind those textures, so there is one set per
@@ -994,7 +1003,7 @@ public:
 		int32_t screen_probe_offset[2]; // Where in its tile each probe goes this frame.
 
 		uint32_t screen_probe_flags; // SCREEN_PROBE_FLAG_*
-		uint32_t pad2;
+		uint32_t screen_probe_pass; // Which probes a screen probe pass works on (see gi.glsl).
 		uint32_t pad3;
 		uint32_t pad4;
 	};
@@ -1012,6 +1021,8 @@ public:
 		MODE_SDFGI,
 		MODE_COMBINED,
 		MODE_COMBINED_WITHOUT_SAMPLER,
+		MODE_SCREEN_PROBE_PLACE,
+		MODE_SCREEN_PROBE_ADAPT,
 		MODE_SCREEN_PROBE_TRACE,
 		MODE_SCREEN_PROBE_FILTER,
 		MODE_MAX
@@ -1042,11 +1053,14 @@ public:
 
 	// Screen probes: one per SCREEN_PROBE_TILE pixels square, placed at a different pixel of
 	// their tile every frame over SCREEN_PROBE_JITTER_FRAMES frames, plus one more for a second
-	// surface in the tile, where there is one. What they gather is noisy from one frame to the
-	// next, and each pixel averages it over up to sdfgi_screen_probe_history_frames frames.
+	// surface in the tile, where there is one, and adaptive ones on tiles of half and a quarter of
+	// the size (SCREEN_PROBE_ADAPTIVE_LEVELS) where pixels are still left without one. What they
+	// gather is noisy from one frame to the next, and each pixel averages it over up to
+	// sdfgi_screen_probe_history_frames frames.
 	enum {
 		SCREEN_PROBE_TILE = 16,
 		SCREEN_PROBES_PER_TILE = 2,
+		SCREEN_PROBE_ADAPTIVE_LEVELS = 2,
 		SCREEN_PROBE_JITTER_FRAMES = 16,
 	};
 	enum { // SCREEN_PROBE_FLAG_* in gi.glsl.
