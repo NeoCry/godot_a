@@ -30,12 +30,17 @@
 
 #include "landscape_3d.h"
 
+#include "core/config/engine.h"
 #include "core/core_string_names.h"
 #include "core/io/image.h"
+#include "core/math/math_funcs_binary.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "scene/3d/camera_3d.h"
+#include "scene/3d/foliage_gpu_culler.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
+#include "scene/main/viewport.h"
 #include "scene/resources/3d/height_map_shape_3d.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
@@ -193,10 +198,28 @@ Ref<Texture2DArray> build_layer_texture_array(const Vector<Ref<Image>> &p_source
 	array->create_from_images(images);
 	return array;
 }
+
+bool lod_params_equal(const LandscapeQuadtree::SelectParams &p_a, const LandscapeQuadtree::SelectParams &p_b) {
+	if (p_a.camera_position != p_b.camera_position || p_a.orthogonal != p_b.orthogonal || p_a.pixel_scale != p_b.pixel_scale ||
+			p_a.pixel_error != p_b.pixel_error || p_a.max_quad_pixels != p_b.max_quad_pixels || p_a.min_level != p_b.min_level ||
+			p_a.micro_distance != p_b.micro_distance || p_a.micro_quad_pixels != p_b.micro_quad_pixels ||
+			p_a.displacement_bound != p_b.displacement_bound || p_a.frustum_culling != p_b.frustum_culling ||
+			p_a.shadows != p_b.shadows || p_a.shadow_distance != p_b.shadow_distance) {
+		return false;
+	}
+	if (p_a.frustum_culling) {
+		for (int i = 0; i < 6; i++) {
+			if (p_a.frustum[i] != p_b.frustum[i]) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
 } // namespace
 
 // TerrainData::MAX_LAYERS (see its declaration) must match the shader
-// source's `layer_uv_scales` uniform array size: shader uniform arrays are
+// source's per-layer uniform array sizes: shader uniform arrays are
 // fixed-size, and TerrainData packs the same number of layers' weights into
 // its weight maps, so the two hard caps have to agree.
 
@@ -206,24 +229,61 @@ void Landscape3D::init_shaders() {
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
+// LandscapeQuadtree::PATCH_QUADS and LEVEL_BIAS.
+const int PATCH_QUADS = 16;
+const int LEVEL_BIAS = 4;
+
+// The heightmap, one texel per sample. Only ever read with texelFetch: every
+// vertex from quadtree level 0 up sits exactly on a sample, and the micro
+// levels below that interpolate between samples themselves.
+uniform sampler2D heightmap : filter_nearest, repeat_disable;
+// The heightmap's slope (dh/dx, dh/dz) at every sample, mipmapped. Shading
+// takes its normal from here per pixel, so a distant patch drawn with a quad
+// every few dozen samples still shows all the relief of the samples under it;
+// and since the mipmaps of a slope are the slopes of the averaged heightmap,
+// that relief fades out with distance instead of aliasing.
+uniform sampler2D gradient_map : filter_linear_mipmap_anisotropic, repeat_disable;
+uniform sampler2D hole_map : filter_nearest, repeat_disable;
+// Quads along each side of the heightmap: its resolution minus one.
+uniform int terrain_quads = 1;
+uniform float vertex_spacing = 1.0;
+// The point the patches were selected from, in terrain space. Not
+// CAMERA_POSITION_WORLD: shadow passes see the light's viewpoint there, and
+// have to place every vertex exactly where the camera's pass does.
+uniform vec3 lod_camera_position = vec3(0.0);
+
+// Micro detail: each layer's height_texture moves the surface up and down by
+// up to half its TerrainLayer.displacement, fading out towards
+// micro_detail_distance.
+uniform bool displacement_enabled = false;
+uniform float displacement_fade_start = 36.0;
+uniform float displacement_fade_end = 48.0;
+// How large a displacement texel may be at a given distance, in world units
+// per unit of distance: about micro_detail_triangle_size pixels, which is
+// what the quadtree splits quads down to there. Sampling finer detail than the
+// vertices can follow would only alias.
+uniform float displacement_footprint_scale = 0.01;
+// Nor finer than the finest quads there are.
+uniform float displacement_min_footprint = 0.0625;
+uniform float height_texture_size = 1.0;
+uniform float layer_displacement[32];
+
 // One weight per layer, four layers packed per RGBA8 array layer (see
 // TerrainData). Sampled with normal bilinear filtering - unlike an
 // index-based control map, a weight is a continuous quantity, so
-// interpolating it between samples is meaningful - which is what makes
-// blending follow the brush/terrain smoothly instead of the vertex grid.
-uniform sampler2DArray weight_array : filter_linear;
+// interpolating it between samples is meaningful.
+uniform sampler2DArray weight_array : filter_linear, repeat_disable;
 uniform sampler2DArray albedo_array : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray orm_array : filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2DArray height_array : hint_default_white, filter_linear, repeat_enable;
+uniform sampler2DArray height_array : hint_default_white, filter_linear_mipmap, repeat_enable;
 uniform float layer_uv_scales[32];
 // Per-layer scalar tweaks (see TerrainLayer): albedo_color multiplies the
 // albedo texture, roughness multiplies the ORM texture's roughness channel,
 // ao_strength fades the ORM texture's occlusion channel towards "no
 // occlusion" (not towards black - see accumulate_layer()), normal_strength
 // feeds Godot's own NORMAL_MAP_DEPTH, and specular is unrelated to any
-// texture (there is no dedicated specular channel to sample - it matches
-// BaseMaterial3D.metallic_specular).
+// texture (it matches BaseMaterial3D.metallic_specular).
 uniform vec4 layer_albedo_colors[32];
 uniform float layer_roughness[32];
 uniform float layer_specular[32];
@@ -233,67 +293,225 @@ uniform float layer_heightmap_scale[32];
 uniform float layer_height_min[32];
 uniform float layer_height_max[32];
 // Whether each layer uses Parallax Occlusion Mapping / Triplanar Mapping
-// (see TerrainLayer.pom_enabled/triplanar_enabled) - both are per-layer,
-// not terrain-wide, since a texture that doesn't need either shouldn't pay
-// their cost, and applying POM uniformly regardless of the layer painted
-// at a given point makes no sense for layers with no real height data.
-// pom_enabled below is a cheap master switch on top of layer_pom_enabled:
-// both must be true. Mutually exclusive per layer with triplanar (see
-// accumulate_layer()), matching BaseMaterial3D's own heightmapping/
-// triplanar exclusivity.
+// (see TerrainLayer.pom_enabled/triplanar_enabled). pom_enabled below is a
+// cheap master switch on top of layer_pom_enabled: both must be true.
 // 0.0/1.0, not bool: Godot's Variant system has no packed bool array type
 // to upload these as, so they're checked as > 0.5 instead.
 uniform float layer_pom_enabled[32];
 uniform float layer_triplanar[32];
 uniform float layer_triplanar_sharpness[32];
 uniform int layer_count = 0;
-uniform vec3 terrain_origin = vec3(0.0);
-uniform vec2 terrain_size = vec2(1.0, 1.0);
 
 uniform bool pom_enabled = false;
 uniform int pom_min_layers = 8;
 uniform int pom_max_layers = 32;
-// Godot's own BaseMaterial3D heightmap feature negates BINORMAL to correct
-// for its mikktspace-imported tangents; this mesh's tangents are generated
-// directly from the heightmap (see Landscape3D::_rebuild_chunk), not
-// mikktspace, so whether either axis needs flipping to point the parallax
-// offset the right way isn't known in advance - these are this shader's
-// equivalent of BaseMaterial3D's heightmap_flip_tangent/flip_binormal,
-// there to be toggled if parallax looks inverted.
+// This shader builds its own tangents from the heightmap's slope, so whether
+// either axis needs flipping to point the parallax offset the right way is
+// left to these, the equivalent of BaseMaterial3D's
+// heightmap_flip_tangent/flip_binormal.
 uniform vec2 pom_flip = vec2(1.0, 1.0);
 uniform bool pom_self_shadow_enabled = true;
 uniform int pom_shadow_steps = 8;
 uniform float pom_shadow_strength = 1.0;
-// A fragment shader has no access to the scene's actual lights (only a
-// custom light() processor does, and writing one means reimplementing
-// Godot's whole PBR lighting response by hand) - this is a fixed direction
-// the self-shadow ray marches towards, meant to be pointed at whatever the
-// main light is, not something that tracks a moving light automatically.
+// A fragment shader has no access to the scene's actual lights - this is a
+// fixed direction the self-shadow ray marches towards.
 uniform vec3 pom_shadow_light_direction = vec3(0.5, 0.75, 0.3);
-// Fades pom depth towards flat past pom_fade_start, reaching fully flat at
-// pom_fade_end, to keep distant chunks from shimmering as they minify.
 uniform float pom_fade_start = 20.0;
 uniform float pom_fade_end = 60.0;
 
-varying vec3 world_pos;
+// Landscape3D.DebugView.
+uniform int debug_view = 0;
 
-void vertex() {
-	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+// Terrain space, displacement included.
+varying vec3 terrain_position;
+varying flat float patch_level;
+varying vec2 patch_grid;
+
+float fetch_height(ivec2 p_sample) {
+	return texelFetch(heightmap, clamp(p_sample, ivec2(0), ivec2(terrain_quads)), 0).r;
+}
+
+bool fetch_hole(ivec2 p_sample) {
+	return texelFetch(hole_map, clamp(p_sample, ivec2(0), ivec2(terrain_quads)), 0).r > 0.5;
+}
+
+vec4 catmull_rom_weights(float t) {
+	float t2 = t * t;
+	float t3 = t2 * t;
+	return vec4(
+			-0.5 * t3 + t2 - 0.5 * t,
+			1.5 * t3 - 2.5 * t2 + 1.0,
+			-1.5 * t3 + 2.0 * t2 + 0.5 * t,
+			0.5 * t3 - 0.5 * t2);
+}
+
+// The heightmap at any point: exact on a sample, a Catmull-Rom spline through
+// the samples around it anywhere else. The spline passes through every sample,
+// so micro levels agree with level 0 wherever their vertices meet, and is
+// smooth across them, so the ground they add does not show the heightmap's
+// grid the way its plain triangles would up close.
+float sample_height(vec2 p_sample) {
+	vec2 cell = floor(p_sample);
+	vec2 f = p_sample - cell;
+	ivec2 base = ivec2(cell);
+	if (f.x == 0.0 && f.y == 0.0) {
+		return fetch_height(base);
+	}
+	vec4 wx = catmull_rom_weights(f.x);
+	vec4 wz = catmull_rom_weights(f.y);
+	float height = 0.0;
+	for (int j = 0; j < 4; j++) {
+		float row = 0.0;
+		for (int i = 0; i < 4; i++) {
+			row += wx[i] * fetch_height(base + ivec2(i - 1, j - 1));
+		}
+		height += wz[j] * row;
+	}
+	return height;
 }
 
 // Remaps a layer's raw height sample from [layer_height_min, ...max] to
 // [0, 1] (for a height texture that doesn't already use its full range).
 // textureLod(..., 0.0) rather than texture(): pom_offset()/pom_self_shadow()
 // call this from inside a data-dependent loop, where automatic mip/LOD
-// selection (which relies on screen-space derivatives computed in *uniform*
-// control flow) is undefined - an explicit LOD sidesteps that entirely.
-// Godot's own BaseMaterial3D heightmap code has this same gap; this shader
-// closes it since a terrain's height field is sampled at a much higher rate.
+// selection is undefined.
 float get_layer_height(int layer_idx, vec2 uv) {
 	float h = textureLod(height_array, vec3(uv, float(layer_idx)), 0.0).r;
 	float lo = layer_height_min[layer_idx];
 	float hi = layer_height_max[layer_idx];
 	return clamp((h - lo) / max(hi - lo, 0.0001), 0.0, 1.0);
+}
+
+// How far the painted layers' height textures move the surface at a sample,
+// blended by the layers' weights there like their colors are. The mipmap is
+// chosen from the distance alone, never from the patch being drawn, so that
+// two patches sharing a vertex displace it identically whatever their levels.
+float sample_displacement(vec2 p_sample, float p_distance) {
+	if (!displacement_enabled || p_distance >= displacement_fade_end) {
+		return 0.0;
+	}
+	float fade = 1.0 - smoothstep(displacement_fade_start, displacement_fade_end, p_distance);
+	vec2 local_xz = p_sample * vertex_spacing;
+	vec2 weight_uv = (p_sample + 0.5) / float(terrain_quads + 1);
+	float footprint = max(p_distance * displacement_footprint_scale, displacement_min_footprint);
+
+	float displacement = 0.0;
+	float weight_sum = 0.0;
+	int group_count = (layer_count + 3) / 4;
+	for (int g = 0; g < group_count; g++) {
+		vec4 w = textureLod(weight_array, vec3(weight_uv, float(g)), 0.0);
+		for (int c = 0; c < 4; c++) {
+			int layer = g * 4 + c;
+			if (layer >= layer_count) {
+				break;
+			}
+			float weight = w[c];
+			weight_sum += weight;
+			float amount = layer_displacement[layer];
+			if (weight <= 0.001 || amount == 0.0) {
+				continue;
+			}
+			float uv_scale = layer_uv_scales[layer];
+			float lod = log2(max(footprint * height_texture_size / uv_scale, 1.0));
+			float h = textureLod(height_array, vec3(local_xz / uv_scale, float(layer)), lod).r;
+			h = clamp((h - layer_height_min[layer]) / max(layer_height_max[layer] - layer_height_min[layer], 0.0001), 0.0, 1.0);
+			displacement += (h - 0.5) * amount * weight;
+		}
+	}
+	return weight_sum > 0.001 ? displacement * fade / weight_sum : 0.0;
+}
+
+float surface_height(vec2 p_sample) {
+	float height = sample_height(p_sample);
+	if (displacement_enabled) {
+		vec3 position = vec3(p_sample.x * vertex_spacing, height, p_sample.y * vertex_spacing);
+		height += sample_displacement(p_sample, distance(position, lod_camera_position));
+	}
+	return height;
+}
+
+void vertex() {
+	// The patch this instance draws (see LandscapeQuadtree::write_instance()).
+	// COLOR is the instance color here: the patch mesh's own is white.
+	vec2 origin = vec2(COLOR.x * 1024.0 + COLOR.y, COLOR.z * 1024.0 + COLOR.w);
+	int level = int(INSTANCE_CUSTOM.x + 0.5) - LEVEL_BIAS;
+	int edges = int(INSTANCE_CUSTOM.y + 0.5) | (int(INSTANCE_CUSTOM.z + 0.5) << 8);
+	float stride = level >= 0 ? float(1 << level) : 1.0 / float(1 << (-level));
+	ivec2 grid = ivec2(round(VERTEX.xz));
+	float quads = float(terrain_quads);
+	// Past the terrain's last sample, vertices collapse onto it.
+	vec2 sample_position = min(origin + vec2(grid) * stride, vec2(quads));
+
+	// A vertex on an edge shared with a coarser patch is moved onto that
+	// patch's edge. Normally straight onto one of its vertices: the two patches
+	// then meet at exactly the same points, computed the same way, so the seam
+	// is watertight down to the pixel, and the triangles squeezed out along it
+	// have no area left to draw. A patch so much coarser that its vertices lie
+	// beyond this edge's own ends (more than PATCH_QUADS apart) cannot be met
+	// that way, and this edge is laid along the straight line between the two
+	// of its vertices instead. On a corner shared by two such edges, the
+	// coarser neighbor wins.
+	int snap = 0;
+	bool along_z = false;
+	if (grid.x == 0 && (edges & 15) > snap) {
+		snap = edges & 15;
+		along_z = true;
+	}
+	if (grid.x == PATCH_QUADS && ((edges >> 4) & 15) > snap) {
+		snap = (edges >> 4) & 15;
+		along_z = true;
+	}
+	if (grid.y == 0 && ((edges >> 8) & 15) > snap) {
+		snap = (edges >> 8) & 15;
+		along_z = false;
+	}
+	if (grid.y == PATCH_QUADS && ((edges >> 12) & 15) > snap) {
+		snap = (edges >> 12) & 15;
+		along_z = false;
+	}
+
+	float height;
+	if (snap > 0 && (1 << snap) <= PATCH_QUADS) {
+		int step = 1 << snap;
+		if (along_z) {
+			grid.y = (grid.y / step) * step;
+		} else {
+			grid.x = (grid.x / step) * step;
+		}
+		sample_position = min(origin + vec2(grid) * stride, vec2(quads));
+		height = surface_height(sample_position);
+	} else if (snap > 0) {
+		float coarse = stride * float(1 << snap);
+		float along = along_z ? sample_position.y : sample_position.x;
+		float start = floor(along / coarse) * coarse;
+		float end = min(start + coarse, quads);
+		vec2 from = along_z ? vec2(sample_position.x, start) : vec2(start, sample_position.y);
+		vec2 to = along_z ? vec2(sample_position.x, end) : vec2(end, sample_position.y);
+		float from_height = surface_height(from);
+		float to_height = surface_height(to);
+		height = end > start ? from_height + (to_height - from_height) * ((along - start) / (end - start)) : from_height;
+	} else {
+		height = surface_height(sample_position);
+	}
+
+	VERTEX = vec3(sample_position.x * vertex_spacing, height, sample_position.y * vertex_spacing);
+	// Only what lighting from the vertex needs, like shadow normal bias:
+	// fragment() replaces it with the per-pixel normal.
+	vec2 slope = textureLod(gradient_map, (sample_position + 0.5) / (quads + 1.0), 0.0).rg;
+	NORMAL = normalize(vec3(-slope.x, 1.0, -slope.y));
+
+	terrain_position = VERTEX;
+	patch_level = float(level);
+	patch_grid = vec2(grid);
+
+	// Every triangle touching a hole sample is dropped, as level 0 drops every
+	// quad with a hole at a corner: a vertex that is not a number takes its
+	// triangles with it, in every pass.
+	ivec2 lo = ivec2(floor(sample_position));
+	ivec2 hi = ivec2(ceil(sample_position));
+	if (fetch_hole(lo) || fetch_hole(hi) || fetch_hole(ivec2(lo.x, hi.y)) || fetch_hole(ivec2(hi.x, lo.y))) {
+		VERTEX = vec3(uintBitsToFloat(0x7fc00000u));
+	}
 }
 
 // Steep parallax mapping with a linear-interpolation refinement between the
@@ -315,12 +533,10 @@ float pom_offset(int layer_idx, vec2 uv, vec3 view_dir_tangent, float h_scale, o
 	float layer_h = 1.0 / layer_count_f;
 
 	// max() avoids dividing by ~0 at a near-grazing angle and doubles as
-	// offset limiting there (a full 1/z ray length would otherwise sweep
-	// across an unreasonable amount of UV space in one step).
+	// offset limiting there.
 	vec2 ray_uv = view_dir_tangent.xy / max(view_dir_tangent.z, 0.02);
 
-	// The ray starts at the top of the height volume (height = 1, i.e. the
-	// highest point layer_heightmap_scale allows) and steps down/backward
+	// The ray starts at the top of the height volume and steps down/backward
 	// until it crosses the actual height field.
 	vec2 uv_cur = uv + ray_uv * h_scale;
 	vec2 delta_uv = ray_uv * (h_scale * layer_h);
@@ -340,9 +556,7 @@ float pom_offset(int layer_idx, vec2 uv, vec3 view_dir_tangent, float h_scale, o
 	}
 
 	// The ray crossed the height field somewhere between the previous and
-	// current samples; f_prev/f_cur are the ray's signed height above the
-	// surface at each (positive before crossing, negative/zero after), so
-	// their zero-crossing pinpoints where the two actually meet.
+	// current samples; their zero-crossing pinpoints where the two meet.
 	float h_ray_prev = h_ray + layer_h;
 	float f_prev = h_ray_prev - h_map_prev;
 	float f_cur = h_ray - h_map;
@@ -354,16 +568,9 @@ float pom_offset(int layer_idx, vec2 uv, vec3 view_dir_tangent, float h_scale, o
 
 // Soft self-shadowing with penumbra: marches from the visible point towards
 // the light through the same height field, darkening the result wherever
-// nearby height detail pokes up above the unoccluded ray - i.e. would
-// block the light - weighted so a thicker/closer occluder casts a harder
-// shadow. See Landscape3D.pom_shadow_light_direction for why the light
-// direction is a fixed uniform rather than an actual scene light.
+// nearby height detail pokes up above the unoccluded ray.
 float pom_self_shadow(int layer_idx, vec2 uv, float h_start, vec3 light_dir_tangent, float h_scale) {
 	if (light_dir_tangent.z <= 0.0) {
-		// The light is at or below the local tangent plane: ordinary
-		// diffuse shading (from the slope itself) will already darken this
-		// about as much as it should be, so there's nothing for a per-texel
-		// march to usefully add here.
 		return 1.0;
 	}
 
@@ -396,15 +603,11 @@ float pom_self_shadow(int layer_idx, vec2 uv, float h_start, vec3 light_dir_tang
 	return shadow_factor;
 }
 
-// Triplanar blend weights from a world-space normal: sharpened, normalized
+// Triplanar blend weights from a terrain space normal: sharpened, normalized
 // absolute components, the same formula as BaseMaterial3D's own triplanar
-// mapping (see uv1_power_normal in scene/resources/material.cpp). Deliberately
-// using the *world*-space normal rather than the view-space NORMAL
-// BaseMaterial3D's default (non-"world triplanar") mode uses - that variant's
-// blend visibly shifts as the camera orbits a static object, which would be
-// constantly obvious on a terrain the camera moves around continuously.
-vec3 triplanar_weights(vec3 world_normal, float sharpness) {
-	vec3 w = pow(abs(world_normal), vec3(sharpness));
+// mapping.
+vec3 triplanar_weights(vec3 normal, float sharpness) {
+	vec3 w = pow(abs(normal), vec3(sharpness));
 	return w / max(dot(w, vec3(1.0)), 0.00001);
 }
 
@@ -419,17 +622,12 @@ vec4 sample_triplanar(sampler2DArray tex_array, int layer_idx, vec3 tp_pos, vec3
 
 // Accumulates one layer's contribution, weighted, into the running sums -
 // skipped entirely for a layer with (near-)zero weight here, so a terrain
-// only pays for the layers actually present at a given point (and, within
-// that, only for whichever of triplanar/POM/self-shadow that layer itself
-// has turned on).
+// only pays for the layers actually present at a given point.
 //
-// view_dir_tangent/light_dir_tangent/world_normal/pom_fade are computed once
-// in fragment() and passed in rather than derived here from VERTEX/NORMAL/
-// INV_VIEW_MATRIX directly: Godot's shading language only exposes those
-// built-ins inside the literal body of vertex()/fragment()/light() itself,
-// not inside a shader's own helper functions (only uniforms and varyings -
-// like world_pos below - are visible everywhere).
-void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_dir_tangent, vec3 world_normal, float pom_fade, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float normal_strength_sum, inout float weight_sum) {
+// view_dir_tangent/light_dir_tangent/normal/pom_fade are computed once in
+// fragment() and passed in: Godot's shading language only exposes the
+// built-ins they come from inside fragment() itself.
+void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_dir_tangent, vec3 normal, float pom_fade, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float normal_strength_sum, inout float weight_sum) {
 	if (w <= 0.001) {
 		return;
 	}
@@ -439,21 +637,17 @@ void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_
 	vec3 orm;
 
 	if (layer_triplanar[layer_idx] > 0.5) {
-		vec3 tp_pos = (world_pos * vec3(1.0, -1.0, 1.0)) / layer_uv_scales[layer_idx];
-		vec3 tp_weights = triplanar_weights(world_normal, layer_triplanar_sharpness[layer_idx]);
+		vec3 tp_pos = (terrain_position * vec3(1.0, -1.0, 1.0)) / layer_uv_scales[layer_idx];
+		vec3 tp_weights = triplanar_weights(normal, layer_triplanar_sharpness[layer_idx]);
 		albedo = sample_triplanar(albedo_array, layer_idx, tp_pos, tp_weights).rgb;
 		normal_tex = sample_triplanar(normal_array, layer_idx, tp_pos, tp_weights).rgb;
 		orm = sample_triplanar(orm_array, layer_idx, tp_pos, tp_weights).rgb;
 	} else {
-		vec2 uv = world_pos.xz / layer_uv_scales[layer_idx];
+		vec2 uv = terrain_position.xz / layer_uv_scales[layer_idx];
 		if (pom_enabled && layer_pom_enabled[layer_idx] > 0.5) {
-			// * 0.01: layer_heightmap_scale is documented (and exposed in the
-			// inspector, range -16..16) as a small BaseMaterial3D.heightmap_scale-
-			// alike, not a raw UV-space displacement - without this, ray_uv
-			// (which can exceed 1.0 at oblique view angles, since it divides by
-			// view_dir_tangent.z) turns a default of 5.0 into a multi-tile UV
-			// jump per fragment, scrambling the texture into visual mush
-			// instead of adding a plausible amount of depth.
+			// * 0.01: layer_heightmap_scale is a small
+			// BaseMaterial3D.heightmap_scale-alike, not a raw UV-space
+			// displacement.
 			float h_scale = layer_heightmap_scale[layer_idx] * 0.01 * pom_fade;
 			vec2 uv_hit = uv;
 			float h_hit = pom_offset(layer_idx, uv, view_dir_tangent, h_scale, uv_hit);
@@ -472,8 +666,7 @@ void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_
 
 	albedo *= layer_albedo_colors[layer_idx].rgb;
 	// mix(), not multiply: ao_strength = 0 should mean "no occlusion" (1.0,
-	// fully lit), not "full occlusion" (0.0, black) - a multiply sends low
-	// ao_strength values towards black instead of fading the effect out.
+	// fully lit), not "full occlusion" (0.0, black).
 	orm.r = mix(1.0, orm.r, layer_ao_strength[layer_idx]);
 	orm.g = clamp(orm.g * layer_roughness[layer_idx], 0.0, 1.0);
 
@@ -485,14 +678,30 @@ void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_
 	weight_sum += w;
 }
 
+vec3 level_color(float p_level) {
+	return 0.5 + 0.5 * cos(6.28318 * (p_level * 0.137 + vec3(0.0, 0.33, 0.67)));
+}
+
 void fragment() {
-	vec2 cm_uv = (world_pos.xz - terrain_origin.xz) / terrain_size;
+	vec2 sample_position = terrain_position.xz / vertex_spacing;
+	vec2 map_uv = (sample_position + 0.5) / float(terrain_quads + 1);
+
+	// The surface's frame, per pixel, from the full resolution heightmap
+	// whatever the tessellation: the normal from its slope, the tangent along
+	// +X (the direction texture U runs in) and the binormal along -Z, the
+	// same frame a mesh with those UVs gets.
+	vec2 slope = texture(gradient_map, map_uv).rg;
+	vec3 normal_local = normalize(vec3(-slope.x, 1.0, -slope.y));
+	vec3 tangent_local = normalize(vec3(1.0, slope.x, 0.0));
+	vec3 binormal_local = cross(normal_local, tangent_local);
+	mat3 model_view = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX);
+	NORMAL = normalize(mat3(VIEW_MATRIX) * (MODEL_NORMAL_MATRIX * normal_local));
+	TANGENT = normalize(model_view * tangent_local);
+	BINORMAL = normalize(model_view * binormal_local);
 
 	// Shared per-fragment values every layer's accumulate_layer() call needs
-	// but can't compute itself (see its own comment for why): tangent-space
-	// directions for POM (the same TBN construction, and the same
-	// mikktspace-style BINORMAL negation, Godot's own heightmap shader code
-	// uses), a world-space normal for triplanar's blend weights, and how
+	// but can't compute itself: tangent-space directions for POM (with the
+	// same BINORMAL negation Godot's own heightmap shader code uses), and how
 	// much pom_fade_start/end fades this fragment's parallax depth.
 	vec3 view_dir_tangent = vec3(0.0);
 	vec3 light_dir_tangent = vec3(0.0);
@@ -504,7 +713,6 @@ void fragment() {
 			light_dir_tangent = normalize(light_dir_view * tbn);
 		}
 	}
-	vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	float pom_fade = 1.0;
 	if (pom_fade_end > pom_fade_start) {
 		pom_fade = 1.0 - smoothstep(pom_fade_start, pom_fade_end, length(VERTEX));
@@ -521,41 +729,61 @@ void fragment() {
 	// layers, 4 layers (R/G/B/A) per texture fetch.
 	int group_count = (layer_count + 3) / 4;
 	for (int g = 0; g < group_count; g++) {
-		vec4 w = texture(weight_array, vec3(cm_uv, float(g)));
+		vec4 w = texture(weight_array, vec3(map_uv, float(g)));
 		int base_layer = g * 4;
 		if (base_layer < layer_count) {
-			accumulate_layer(base_layer, w.r, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			accumulate_layer(base_layer, w.r, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 		if (base_layer + 1 < layer_count) {
-			accumulate_layer(base_layer + 1, w.g, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			accumulate_layer(base_layer + 1, w.g, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 		if (base_layer + 2 < layer_count) {
-			accumulate_layer(base_layer + 2, w.b, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			accumulate_layer(base_layer + 2, w.b, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 		if (base_layer + 3 < layer_count) {
-			accumulate_layer(base_layer + 3, w.a, view_dir_tangent, light_dir_tangent, world_normal, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			accumulate_layer(base_layer + 3, w.a, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
 		}
 	}
 
-	// Normalize so the total always adds up to 1: a terrain with any weight
-	// painted anywhere (even a single unpainted layer defaulting to full
-	// weight - see TerrainData) always renders as *something* rather than
-	// dimming towards black wherever weights don't happen to sum to 1.
-	float inv_weight = weight_sum > 0.001 ? 1.0 / weight_sum : 0.0;
-	ALBEDO = albedo_sum * inv_weight;
-	NORMAL_MAP = normal_sum * inv_weight;
-	NORMAL_MAP_DEPTH = normal_strength_sum * inv_weight;
-	vec3 orm = orm_sum * inv_weight;
-	AO = orm.r;
-	ROUGHNESS = orm.g;
-	METALLIC = orm.b;
-	SPECULAR = specular_sum * inv_weight;
+	// Normalize so the total always adds up to 1; with no weight at all
+	// (no layers yet), plain gray ground.
+	if (weight_sum > 0.001) {
+		float inv_weight = 1.0 / weight_sum;
+		ALBEDO = albedo_sum * inv_weight;
+		NORMAL_MAP = normal_sum * inv_weight;
+		NORMAL_MAP_DEPTH = normal_strength_sum * inv_weight;
+		vec3 orm = orm_sum * inv_weight;
+		AO = orm.r;
+		ROUGHNESS = orm.g;
+		METALLIC = orm.b;
+		SPECULAR = specular_sum * inv_weight;
+	} else {
+		ALBEDO = vec3(0.6);
+		ROUGHNESS = 1.0;
+	}
+
+	if (debug_view == 1) {
+		// LOD levels: one color per quadtree level.
+		ALBEDO = mix(ALBEDO, level_color(patch_level), 0.7);
+	} else if (debug_view == 2) {
+		// Wireframe: every triangle's edges, patch borders thicker, colored by
+		// level.
+		vec2 cell = fract(patch_grid);
+		vec2 width = max(fwidth(patch_grid), vec2(0.0001));
+		float quad_edge = min(min(cell.x, 1.0 - cell.x) / width.x, min(cell.y, 1.0 - cell.y) / width.y);
+		float diagonal = abs(cell.x + cell.y - 1.0) / (width.x + width.y);
+		float wire = 1.0 - clamp(min(quad_edge, diagonal), 0.0, 1.0);
+		vec2 border_distance = min(patch_grid, vec2(float(PATCH_QUADS)) - patch_grid) / width;
+		float border = 1.0 - clamp(min(border_distance.x, border_distance.y) - 1.0, 0.0, 1.0);
+		ALBEDO = mix(ALBEDO * 0.35, level_color(patch_level), max(wire * 0.8, border));
+	}
 }
 )");
 }
 
 void Landscape3D::finish_shaders() {
 	shader.unref();
+	patch_mesh.unref();
 }
 
 void Landscape3D::_bind_methods() {
@@ -565,11 +793,32 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_layers", "layers"), &Landscape3D::set_layers);
 	ClassDB::bind_method(D_METHOD("get_layers"), &Landscape3D::get_layers);
 
-	ClassDB::bind_method(D_METHOD("set_skirt_depth", "depth"), &Landscape3D::set_skirt_depth);
-	ClassDB::bind_method(D_METHOD("get_skirt_depth"), &Landscape3D::get_skirt_depth);
+	ClassDB::bind_method(D_METHOD("set_lod_pixel_error", "pixels"), &Landscape3D::set_lod_pixel_error);
+	ClassDB::bind_method(D_METHOD("get_lod_pixel_error"), &Landscape3D::get_lod_pixel_error);
 
-	ClassDB::bind_method(D_METHOD("set_lod_bias", "bias"), &Landscape3D::set_lod_bias);
-	ClassDB::bind_method(D_METHOD("get_lod_bias"), &Landscape3D::get_lod_bias);
+	ClassDB::bind_method(D_METHOD("set_lod_max_quad_pixels", "pixels"), &Landscape3D::set_lod_max_quad_pixels);
+	ClassDB::bind_method(D_METHOD("get_lod_max_quad_pixels"), &Landscape3D::get_lod_max_quad_pixels);
+
+	ClassDB::bind_method(D_METHOD("set_frustum_culling", "enabled"), &Landscape3D::set_frustum_culling);
+	ClassDB::bind_method(D_METHOD("is_frustum_culling_enabled"), &Landscape3D::is_frustum_culling_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_gpu_lod_enabled", "enabled"), &Landscape3D::set_gpu_lod_enabled);
+	ClassDB::bind_method(D_METHOD("is_gpu_lod_enabled"), &Landscape3D::is_gpu_lod_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_shadow_distance", "distance"), &Landscape3D::set_shadow_distance);
+	ClassDB::bind_method(D_METHOD("get_shadow_distance"), &Landscape3D::get_shadow_distance);
+
+	ClassDB::bind_method(D_METHOD("set_micro_detail_levels", "levels"), &Landscape3D::set_micro_detail_levels);
+	ClassDB::bind_method(D_METHOD("get_micro_detail_levels"), &Landscape3D::get_micro_detail_levels);
+
+	ClassDB::bind_method(D_METHOD("set_micro_detail_distance", "distance"), &Landscape3D::set_micro_detail_distance);
+	ClassDB::bind_method(D_METHOD("get_micro_detail_distance"), &Landscape3D::get_micro_detail_distance);
+
+	ClassDB::bind_method(D_METHOD("set_micro_detail_triangle_size", "pixels"), &Landscape3D::set_micro_detail_triangle_size);
+	ClassDB::bind_method(D_METHOD("get_micro_detail_triangle_size"), &Landscape3D::get_micro_detail_triangle_size);
+
+	ClassDB::bind_method(D_METHOD("set_debug_view", "view"), &Landscape3D::set_debug_view);
+	ClassDB::bind_method(D_METHOD("get_debug_view"), &Landscape3D::get_debug_view);
 
 	ClassDB::bind_method(D_METHOD("set_occluder_enabled", "enabled"), &Landscape3D::set_occluder_enabled);
 	ClassDB::bind_method(D_METHOD("is_occluder_enabled"), &Landscape3D::is_occluder_enabled);
@@ -591,9 +840,6 @@ void Landscape3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_layer_texture_size_limit", "size"), &Landscape3D::set_layer_texture_size_limit);
 	ClassDB::bind_method(D_METHOD("get_layer_texture_size_limit"), &Landscape3D::get_layer_texture_size_limit);
-
-	ClassDB::bind_method(D_METHOD("set_debug_draw_chunks", "enable"), &Landscape3D::set_debug_draw_chunks);
-	ClassDB::bind_method(D_METHOD("is_debug_draw_chunks_enabled"), &Landscape3D::is_debug_draw_chunks_enabled);
 
 	ClassDB::bind_method(D_METHOD("set_pom_enabled", "enable"), &Landscape3D::set_pom_enabled);
 	ClassDB::bind_method(D_METHOD("is_pom_enabled"), &Landscape3D::is_pom_enabled);
@@ -655,13 +901,23 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "terrain_data", PROPERTY_HINT_RESOURCE_TYPE, "TerrainData"), "set_terrain_data", "get_terrain_data");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("TerrainLayer")), "set_layers", "get_layers");
 
+	ADD_GROUP("Level of Detail", "lod_");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_pixel_error", PROPERTY_HINT_RANGE, "0.25,16,0.05,or_greater,suffix:px"), "set_lod_pixel_error", "get_lod_pixel_error");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_max_quad_pixels", PROPERTY_HINT_RANGE, "4,512,1,or_greater,suffix:px"), "set_lod_max_quad_pixels", "get_lod_max_quad_pixels");
+
+	ADD_GROUP("Micro Detail", "micro_detail_");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "micro_detail_levels", PROPERTY_HINT_RANGE, vformat("0,%d,1", LandscapeQuadtree::MAX_MICRO_LEVELS)), "set_micro_detail_levels", "get_micro_detail_levels");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "micro_detail_distance", PROPERTY_HINT_RANGE, "0,1024,0.1,or_greater,suffix:m"), "set_micro_detail_distance", "get_micro_detail_distance");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "micro_detail_triangle_size", PROPERTY_HINT_RANGE, "1,64,0.5,or_greater,suffix:px"), "set_micro_detail_triangle_size", "get_micro_detail_triangle_size");
+
 	ADD_GROUP("Rendering", "");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "skirt_depth", PROPERTY_HINT_RANGE, "0.0,100.0,0.01,or_greater,suffix:m"), "set_skirt_depth", "get_skirt_depth");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_bias", PROPERTY_HINT_RANGE, "0.01,16.0,0.01,or_greater"), "set_lod_bias", "get_lod_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "cast_shadow", PROPERTY_HINT_ENUM, "Off,On,Double-Sided,Shadows Only"), "set_cast_shadow", "get_cast_shadow");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "shadow_distance", PROPERTY_HINT_RANGE, "0,16384,1,or_greater,suffix:m"), "set_shadow_distance", "get_shadow_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "frustum_culling"), "set_frustum_culling", "is_frustum_culling_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_lod_enabled"), "set_gpu_lod_enabled", "is_gpu_lod_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "layer_texture_size_limit", PROPERTY_HINT_RANGE, "16,8192,1"), "set_layer_texture_size_limit", "get_layer_texture_size_limit");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw_chunks"), "set_debug_draw_chunks", "is_debug_draw_chunks_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_view", PROPERTY_HINT_ENUM, "Disabled,LOD Levels,Wireframe"), "set_debug_view", "get_debug_view");
 
 	ADD_GROUP("Occlusion Culling", "occluder_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "occluder_enabled"), "set_occluder_enabled", "is_occluder_enabled");
@@ -690,64 +946,72 @@ void Landscape3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(SCULPT_LOWER);
 	BIND_ENUM_CONSTANT(SCULPT_SMOOTH);
 	BIND_ENUM_CONSTANT(SCULPT_FLATTEN);
+
+	BIND_ENUM_CONSTANT(DEBUG_VIEW_DISABLED);
+	BIND_ENUM_CONSTANT(DEBUG_VIEW_LOD_LEVELS);
+	BIND_ENUM_CONSTANT(DEBUG_VIEW_WIREFRAME);
 }
 
 void Landscape3D::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
-			if (chunks.is_empty() && terrain_data.is_valid()) {
-				_rebuild_all_chunks();
+			if (terrain_data.is_valid() && quadtree.is_empty()) {
+				_rebuild_terrain();
 			}
 			if (terrain_data.is_valid()) {
 				update_collision();
 			}
+			_connect_frame_hook();
+		} break;
+
+		case NOTIFICATION_EXIT_TREE: {
+			_disconnect_frame_hook();
 		} break;
 
 		case NOTIFICATION_ENTER_WORLD: {
+			_update_draw_instances();
 			const RID scenario = get_world_3d().is_valid() ? get_world_3d()->get_scenario() : RID();
-			for (KeyValue<Vector2i, Chunk> &kv : chunks) {
+			const bool visible = is_visible_in_tree();
+			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
 				if (kv.value.instance.is_valid()) {
 					RS::get_singleton()->instance_set_scenario(kv.value.instance, scenario);
-				}
-				if (kv.value.occluder_instance.is_valid()) {
-					RS::get_singleton()->instance_set_scenario(kv.value.occluder_instance, scenario);
+					RS::get_singleton()->instance_set_visible(kv.value.instance, visible);
 				}
 			}
+			lod_dirty = true;
 		} break;
 
 		case NOTIFICATION_EXIT_WORLD: {
-			for (KeyValue<Vector2i, Chunk> &kv : chunks) {
+			for (int i = 0; i < DRAW_MAX; i++) {
+				if (draw_instances[i].is_valid()) {
+					RS::get_singleton()->instance_set_scenario(draw_instances[i], RID());
+				}
+			}
+			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
 				if (kv.value.instance.is_valid()) {
 					RS::get_singleton()->instance_set_scenario(kv.value.instance, RID());
-				}
-				if (kv.value.occluder_instance.is_valid()) {
-					RS::get_singleton()->instance_set_scenario(kv.value.occluder_instance, RID());
 				}
 			}
 		} break;
 
 		case NOTIFICATION_TRANSFORM_CHANGED: {
-			for (KeyValue<Vector2i, Chunk> &kv : chunks) {
-				_update_chunk_transform(kv.value);
-			}
-			if (material.is_valid()) {
-				material->set_shader_parameter("terrain_origin", get_global_transform().origin);
-			}
+			_update_draw_instances();
+			_update_occluder_transforms();
+			lod_dirty = true;
 			// Whatever sits on the surface (see LandscapeSpline3D) has to follow
 			// it wherever it moved.
 			_emit_terrain_changed(_get_full_region());
 		} break;
 
 		case NOTIFICATION_VISIBILITY_CHANGED: {
-			const bool vis = is_visible_in_tree();
-			for (KeyValue<Vector2i, Chunk> &kv : chunks) {
+			_update_draw_instances();
+			const bool visible = is_visible_in_tree();
+			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
 				if (kv.value.instance.is_valid()) {
-					RS::get_singleton()->instance_set_visible(kv.value.instance, vis);
-				}
-				if (kv.value.occluder_instance.is_valid()) {
-					RS::get_singleton()->instance_set_visible(kv.value.occluder_instance, vis);
+					RS::get_singleton()->instance_set_visible(kv.value.instance, visible);
 				}
 			}
+			lod_dirty = true;
 		} break;
 	}
 }
@@ -756,29 +1020,616 @@ Transform3D Landscape3D::_get_safe_global_transform() const {
 	return is_inside_tree() ? get_global_transform() : Transform3D();
 }
 
+void Landscape3D::_ensure_patch_mesh() {
+	MutexLock lock(patch_mesh_mutex);
+	if (patch_mesh.is_valid()) {
+		return;
+	}
+
+	// The mesh every patch is drawn with: a flat grid whose vertices only
+	// carry their grid coordinates (in X and Z); the shader places them.
+	constexpr int quads = LandscapeQuadtree::PATCH_QUADS;
+	constexpr int side = quads + 1;
+
+	PackedVector3Array vertices;
+	PackedVector3Array normals;
+	PackedFloat32Array tangents;
+	PackedColorArray colors;
+	vertices.resize(side * side);
+	normals.resize(side * side);
+	tangents.resize(side * side * 4);
+	colors.resize(side * side);
+	for (int z = 0; z < side; z++) {
+		for (int x = 0; x < side; x++) {
+			const int i = z * side + x;
+			vertices.set(i, Vector3(x, 0, z));
+			normals.set(i, Vector3(0, 1, 0));
+			tangents.set(i * 4 + 0, 1.0f);
+			tangents.set(i * 4 + 1, 0.0f);
+			tangents.set(i * 4 + 2, 0.0f);
+			tangents.set(i * 4 + 3, 1.0f);
+			// White, so that the vertex shader's COLOR is exactly the instance
+			// color it reads the patch from.
+			colors.set(i, Color(1, 1, 1, 1));
+		}
+	}
+
+	// Every quad split along the diagonal from its +X corner to its +Z corner,
+	// like the heightmap's own quads everywhere else they are triangulated
+	// (LandscapeQuadtree's error, LandscapeSpline3D's terrain sampler).
+	PackedInt32Array indices;
+	indices.resize(quads * quads * 6);
+	int n = 0;
+	for (int z = 0; z < quads; z++) {
+		for (int x = 0; x < quads; x++) {
+			const int a = z * side + x;
+			const int b = a + 1;
+			const int c = a + side;
+			const int d = c + 1;
+			indices.set(n++, a);
+			indices.set(n++, b);
+			indices.set(n++, c);
+			indices.set(n++, b);
+			indices.set(n++, d);
+			indices.set(n++, c);
+		}
+	}
+
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+	arrays[Mesh::ARRAY_VERTEX] = vertices;
+	arrays[Mesh::ARRAY_NORMAL] = normals;
+	arrays[Mesh::ARRAY_TANGENT] = tangents;
+	arrays[Mesh::ARRAY_COLOR] = colors;
+	arrays[Mesh::ARRAY_INDEX] = indices;
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	patch_mesh = mesh;
+}
+
 void Landscape3D::_ensure_material() {
 	if (material.is_valid()) {
 		return;
 	}
 	material.instantiate();
 	material->set_shader(shader);
+	_update_pom_params();
+	_update_micro_detail_params();
+	material->set_shader_parameter(SNAME("debug_view"), int(debug_view));
 }
 
-void Landscape3D::_rebuild_textures() {
+bool Landscape3D::_is_gpu_lod_active() {
+	if (gpu_quadtree.has_failed()) {
+		gpu_lod_unavailable = true;
+	}
+	return gpu_lod_enabled && !gpu_lod_unavailable && LandscapeGPUQuadtree::is_supported();
+}
+
+void Landscape3D::_allocate_multimeshes(bool p_indirect) {
+	_ensure_patch_mesh();
+	RenderingServer *rs = RS::get_singleton();
+
+	for (int i = 0; i < DRAW_MAX; i++) {
+		// Fresh ones rather than reallocated: a MultiMesh only builds its
+		// indirect draw command when it is given a mesh, which it skips when
+		// that is the mesh it already has.
+		if (multimeshes[i].is_valid()) {
+			rs->free_rid(multimeshes[i]);
+		}
+		multimeshes[i] = rs->multimesh_create();
+		if (p_indirect) {
+			rs->multimesh_allocate_data(multimeshes[i], LandscapeGPUQuadtree::CAPACITY, RSE::MULTIMESH_TRANSFORM_3D, true, true, true);
+		}
+		multimesh_capacity[i] = p_indirect ? int(LandscapeGPUQuadtree::CAPACITY) : 0;
+		rs->multimesh_set_mesh(multimeshes[i], patch_mesh->get_rid());
+		if (draw_instances[i].is_valid()) {
+			rs->instance_set_base(draw_instances[i], multimeshes[i]);
+		}
+	}
+	multimeshes_indirect = p_indirect;
+
+	if (p_indirect) {
+		gpu_quadtree.set_outputs(multimeshes[DRAW_CAMERA], multimeshes[DRAW_SHADOW]);
+	} else {
+		gpu_quadtree.release();
+	}
+	_update_draw_aabb();
+	lod_dirty = true;
+}
+
+void Landscape3D::_ensure_draw_instances() {
+	_ensure_material();
+	if (multimeshes[DRAW_CAMERA].is_null()) {
+		_allocate_multimeshes(_is_gpu_lod_active());
+	}
+
+	RenderingServer *rs = RS::get_singleton();
+	for (int i = 0; i < DRAW_MAX; i++) {
+		if (draw_instances[i].is_valid()) {
+			continue;
+		}
+		draw_instances[i] = rs->instance_create2(multimeshes[i], RID());
+		rs->instance_geometry_set_material_override(draw_instances[i], material->get_rid());
+		// The instance covers the whole terrain; only the patches the
+		// selection keeps are drawn, so testing it as a whole against the
+		// occlusion buffer can never help.
+		rs->instance_geometry_set_flag(draw_instances[i], RSE::INSTANCE_FLAG_IGNORE_OCCLUSION_CULLING, true);
+	}
+	_update_draw_instances();
+}
+
+void Landscape3D::_free_draw_instances() {
+	RenderingServer *rs = RS::get_singleton();
+	for (int i = 0; i < DRAW_MAX; i++) {
+		if (draw_instances[i].is_valid()) {
+			rs->free_rid(draw_instances[i]);
+			draw_instances[i] = RID();
+		}
+		if (multimeshes[i].is_valid()) {
+			rs->free_rid(multimeshes[i]);
+			multimeshes[i] = RID();
+		}
+		multimesh_capacity[i] = 0;
+	}
+	gpu_quadtree.release();
+	multimeshes_indirect = false;
+}
+
+// The camera's list casts no shadows; the shadow list is its own MultiMesh
+// drawn only into shadow maps, since it also has to hold patches outside the
+// camera's view that shade what is inside it. Both show the same selection,
+// so the two never disagree about where the ground is.
+void Landscape3D::_update_draw_instances() {
+	RenderingServer *rs = RS::get_singleton();
+	const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
+	const Transform3D xform = _get_safe_global_transform();
+	const bool visible = is_inside_tree() && is_visible_in_tree();
+
+	for (int i = 0; i < DRAW_MAX; i++) {
+		if (draw_instances[i].is_null()) {
+			continue;
+		}
+		rs->instance_set_scenario(draw_instances[i], scenario);
+		rs->instance_set_transform(draw_instances[i], xform);
+		if (i == DRAW_CAMERA) {
+			rs->instance_set_visible(draw_instances[i], visible && cast_shadow != GeometryInstance3D::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
+			rs->instance_geometry_set_cast_shadows_setting(draw_instances[i], RSE::SHADOW_CASTING_SETTING_OFF);
+			rs->instance_geometry_set_flag(draw_instances[i], RSE::INSTANCE_FLAG_USE_BAKED_LIGHT, gi_mode == GeometryInstance3D::GI_MODE_STATIC);
+			rs->instance_geometry_set_flag(draw_instances[i], RSE::INSTANCE_FLAG_USE_DYNAMIC_GI, gi_mode == GeometryInstance3D::GI_MODE_DYNAMIC);
+		} else {
+			rs->instance_set_visible(draw_instances[i], visible && cast_shadow != GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+			rs->instance_geometry_set_cast_shadows_setting(draw_instances[i], RSE::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
+		}
+	}
+}
+
+void Landscape3D::_update_draw_aabb() {
+	if (quadtree.is_empty()) {
+		return;
+	}
+	const AABB aabb = get_aabb();
+	for (int i = 0; i < DRAW_MAX; i++) {
+		if (multimeshes[i].is_valid()) {
+			RS::get_singleton()->multimesh_set_custom_aabb(multimeshes[i], aabb);
+		}
+	}
+}
+
+void Landscape3D::_connect_frame_hook() {
+	RenderingServer *rs = RS::get_singleton();
+	if (frame_hook_connected || rs == nullptr) {
+		return;
+	}
+	// Right before the frame is drawn, once every node has moved: the camera
+	// the patches are selected for is where it will be drawn from, rather than
+	// where it was a frame ago (which would open gaps at the edges of the view
+	// while it turns).
+	rs->connect(SNAME("frame_pre_draw"), callable_mp(this, &Landscape3D::_on_frame_pre_draw));
+	frame_hook_connected = true;
+}
+
+void Landscape3D::_disconnect_frame_hook() {
+	if (!frame_hook_connected) {
+		return;
+	}
+	RS::get_singleton()->disconnect(SNAME("frame_pre_draw"), callable_mp(this, &Landscape3D::_on_frame_pre_draw));
+	frame_hook_connected = false;
+}
+
+void Landscape3D::_on_frame_pre_draw() {
+	if (!is_inside_tree() || quadtree.is_empty() || multimeshes[DRAW_CAMERA].is_null()) {
+		return;
+	}
+
+	height_texture.flush();
+	gradient_texture.flush();
+	hole_texture.flush();
+	weight_texture.flush();
+
+	if (!is_visible_in_tree()) {
+		return;
+	}
+
+	const bool gpu = _is_gpu_lod_active();
+	if (gpu != multimeshes_indirect) {
+		// Either switched in the inspector, or the compute shaders turned out
+		// not to build on this device.
+		_allocate_multimeshes(gpu);
+		if (gpu) {
+			gpu_quadtree.set_nodes(quadtree);
+		}
+	}
+
+	LandscapeQuadtree::SelectParams params;
+	if (!_make_lod_params(params)) {
+		return;
+	}
+	if (!lod_dirty && lod_params_equal(params, last_lod_params)) {
+		// Nothing moved: last frame's patches are still in place.
+		return;
+	}
+	last_lod_params = params;
+	lod_dirty = false;
+
+	material->set_shader_parameter(SNAME("lod_camera_position"), params.camera_position);
+	// Displacement is sampled no finer than what micro_detail_triangle_size
+	// pixels cover at each vertex's distance, which an orthogonal projection
+	// makes the same everywhere.
+	const float min_footprint = terrain_data->get_vertex_spacing() / float(1 << micro_detail_levels);
+	const float pixel_footprint = micro_detail_triangle_size / MAX(params.pixel_scale, 0.0001f);
+	material->set_shader_parameter(SNAME("displacement_footprint_scale"), params.orthogonal ? 0.0f : pixel_footprint);
+	material->set_shader_parameter(SNAME("displacement_min_footprint"), params.orthogonal ? MAX(min_footprint, pixel_footprint) : min_footprint);
+
+	if (gpu) {
+		gpu_quadtree.dispatch(quadtree, params);
+	} else {
+		quadtree.select(params, cpu_selection);
+		_write_cpu_instances(DRAW_CAMERA, cpu_selection.visible);
+		_write_cpu_instances(DRAW_SHADOW, cpu_selection.shadow);
+	}
+}
+
+bool Landscape3D::_make_lod_params(LandscapeQuadtree::SelectParams &r_params) {
+	if (quadtree.is_empty() || terrain_data.is_null()) {
+		return false;
+	}
+
+	const Transform3D global = _get_safe_global_transform();
+	const Transform3D to_local = global.affine_inverse();
+
+	r_params.pixel_error = lod_pixel_error;
+	r_params.max_quad_pixels = lod_max_quad_pixels;
+	r_params.min_level = -micro_detail_levels;
+	const bool micro = micro_detail_distance > 0.0f && (micro_detail_levels > 0 || displacement_bound > 0.0f);
+	r_params.micro_distance = micro ? micro_detail_distance : 0.0f;
+	r_params.micro_quad_pixels = micro_detail_triangle_size;
+	r_params.displacement_bound = micro ? displacement_bound : 0.0f;
+	r_params.shadows = cast_shadow != GeometryInstance3D::SHADOW_CASTING_SETTING_OFF;
+	r_params.shadow_distance = shadow_distance;
+
+	Camera3D *camera = is_inside_tree() ? FoliageGPUCuller::resolve_culling_camera(this, lod_camera) : nullptr;
+	if (camera == nullptr || camera->get_viewport() == nullptr) {
+		// Nothing to look through: select as if from high above the middle of
+		// the terrain, which gives an even, coarse cover.
+		const LandscapeQuadtree::NodeBounds root = quadtree.get_node_bounds(quadtree.get_top_level(), 0, 0);
+		const Vector3 size = root.max - root.min;
+		r_params.camera_position = (root.min + root.max) * 0.5 + Vector3(0, MAX(size.x, size.z), 0);
+		r_params.orthogonal = false;
+		r_params.pixel_scale = 500.0f;
+		r_params.frustum_culling = false;
+		return true;
+	}
+
+	r_params.camera_position = to_local.xform(camera->get_camera_transform().origin);
+	r_params.orthogonal = camera->get_projection() == Camera3D::PROJECTION_ORTHOGONAL;
+
+	// Pixels one unit spans at a distance of one unit: half the viewport's
+	// height over the tangent of half the vertical field of view, which is
+	// what the projection's Y scale holds whichever axis the camera keeps.
+	// Orthogonal projections have no distance, and hold pixels per unit.
+	const Projection projection = camera->get_camera_projection();
+	const float viewport_height = MAX(camera->get_viewport()->get_visible_rect().size.y, (real_t)1.0);
+	r_params.pixel_scale = 0.5f * viewport_height * float(projection.columns[1][1]);
+	if (r_params.orthogonal) {
+		// Errors are measured in terrain space; a scaled terrain shows them
+		// that much larger.
+		const Vector3 scale = global.basis.get_scale_abs();
+		r_params.pixel_scale *= float(MAX(scale.x, MAX(scale.y, scale.z)));
+	}
+
+	// The editor draws the scene through several viewports at once, and
+	// patches culled for one would leave holes in the others.
+	r_params.frustum_culling = frustum_culling && !Engine::get_singleton()->is_editor_hint();
+	if (r_params.frustum_culling) {
+		const Vector<Plane> planes = camera->get_frustum();
+		if (planes.size() >= 6) {
+			for (int i = 0; i < 6; i++) {
+				r_params.frustum[i] = to_local.xform(planes[i]);
+			}
+		} else {
+			r_params.frustum_culling = false;
+		}
+	}
+	return true;
+}
+
+void Landscape3D::_write_cpu_instances(DrawList p_list, const LocalVector<LandscapeQuadtree::Patch> &p_patches) {
+	RenderingServer *rs = RS::get_singleton();
+	const int count = int(p_patches.size());
+	if (count > multimesh_capacity[p_list]) {
+		const int capacity = int(Math::next_power_of_2(uint32_t(MAX(count, 64))));
+		rs->multimesh_allocate_data(multimeshes[p_list], capacity, RSE::MULTIMESH_TRANSFORM_3D, true, true, false);
+		multimesh_capacity[p_list] = capacity;
+	}
+
+	const int capacity = multimesh_capacity[p_list];
+	if (capacity > 0) {
+		// The buffer always holds every instance the MultiMesh has room for;
+		// the ones past the visible count are simply not drawn.
+		cpu_instance_data.resize(capacity * LandscapeQuadtree::INSTANCE_FLOATS);
+		float *instances = cpu_instance_data.ptrw();
+		for (int i = 0; i < count; i++) {
+			LandscapeQuadtree::write_instance(p_patches[i], instances + i * LandscapeQuadtree::INSTANCE_FLOATS);
+		}
+		rs->multimesh_set_buffer(multimeshes[p_list], cpu_instance_data);
+	}
+	rs->multimesh_set_visible_instances(multimeshes[p_list], count);
+}
+
+void Landscape3D::_clear_terrain() {
+	quadtree.clear();
+	height_texture.free();
+	gradient_texture.free();
+	hole_texture.free();
+	weight_texture.free();
+	gradient_image.unref();
+	_free_draw_instances();
+	_clear_occluders();
+}
+
+void Landscape3D::_rebuild_terrain() {
+	_ensure_material();
+	if (terrain_data.is_null()) {
+		_clear_terrain();
+		return;
+	}
+
+	const Ref<Image> heightmap = terrain_data->get_heightmap_image();
+	const Ref<Image> hole_map = terrain_data->get_hole_map_image();
+	ERR_FAIL_COND(heightmap.is_null() || hole_map.is_null());
+	const int resolution = terrain_data->get_resolution();
+
+	quadtree.build(reinterpret_cast<const float *>(heightmap->ptr()), hole_map->ptr(), resolution, terrain_data->get_vertex_spacing());
+	_rebuild_gradients();
+
+	Vector<Ref<Image>> images;
+	images.push_back(heightmap);
+	height_texture.create(images, false);
+	images.write[0] = hole_map;
+	hole_texture.create(images, false);
+	images.write[0] = gradient_image;
+	gradient_texture.create(images, false);
+	// Uploaded afresh: the weights may have changed along with everything else.
+	weight_texture.free();
+	_rebuild_weight_texture();
+
+	_ensure_draw_instances();
+	if (multimeshes_indirect) {
+		gpu_quadtree.set_nodes(quadtree);
+	}
+
+	_update_material_params();
+	_update_micro_detail_params();
+	_update_draw_aabb();
+	_rebuild_all_occluders();
+	lod_dirty = true;
+}
+
+void Landscape3D::_refresh_region(const Rect2i &p_samples, bool p_heights_changed, bool p_holes_changed) {
+	Vector<Rect2i> regions;
+	regions.push_back(p_samples);
+	_refresh_regions(regions, p_heights_changed, p_holes_changed);
+}
+
+void Landscape3D::_refresh_regions(const Vector<Rect2i> &p_regions, bool p_heights_changed, bool p_holes_changed) {
+	if (terrain_data.is_null() || quadtree.is_empty()) {
+		return;
+	}
+
+	const Rect2i full = _get_full_region();
+	const Ref<Image> heightmap = terrain_data->get_heightmap_image();
+	const Ref<Image> hole_map = terrain_data->get_hole_map_image();
+	const float *heights = reinterpret_cast<const float *>(heightmap->ptr());
+	const uint8_t *holes = hole_map->ptr();
+
+	LocalVector<Vector2i> changed_nodes;
+	HashSet<Vector2i> blocks;
+	for (const Rect2i &samples : p_regions) {
+		const Rect2i region = samples.intersection(full);
+		if (region.size.x <= 0 || region.size.y <= 0) {
+			continue;
+		}
+		quadtree.update(heights, holes, region, multimeshes_indirect ? &changed_nodes : nullptr);
+		if (p_heights_changed) {
+			height_texture.update(0, heightmap, region);
+			// A height's slope reaches one sample past it on every side.
+			_compute_gradients(region);
+			gradient_texture.update(0, gradient_image, region.grow(1));
+		}
+		if (p_holes_changed) {
+			hole_texture.update(0, hole_map, region);
+		}
+		_add_blocks_in_region(region, blocks);
+	}
+
+	if (multimeshes_indirect) {
+		gpu_quadtree.update_nodes(quadtree, changed_nodes);
+	}
+	for (const Vector2i &block : blocks) {
+		_rebuild_occluder_block(block);
+	}
+	_update_draw_aabb();
+	lod_dirty = true;
+}
+
+void Landscape3D::_rebuild_gradients() {
+	const int resolution = terrain_data->get_resolution();
+	gradient_image = Image::create_empty(resolution, resolution, true, Image::FORMAT_RGH);
+	_compute_gradients(Rect2i(0, 0, resolution, resolution));
+}
+
+// Central differences, one-sided along the terrain's edges, then every
+// mipmap texel above the changed ones as the average of the four below it.
+void Landscape3D::_compute_gradients(const Rect2i &p_samples) {
+	const int resolution = terrain_data->get_resolution();
+	if (gradient_image.is_null() || gradient_image->get_width() != resolution) {
+		return;
+	}
+	const Rect2i region = p_samples.grow(1).intersection(Rect2i(0, 0, resolution, resolution));
+	if (region.size.x <= 0 || region.size.y <= 0) {
+		return;
+	}
+
+	const float spacing = terrain_data->get_vertex_spacing();
+	const float *heights = reinterpret_cast<const float *>(terrain_data->get_heightmap_image()->ptr());
+	uint8_t *pixels = gradient_image->ptrw();
+	uint16_t *base = reinterpret_cast<uint16_t *>(pixels);
+	const Point2i end = region.get_end();
+	for (int z = region.position.y; z < end.y; z++) {
+		const int z0 = MAX(z - 1, 0);
+		const int z1 = MIN(z + 1, resolution - 1);
+		for (int x = region.position.x; x < end.x; x++) {
+			const int x0 = MAX(x - 1, 0);
+			const int x1 = MIN(x + 1, resolution - 1);
+			const float dx = x1 > x0 ? (heights[z * resolution + x1] - heights[z * resolution + x0]) / (float(x1 - x0) * spacing) : 0.0f;
+			const float dz = z1 > z0 ? (heights[z1 * resolution + x] - heights[z0 * resolution + x]) / (float(z1 - z0) * spacing) : 0.0f;
+			base[(z * resolution + x) * 2 + 0] = Math::make_half_float(dx);
+			base[(z * resolution + x) * 2 + 1] = Math::make_half_float(dz);
+		}
+	}
+
+	int x0 = region.position.x;
+	int z0 = region.position.y;
+	int x1 = end.x - 1;
+	int z1 = end.y - 1;
+	for (int mipmap = 1; mipmap <= gradient_image->get_mipmap_count(); mipmap++) {
+		int64_t src_offset = 0;
+		int64_t src_size = 0;
+		int src_width = 0;
+		int src_height = 0;
+		int64_t dst_offset = 0;
+		int64_t dst_size = 0;
+		int dst_width = 0;
+		int dst_height = 0;
+		gradient_image->get_mipmap_offset_size_and_dimensions(mipmap - 1, src_offset, src_size, src_width, src_height);
+		gradient_image->get_mipmap_offset_size_and_dimensions(mipmap, dst_offset, dst_size, dst_width, dst_height);
+		const uint16_t *src = reinterpret_cast<const uint16_t *>(pixels + src_offset);
+		uint16_t *dst = reinterpret_cast<uint16_t *>(pixels + dst_offset);
+
+		x0 >>= 1;
+		z0 >>= 1;
+		x1 = MIN(x1 >> 1, dst_width - 1);
+		z1 = MIN(z1 >> 1, dst_height - 1);
+		for (int z = z0; z <= z1; z++) {
+			for (int x = x0; x <= x1; x++) {
+				float sum_x = 0.0f;
+				float sum_z = 0.0f;
+				for (int j = 0; j < 2; j++) {
+					const int sz = MIN(z * 2 + j, src_height - 1);
+					for (int i = 0; i < 2; i++) {
+						const int sx = MIN(x * 2 + i, src_width - 1);
+						sum_x += Math::half_to_float(src[(sz * src_width + sx) * 2 + 0]);
+						sum_z += Math::half_to_float(src[(sz * src_width + sx) * 2 + 1]);
+					}
+				}
+				dst[(z * dst_width + x) * 2 + 0] = Math::make_half_float(sum_x * 0.25f);
+				dst[(z * dst_width + x) * 2 + 1] = Math::make_half_float(sum_z * 0.25f);
+			}
+		}
+	}
+}
+
+void Landscape3D::_rebuild_weight_texture() {
+	_ensure_material();
+	if (terrain_data.is_null()) {
+		weight_texture.free();
+		return;
+	}
+
+	// Only as many weight maps as there are layers to weigh, not all
+	// TerrainData::WEIGHT_MAP_COUNT of them: at 4097 x 4097 each one is 64 MB.
+	// But at least two, since the rendering server cannot wrap a texture
+	// array of a single layer around a RenderingDevice texture.
+	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
+	const int group_count = CLAMP((layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP, 2, TerrainData::WEIGHT_MAP_COUNT);
+	if (weight_texture.is_valid() && weight_texture.get_layer_count() == group_count && weight_texture.get_size() == Size2i(terrain_data->get_resolution(), terrain_data->get_resolution())) {
+		return;
+	}
+
+	Vector<Ref<Image>> images;
+	for (int g = 0; g < group_count; g++) {
+		images.push_back(terrain_data->get_weight_map_image(g));
+	}
+	weight_texture.create(images, true);
+	material->set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
+}
+
+void Landscape3D::_upload_weight_region(const Rect2i &p_region, int p_first_layer, int p_layer_count) {
+	if (terrain_data.is_null() || !weight_texture.is_valid() || p_layer_count <= 0) {
+		return;
+	}
+	const int first_group = MAX(p_first_layer, 0) / TerrainData::LAYERS_PER_WEIGHT_MAP;
+	const int last_group = MIN((p_first_layer + p_layer_count - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP, weight_texture.get_layer_count() - 1);
+	for (int g = first_group; g <= last_group; g++) {
+		weight_texture.update(g, terrain_data->get_weight_map_image(g), p_region);
+	}
+}
+
+void Landscape3D::_update_material_params() {
 	_ensure_material();
 	if (terrain_data.is_null()) {
 		return;
 	}
+	material->set_shader_parameter(SNAME("heightmap"), height_texture.get_rid());
+	material->set_shader_parameter(SNAME("gradient_map"), gradient_texture.get_rid());
+	material->set_shader_parameter(SNAME("hole_map"), hole_texture.get_rid());
+	material->set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
+	material->set_shader_parameter(SNAME("terrain_quads"), terrain_data->get_resolution() - 1);
+	material->set_shader_parameter(SNAME("vertex_spacing"), terrain_data->get_vertex_spacing());
+}
 
-	Vector<Ref<Image>> weight_images;
-	weight_images.resize(TerrainData::WEIGHT_MAP_COUNT);
-	for (int g = 0; g < TerrainData::WEIGHT_MAP_COUNT; g++) {
-		weight_images.write[g] = terrain_data->get_weight_map_image(g);
+void Landscape3D::_update_micro_detail_params() {
+	if (material.is_null()) {
+		return;
 	}
-	weight_array.instantiate();
-	weight_array->create_from_images(weight_images);
+	material->set_shader_parameter(SNAME("displacement_enabled"), micro_detail_distance > 0.0f && displacement_bound > 0.0f);
+	material->set_shader_parameter(SNAME("displacement_fade_start"), micro_detail_distance * 0.75f);
+	material->set_shader_parameter(SNAME("displacement_fade_end"), micro_detail_distance);
+	lod_dirty = true;
+}
 
-	const int layer_count = CLAMP(layers.size(), 0, TerrainData::MAX_LAYERS);
+void Landscape3D::_update_pom_params() {
+	if (material.is_null()) {
+		return;
+	}
+	material->set_shader_parameter(SNAME("pom_enabled"), pom_enabled);
+	material->set_shader_parameter(SNAME("pom_min_layers"), pom_min_layers);
+	material->set_shader_parameter(SNAME("pom_max_layers"), pom_max_layers);
+	material->set_shader_parameter(SNAME("pom_flip"), Vector2(pom_flip_tangent ? -1.0f : 1.0f, pom_flip_binormal ? -1.0f : 1.0f));
+	material->set_shader_parameter(SNAME("pom_self_shadow_enabled"), pom_self_shadow_enabled);
+	material->set_shader_parameter(SNAME("pom_shadow_steps"), pom_shadow_steps);
+	material->set_shader_parameter(SNAME("pom_shadow_strength"), pom_shadow_strength);
+	material->set_shader_parameter(SNAME("pom_shadow_light_direction"), pom_shadow_light_direction);
+	material->set_shader_parameter(SNAME("pom_fade_start"), pom_fade_start);
+	material->set_shader_parameter(SNAME("pom_fade_end"), pom_fade_end);
+}
+
+void Landscape3D::_rebuild_layer_textures() {
+	_ensure_material();
+
+	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
 	const int array_layers = MAX(layer_count, 1);
 
 	Vector<Ref<Image>> albedo_images;
@@ -810,14 +1661,15 @@ void Landscape3D::_rebuild_textures() {
 	height_max_values.resize(TerrainData::MAX_LAYERS);
 	// Godot's Variant system has no packed bool array type, so these two
 	// per-layer switches are encoded as 0.0/1.0 (checked as > 0.5 in the
-	// shader) - the same trick every other per-layer array here already
-	// relies on being a plain PackedFloat32Array upload.
+	// shader).
 	PackedFloat32Array pom_enabled_values;
 	pom_enabled_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array triplanar_values;
 	triplanar_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array triplanar_sharpness_values;
 	triplanar_sharpness_values.resize(TerrainData::MAX_LAYERS);
+	PackedFloat32Array displacement_values;
+	displacement_values.resize(TerrainData::MAX_LAYERS);
 	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		uv_scales.write[i] = 1.0f;
 		albedo_colors.write[i] = Color(1, 1, 1);
@@ -831,7 +1683,10 @@ void Landscape3D::_rebuild_textures() {
 		pom_enabled_values.write[i] = 0.0f;
 		triplanar_values.write[i] = 0.0f;
 		triplanar_sharpness_values.write[i] = 1.0f;
+		displacement_values.write[i] = 0.0f;
 	}
+
+	displacement_bound = 0.0f;
 
 	auto source_image = [](const Ref<Texture2D> &p_texture) -> Ref<Image> {
 		return p_texture.is_valid() ? p_texture->get_image() : Ref<Image>();
@@ -865,6 +1720,12 @@ void Landscape3D::_rebuild_textures() {
 			pom_enabled_values.write[i] = (layer.is_valid() && layer->is_pom_enabled()) ? 1.0f : 0.0f;
 			triplanar_values.write[i] = (layer.is_valid() && layer->is_triplanar_enabled()) ? 1.0f : 0.0f;
 			triplanar_sharpness_values.write[i] = layer.is_valid() ? layer->get_triplanar_sharpness() : 1.0f;
+			// Displacement needs something to displace by: a layer without a
+			// height texture would only lift its whole area by a constant.
+			if (layer.is_valid() && height_tex.is_valid() && i < layer_count) {
+				displacement_values.write[i] = layer->get_displacement();
+				displacement_bound = MAX(displacement_bound, Math::abs(layer->get_displacement()) * 0.5f);
+			}
 		}
 	}
 
@@ -874,223 +1735,157 @@ void Landscape3D::_rebuild_textures() {
 	// washed-out surface at distance.
 	normal_array = build_layer_texture_array(normal_images, Color(0.5, 0.5, 1.0, 1.0), Image::FORMAT_RGBA8, true, layer_texture_size_limit);
 	orm_array = build_layer_texture_array(orm_images, Color(1.0, 0.5, 0.0, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
-	// Single-channel, unlike the other three: POM only ever reads one value per
-	// sample, so this quarters what the array costs. White = a height of 1.0 =
-	// zero parallax depth (see pom_offset()), so a layer with no height_texture
-	// is unaffected by POM even while it is enabled on the node.
+	// Single-channel, unlike the other three: POM and displacement only ever
+	// read one value per sample. White = a height of 1.0 = zero parallax depth
+	// (see pom_offset()), so a layer with no height_texture is unaffected by
+	// POM even while it is enabled on the node.
 	height_array = build_layer_texture_array(height_images, Color(1, 1, 1), Image::FORMAT_R8, false, layer_texture_size_limit);
 
-	material->set_shader_parameter("weight_array", weight_array);
-	material->set_shader_parameter("albedo_array", albedo_array);
-	material->set_shader_parameter("normal_array", normal_array);
-	material->set_shader_parameter("orm_array", orm_array);
-	material->set_shader_parameter("height_array", height_array);
-	material->set_shader_parameter("layer_uv_scales", uv_scales);
-	material->set_shader_parameter("layer_albedo_colors", albedo_colors);
-	material->set_shader_parameter("layer_roughness", roughness_values);
-	material->set_shader_parameter("layer_specular", specular_values);
-	material->set_shader_parameter("layer_ao_strength", ao_strength_values);
-	material->set_shader_parameter("layer_normal_strength", normal_strength_values);
-	material->set_shader_parameter("layer_heightmap_scale", heightmap_scale_values);
-	material->set_shader_parameter("layer_height_min", height_min_values);
-	material->set_shader_parameter("layer_height_max", height_max_values);
-	material->set_shader_parameter("layer_pom_enabled", pom_enabled_values);
-	material->set_shader_parameter("layer_triplanar", triplanar_values);
-	material->set_shader_parameter("layer_triplanar_sharpness", triplanar_sharpness_values);
-	material->set_shader_parameter("layer_count", layer_count);
-	material->set_shader_parameter("terrain_size", Vector2(terrain_data->get_size(), terrain_data->get_size()));
-	material->set_shader_parameter("terrain_origin", _get_safe_global_transform().origin);
-	material->set_shader_parameter("pom_enabled", pom_enabled);
-	material->set_shader_parameter("pom_min_layers", pom_min_layers);
-	material->set_shader_parameter("pom_max_layers", pom_max_layers);
-	material->set_shader_parameter("pom_flip", Vector2(pom_flip_tangent ? -1.0f : 1.0f, pom_flip_binormal ? -1.0f : 1.0f));
-	material->set_shader_parameter("pom_self_shadow_enabled", pom_self_shadow_enabled);
-	material->set_shader_parameter("pom_shadow_steps", pom_shadow_steps);
-	material->set_shader_parameter("pom_shadow_strength", pom_shadow_strength);
-	material->set_shader_parameter("pom_shadow_light_direction", pom_shadow_light_direction);
-	material->set_shader_parameter("pom_fade_start", pom_fade_start);
-	material->set_shader_parameter("pom_fade_end", pom_fade_end);
+	material->set_shader_parameter(SNAME("albedo_array"), albedo_array);
+	material->set_shader_parameter(SNAME("normal_array"), normal_array);
+	material->set_shader_parameter(SNAME("orm_array"), orm_array);
+	material->set_shader_parameter(SNAME("height_array"), height_array);
+	material->set_shader_parameter(SNAME("height_texture_size"), float(MAX(height_array->get_width(), 1)));
+	material->set_shader_parameter(SNAME("layer_uv_scales"), uv_scales);
+	material->set_shader_parameter(SNAME("layer_albedo_colors"), albedo_colors);
+	material->set_shader_parameter(SNAME("layer_roughness"), roughness_values);
+	material->set_shader_parameter(SNAME("layer_specular"), specular_values);
+	material->set_shader_parameter(SNAME("layer_ao_strength"), ao_strength_values);
+	material->set_shader_parameter(SNAME("layer_normal_strength"), normal_strength_values);
+	material->set_shader_parameter(SNAME("layer_heightmap_scale"), heightmap_scale_values);
+	material->set_shader_parameter(SNAME("layer_height_min"), height_min_values);
+	material->set_shader_parameter(SNAME("layer_height_max"), height_max_values);
+	material->set_shader_parameter(SNAME("layer_pom_enabled"), pom_enabled_values);
+	material->set_shader_parameter(SNAME("layer_triplanar"), triplanar_values);
+	material->set_shader_parameter(SNAME("layer_triplanar_sharpness"), triplanar_sharpness_values);
+	material->set_shader_parameter(SNAME("layer_displacement"), displacement_values);
+	material->set_shader_parameter(SNAME("layer_count"), layer_count);
 
-	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
-		if (kv.value.mesh.is_valid()) {
-			kv.value.mesh->surface_set_material(0, material);
-		}
-	}
+	_update_micro_detail_params();
+	_update_draw_aabb();
 }
 
-Vector2i Landscape3D::_get_chunk_grid_size() const {
+Vector2i Landscape3D::_get_block_grid_size() const {
 	if (terrain_data.is_null()) {
 		return Vector2i();
 	}
 	const int quads_total = MAX(terrain_data->get_resolution() - 1, 1);
-	const int n = (quads_total + CHUNK_QUADS - 1) / CHUNK_QUADS;
+	const int n = (quads_total + BLOCK_QUADS - 1) / BLOCK_QUADS;
 	return Vector2i(MAX(n, 1), MAX(n, 1));
 }
 
-Rect2i Landscape3D::_get_chunk_range_for_region(const Rect2i &p_vertex_region) const {
-	const Vector2i grid = _get_chunk_grid_size();
-	if (grid.x <= 0 || grid.y <= 0) {
-		return Rect2i();
-	}
-
-	const int min_vx = p_vertex_region.position.x;
-	const int min_vz = p_vertex_region.position.y;
-	const int max_vx = p_vertex_region.position.x + MAX(p_vertex_region.size.x, 1) - 1;
-	const int max_vz = p_vertex_region.position.y + MAX(p_vertex_region.size.y, 1) - 1;
-
-	const int cx0 = CLAMP((int)Math::floor((float)min_vx / CHUNK_QUADS), 0, grid.x - 1);
-	const int cz0 = CLAMP((int)Math::floor((float)min_vz / CHUNK_QUADS), 0, grid.y - 1);
-	const int cx1 = CLAMP((int)Math::floor((float)max_vx / CHUNK_QUADS), 0, grid.x - 1);
-	const int cz1 = CLAMP((int)Math::floor((float)max_vz / CHUNK_QUADS), 0, grid.y - 1);
-
-	return Rect2i(cx0, cz0, cx1 - cx0 + 1, cz1 - cz0 + 1);
-}
-
-void Landscape3D::_rebuild_all_chunks() {
-	_clear_chunks();
-	if (terrain_data.is_null()) {
+void Landscape3D::_add_blocks_in_region(const Rect2i &p_samples, HashSet<Vector2i> &r_blocks) const {
+	const Vector2i grid = _get_block_grid_size();
+	if (p_samples.size.x <= 0 || p_samples.size.y <= 0 || grid.x <= 0 || grid.y <= 0) {
 		return;
 	}
-	const Vector2i grid = _get_chunk_grid_size();
-	for (int z = 0; z < grid.y; z++) {
-		for (int x = 0; x < grid.x; x++) {
-			_rebuild_chunk(Vector2i(x, z));
+	// An edit reaches further than the blocks its samples belong to: a block
+	// shares its border row and column of samples with its neighbors, and its
+	// occluder takes the lowest sample up to one occluder stride away.
+	// Looking only at the edited samples left the block across a border
+	// stale whenever an edit started right on it.
+	const Rect2i region = p_samples.grow(MAX(_get_occluder_stride(), 1));
+	const Point2i end = region.get_end() - Point2i(1, 1);
+	const int bx0 = CLAMP((int)Math::floor((float)region.position.x / BLOCK_QUADS), 0, grid.x - 1);
+	const int bz0 = CLAMP((int)Math::floor((float)region.position.y / BLOCK_QUADS), 0, grid.y - 1);
+	const int bx1 = CLAMP((int)Math::floor((float)end.x / BLOCK_QUADS), 0, grid.x - 1);
+	const int bz1 = CLAMP((int)Math::floor((float)end.y / BLOCK_QUADS), 0, grid.y - 1);
+	for (int z = bz0; z <= bz1; z++) {
+		for (int x = bx0; x <= bx1; x++) {
+			r_blocks.insert(Vector2i(x, z));
 		}
 	}
-}
-
-void Landscape3D::_add_chunks_in_region(const Rect2i &p_vertex_region, HashSet<Vector2i> &r_chunks) const {
-	if (p_vertex_region.size.x <= 0 || p_vertex_region.size.y <= 0) {
-		return;
-	}
-	// An edit reaches further than the chunks its samples belong to: a chunk
-	// shares its border row and column of vertices with its neighbors, reads
-	// one sample beyond them for its normals, and its occluder takes the lowest
-	// sample up to one occluder stride away. Looking only at the edited samples
-	// left the chunk across a border stale whenever an edit started right on
-	// it - a crack along the border, and an occluder standing above ground that
-	// had been dug out beside it.
-	const int margin = occluder_enabled ? MAX(_get_occluder_stride(), 1) : 1;
-	const Rect2i range = _get_chunk_range_for_region(p_vertex_region.grow(margin));
-	for (int z = range.position.y; z < range.position.y + range.size.y; z++) {
-		for (int x = range.position.x; x < range.position.x + range.size.x; x++) {
-			r_chunks.insert(Vector2i(x, z));
-		}
-	}
-}
-
-void Landscape3D::_rebuild_chunks_in_region(const Rect2i &p_vertex_region) {
-	if (terrain_data.is_null()) {
-		return;
-	}
-	HashSet<Vector2i> coords;
-	_add_chunks_in_region(p_vertex_region, coords);
-	for (const Vector2i &coord : coords) {
-		_rebuild_chunk(coord);
-	}
-}
-
-void Landscape3D::_rebuild_chunks_in_regions(const Vector<Rect2i> &p_vertex_regions) {
-	if (terrain_data.is_null()) {
-		return;
-	}
-	HashSet<Vector2i> coords;
-	for (const Rect2i &region : p_vertex_regions) {
-		_add_chunks_in_region(region, coords);
-	}
-	for (const Vector2i &coord : coords) {
-		_rebuild_chunk(coord);
-	}
-}
-
-void Landscape3D::_upload_weight_groups(int p_layer_count) {
-	if (weight_array.is_null() || terrain_data.is_null()) {
-		return;
-	}
-	const int group_count = MIN((p_layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP, TerrainData::WEIGHT_MAP_COUNT);
-	for (int g = 0; g < group_count; g++) {
-		weight_array->update_layer(terrain_data->get_weight_map_image(g), g);
-	}
-}
-
-Rect2i Landscape3D::_get_full_region() const {
-	if (terrain_data.is_null()) {
-		return Rect2i();
-	}
-	return Rect2i(0, 0, terrain_data->get_resolution(), terrain_data->get_resolution());
-}
-
-void Landscape3D::_emit_terrain_changed(const Rect2i &p_region) {
-	emit_signal(SNAME("terrain_changed"), p_region);
-}
-
-void Landscape3D::_clear_chunks() {
-	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
-		if (kv.value.instance.is_valid()) {
-			RS::get_singleton()->free_rid(kv.value.instance);
-		}
-		_free_chunk_occluder(kv.value);
-	}
-	chunks.clear();
 }
 
 int Landscape3D::_get_occluder_stride() const {
-	const int detail = CLAMP(occluder_detail, 1, CHUNK_QUADS);
+	const int detail = CLAMP(occluder_detail, 1, BLOCK_QUADS);
 	int quads = 1;
 	while (quads * 2 <= detail) {
 		quads *= 2;
 	}
-	return CHUNK_QUADS / quads;
+	return BLOCK_QUADS / quads;
 }
 
-void Landscape3D::_free_chunk_occluder(Chunk &p_chunk) {
-	if (p_chunk.occluder_instance.is_valid()) {
-		RS::get_singleton()->free_rid(p_chunk.occluder_instance);
-		p_chunk.occluder_instance = RID();
+void Landscape3D::_free_occluder_block(OccluderBlock &p_block) {
+	if (p_block.instance.is_valid()) {
+		RS::get_singleton()->free_rid(p_block.instance);
+		p_block.instance = RID();
 	}
-	if (p_chunk.occluder.is_valid()) {
-		RS::get_singleton()->free_rid(p_chunk.occluder);
-		p_chunk.occluder = RID();
+	if (p_block.occluder.is_valid()) {
+		RS::get_singleton()->free_rid(p_block.occluder);
+		p_block.occluder = RID();
 	}
+}
+
+void Landscape3D::_clear_occluders() {
+	for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
+		_free_occluder_block(kv.value);
+	}
+	occluder_blocks.clear();
 }
 
 void Landscape3D::_rebuild_all_occluders() {
-	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
-		_rebuild_chunk_occluder(kv.value, kv.key);
+	_clear_occluders();
+	if (!occluder_enabled || terrain_data.is_null()) {
+		return;
+	}
+	const Vector2i grid = _get_block_grid_size();
+	for (int z = 0; z < grid.y; z++) {
+		for (int x = 0; x < grid.x; x++) {
+			_rebuild_occluder_block(Vector2i(x, z));
+		}
 	}
 }
 
-// Builds this chunk's occluder: the same surface, decimated to a grid of
+void Landscape3D::_update_occluder_transforms() {
+	const Transform3D global = _get_safe_global_transform();
+	for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
+		if (kv.value.instance.is_valid()) {
+			RS::get_singleton()->instance_set_transform(kv.value.instance, global * Transform3D(Basis(), kv.value.local_origin));
+		}
+	}
+}
+
+// Builds a block's occluder: the same surface, decimated to a grid of
 // occluder_detail x occluder_detail quads, with every vertex pushed down to
 // the lowest heightmap sample within one occluder quad of it.
 //
 // That minimum is what makes the simplification safe. Occlusion culling may
 // only ever claim less occlusion than the real geometry provides - an occluder
 // poking out above the surface it stands in for would hide things that are in
-// fact visible, which reads as geometry popping in and out - and taking the
-// minimum over a full stride in each direction guarantees the opposite: every
-// point of the terrain inside an occluder quad is within one stride of both of
-// that quad's ends along each axis, so both ends sit at or below it, and so
-// does everything the quad interpolates between them. The cost is that narrow
-// crevices flatten out and sharp ridges lose a little height, which only ever
-// costs some occlusion.
+// fact visible - and taking the minimum over a full stride in each direction
+// guarantees the opposite: every point of the terrain inside an occluder quad
+// is within one stride of both of that quad's ends along each axis, so both
+// ends sit at or below it, and so does everything the quad interpolates
+// between them. The cost is that narrow crevices flatten out and sharp ridges
+// lose a little height, which only ever costs some occlusion. Micro detail
+// displacement is left out for the same reason: it can only dig below the
+// heightmap by as much as it rises above it, and the occluder never stands
+// above the heightmap's lowest nearby sample.
 //
-// Neighboring chunks agree on the shared edge vertices (the window is centered
-// on the vertex, not on the chunk), so the per-chunk occluders join up into one
-// continuous surface with no cracks for the depth buffer to leak through.
-void Landscape3D::_rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coord) {
+// Neighboring blocks agree on the shared edge vertices (the window is centered
+// on the vertex, not on the block), so the per-block occluders join up into
+// one continuous surface with no cracks for the depth buffer to leak through.
+void Landscape3D::_rebuild_occluder_block(const Vector2i &p_block) {
 	if (!occluder_enabled || terrain_data.is_null()) {
-		_free_chunk_occluder(p_chunk);
+		OccluderBlock *existing = occluder_blocks.getptr(p_block);
+		if (existing != nullptr) {
+			_free_occluder_block(*existing);
+			occluder_blocks.erase(p_block);
+		}
 		return;
 	}
 
 	const int stride = _get_occluder_stride();
-	const int steps = CHUNK_QUADS / stride;
-	const int base_ix = p_coord.x * CHUNK_QUADS;
-	const int base_iz = p_coord.y * CHUNK_QUADS;
+	const int steps = BLOCK_QUADS / stride;
+	const int base_ix = p_block.x * BLOCK_QUADS;
+	const int base_iz = p_block.y * BLOCK_QUADS;
 	const float spacing = terrain_data->get_vertex_spacing();
+	// A displacement sinking the surface below the heightmap has to be
+	// allowed for: the occluder may never stand above what is drawn.
+	const float sink = micro_detail_distance > 0.0f ? displacement_bound : 0.0f;
 
-	const Rect2i height_region(base_ix - stride, base_iz - stride, CHUNK_QUADS + 2 * stride + 1, CHUNK_QUADS + 2 * stride + 1);
+	const Rect2i height_region(base_ix - stride, base_iz - stride, BLOCK_QUADS + 2 * stride + 1, BLOCK_QUADS + 2 * stride + 1);
 	const PackedFloat32Array heights = terrain_data->get_height_region(height_region);
 	const int height_w = height_region.size.x;
 
@@ -1100,7 +1895,7 @@ void Landscape3D::_rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coor
 
 	for (int jz = 0; jz <= steps; jz++) {
 		for (int jx = 0; jx <= steps; jx++) {
-			// The vertex sits on the chunk's sample (jx * stride, jz * stride),
+			// The vertex sits on the block's sample (jx * stride, jz * stride),
 			// which the padded fetch holds one stride further in, so the
 			// window around it starts back at (jx * stride, jz * stride).
 			const int local_x = jx * stride;
@@ -1112,19 +1907,25 @@ void Landscape3D::_rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coor
 					lowest = MIN(lowest, row[sx]);
 				}
 			}
-			vertices_ptr[jz * (steps + 1) + jx] = Vector3(local_x * spacing, lowest, local_z * spacing);
+			vertices_ptr[jz * (steps + 1) + jx] = Vector3(local_x * spacing, lowest - sink, local_z * spacing);
 		}
 	}
 
-	const Rect2i hole_region(base_ix, base_iz, CHUNK_QUADS + 1, CHUNK_QUADS + 1);
+	const Rect2i hole_region(base_ix, base_iz, BLOCK_QUADS + 1, BLOCK_QUADS + 1);
 	const PackedByteArray holes = terrain_data->get_hole_region(hole_region);
 	const int hole_w = hole_region.size.x;
+	const int last_sample = terrain_data->get_resolution() - 1;
 
 	// A quad that covers any hole at all is dropped: you can see through a
-	// hole, so nothing standing behind one may be culled because of it.
-	auto quad_covers_hole = [&](int jx, int jz) {
-		for (int sz = jz * stride; sz <= (jz + 1) * stride; sz++) {
-			for (int sx = jx * stride; sx <= (jx + 1) * stride; sx++) {
+	// hole, so nothing standing behind one may be culled because of it. So
+	// is a quad past the terrain's last sample, where the last block of a
+	// terrain whose size is not a multiple of BLOCK_QUADS runs out of ground.
+	auto quad_is_open = [&](int p_jx, int p_jz) {
+		if (base_ix + (p_jx + 1) * stride > last_sample || base_iz + (p_jz + 1) * stride > last_sample) {
+			return true;
+		}
+		for (int sz = p_jz * stride; sz <= (p_jz + 1) * stride; sz++) {
+			for (int sx = p_jx * stride; sx <= (p_jx + 1) * stride; sx++) {
 				if (holes[sz * hole_w + sx] != 0) {
 					return true;
 				}
@@ -1136,7 +1937,7 @@ void Landscape3D::_rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coor
 	PackedInt32Array indices;
 	for (int jz = 0; jz < steps; jz++) {
 		for (int jx = 0; jx < steps; jx++) {
-			if (quad_covers_hole(jx, jz)) {
+			if (quad_is_open(jx, jz)) {
 				continue;
 			}
 			const int a = jz * (steps + 1) + jx;
@@ -1153,263 +1954,30 @@ void Landscape3D::_rebuild_chunk_occluder(Chunk &p_chunk, const Vector2i &p_coor
 	}
 
 	if (indices.is_empty()) {
-		_free_chunk_occluder(p_chunk);
+		OccluderBlock *existing = occluder_blocks.getptr(p_block);
+		if (existing != nullptr) {
+			_free_occluder_block(*existing);
+			occluder_blocks.erase(p_block);
+		}
 		return;
 	}
 
-	if (p_chunk.occluder.is_null()) {
-		p_chunk.occluder = RS::get_singleton()->occluder_create();
+	OccluderBlock &block = occluder_blocks[p_block];
+	block.local_origin = Vector3(base_ix * spacing, 0, base_iz * spacing);
+	if (block.occluder.is_null()) {
+		block.occluder = RS::get_singleton()->occluder_create();
 	}
-	RS::get_singleton()->occluder_set_mesh(p_chunk.occluder, vertices, indices);
+	RS::get_singleton()->occluder_set_mesh(block.occluder, vertices, indices);
 
-	if (p_chunk.occluder_instance.is_null()) {
+	if (block.instance.is_null()) {
 		const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
-		p_chunk.occluder_instance = RS::get_singleton()->instance_create2(p_chunk.occluder, scenario);
+		block.instance = RS::get_singleton()->instance_create2(block.occluder, scenario);
 	} else {
-		RS::get_singleton()->instance_set_base(p_chunk.occluder_instance, p_chunk.occluder);
+		RS::get_singleton()->instance_set_base(block.instance, block.occluder);
 	}
 
-	RS::get_singleton()->instance_set_transform(p_chunk.occluder_instance, _get_safe_global_transform() * Transform3D(Basis(), p_chunk.local_origin));
-	RS::get_singleton()->instance_set_visible(p_chunk.occluder_instance, is_visible_in_tree());
-}
-
-void Landscape3D::_update_chunk_transform(Chunk &p_chunk) {
-	const Transform3D xform = _get_safe_global_transform() * Transform3D(Basis(), p_chunk.local_origin);
-	if (p_chunk.instance.is_valid()) {
-		RS::get_singleton()->instance_set_transform(p_chunk.instance, xform);
-	}
-	if (p_chunk.occluder_instance.is_valid()) {
-		RS::get_singleton()->instance_set_transform(p_chunk.occluder_instance, xform);
-	}
-}
-
-void Landscape3D::_apply_render_settings_to_chunk(const Chunk &p_chunk) {
-	if (!p_chunk.instance.is_valid()) {
-		return;
-	}
-	RS::get_singleton()->instance_geometry_set_cast_shadows_setting(p_chunk.instance, (RSE::ShadowCastingSetting)cast_shadow);
-
-	const bool baked = gi_mode == GeometryInstance3D::GI_MODE_STATIC;
-	const bool dynamic = gi_mode == GeometryInstance3D::GI_MODE_DYNAMIC;
-	RS::get_singleton()->instance_geometry_set_flag(p_chunk.instance, RSE::INSTANCE_FLAG_USE_BAKED_LIGHT, baked);
-	RS::get_singleton()->instance_geometry_set_flag(p_chunk.instance, RSE::INSTANCE_FLAG_USE_DYNAMIC_GI, dynamic);
-
-	RS::get_singleton()->instance_set_visible(p_chunk.instance, is_visible_in_tree());
-}
-
-void Landscape3D::_rebuild_chunk(const Vector2i &p_coord) {
-	if (terrain_data.is_null()) {
-		return;
-	}
-	_ensure_material();
-
-	const int base_ix = p_coord.x * CHUNK_QUADS;
-	const int base_iz = p_coord.y * CHUNK_QUADS;
-	const float spacing = terrain_data->get_vertex_spacing();
-	const float res_minus_1 = MAX((float)(terrain_data->get_resolution() - 1), 1.0f);
-
-	const int verts_per_side = CHUNK_QUADS + 1;
-	const int main_count = verts_per_side * verts_per_side;
-	const int perim_count = 4 * CHUNK_QUADS;
-	const int total_verts = main_count + perim_count;
-
-	auto main_index = [verts_per_side](int jx, int jz) {
-		return jz * verts_per_side + jx;
-	};
-	auto perim_point = [](int p, int &jx, int &jz) {
-		if (p < CHUNK_QUADS) {
-			jx = p;
-			jz = 0;
-		} else if (p < 2 * CHUNK_QUADS) {
-			jx = CHUNK_QUADS;
-			jz = p - CHUNK_QUADS;
-		} else if (p < 3 * CHUNK_QUADS) {
-			jx = CHUNK_QUADS - (p - 2 * CHUNK_QUADS);
-			jz = CHUNK_QUADS;
-		} else {
-			jx = 0;
-			jz = CHUNK_QUADS - (p - 3 * CHUNK_QUADS);
-		}
-	};
-
-	PackedVector3Array positions;
-	PackedVector3Array normals;
-	PackedFloat32Array tangents;
-	PackedVector2Array uvs;
-	positions.resize(total_verts);
-	normals.resize(total_verts);
-	tangents.resize(total_verts * 4);
-	uvs.resize(total_verts);
-
-	// Fetch this chunk's heights in one bulk call (padded by a 1-sample halo
-	// for the central-difference normals/tangents below), instead of the
-	// O(chunk_quads^2) individual TerrainData::get_height/get_normal calls
-	// this used to make: a single chunk touches on the order of 10k samples,
-	// and per-call Image access dominates at that volume (see TerrainData).
-	const Rect2i height_fetch_region(base_ix - 1, base_iz - 1, CHUNK_QUADS + 3, CHUNK_QUADS + 3);
-	const PackedFloat32Array height_data = terrain_data->get_height_region(height_fetch_region);
-	const int height_w = height_fetch_region.size.x;
-	auto sample_height = [&](int ix, int iz) {
-		return height_data[(iz - height_fetch_region.position.y) * height_w + (ix - height_fetch_region.position.x)];
-	};
-
-	for (int jz = 0; jz <= CHUNK_QUADS; jz++) {
-		for (int jx = 0; jx <= CHUNK_QUADS; jx++) {
-			const int ix = base_ix + jx;
-			const int iz = base_iz + jz;
-			const int vi = main_index(jx, jz);
-
-			const float h = sample_height(ix, iz);
-			const float h_l = sample_height(ix - 1, iz);
-			const float h_r = sample_height(ix + 1, iz);
-			const float h_d = sample_height(ix, iz - 1);
-			const float h_u = sample_height(ix, iz + 1);
-
-			positions.set(vi, Vector3(jx * spacing, h, jz * spacing));
-			normals.set(vi, Vector3(h_l - h_r, 2.0f * spacing, h_d - h_u).normalized());
-
-			const float dh_dx = (h_r - h_l) / (2.0f * spacing);
-			const Vector3 tangent = Vector3(1.0f, dh_dx, 0.0f).normalized();
-			tangents.set(vi * 4 + 0, tangent.x);
-			tangents.set(vi * 4 + 1, tangent.y);
-			tangents.set(vi * 4 + 2, tangent.z);
-			tangents.set(vi * 4 + 3, 1.0f);
-
-			uvs.set(vi, Vector2(ix / res_minus_1, iz / res_minus_1));
-		}
-	}
-
-	for (int p = 0; p < perim_count; p++) {
-		int jx, jz;
-		perim_point(p, jx, jz);
-		const int top_vi = main_index(jx, jz);
-		const int vi = main_count + p;
-
-		positions.set(vi, positions[top_vi] - Vector3(0, skirt_depth, 0));
-		normals.set(vi, normals[top_vi]);
-		tangents.set(vi * 4 + 0, tangents[top_vi * 4 + 0]);
-		tangents.set(vi * 4 + 1, tangents[top_vi * 4 + 1]);
-		tangents.set(vi * 4 + 2, tangents[top_vi * 4 + 2]);
-		tangents.set(vi * 4 + 3, tangents[top_vi * 4 + 3]);
-		uvs.set(vi, uvs[top_vi]);
-	}
-
-	// Same reasoning as the height fetch above: one bulk read of this chunk's
-	// hole flags instead of one TerrainData::is_hole call - and its own Image
-	// access - per quad corner, re-checked again for every coarser LOD level
-	// below.
-	const Rect2i hole_fetch_region(base_ix, base_iz, CHUNK_QUADS + 1, CHUNK_QUADS + 1);
-	const PackedByteArray hole_data = terrain_data->get_hole_region(hole_fetch_region);
-	const int hole_w = hole_fetch_region.size.x;
-	auto is_hole_at = [&](int jx, int jz) {
-		return hole_data[jz * hole_w + jx] != 0;
-	};
-
-	auto build_indices_for_stride = [&](int stride) -> PackedInt32Array {
-		PackedInt32Array idx;
-		for (int jz = stride; jz <= CHUNK_QUADS; jz += stride) {
-			for (int jx = stride; jx <= CHUNK_QUADS; jx += stride) {
-				if (is_hole_at(jx - stride, jz - stride) || is_hole_at(jx, jz - stride) || is_hole_at(jx - stride, jz) || is_hole_at(jx, jz)) {
-					continue;
-				}
-				const int a = main_index(jx - stride, jz - stride);
-				const int b = main_index(jx, jz - stride);
-				const int c = main_index(jx - stride, jz);
-				const int d = main_index(jx, jz);
-				idx.push_back(a);
-				idx.push_back(b);
-				idx.push_back(c);
-				idx.push_back(b);
-				idx.push_back(d);
-				idx.push_back(c);
-			}
-		}
-
-		// Skirts: a vertical apron around the chunk border that hides small
-		// cracks between chunks rendered at different LODs. Emitted with both
-		// winding orders so it stays visible under backface culling regardless
-		// of which way this particular loop happens to wind.
-		const int perim_step_count = perim_count / stride;
-		for (int s = 0; s < perim_step_count; s++) {
-			const int p0 = s * stride;
-			const int p1 = (p0 + stride) % perim_count;
-			int jx0, jz0, jx1, jz1;
-			perim_point(p0, jx0, jz0);
-			perim_point(p1, jx1, jz1);
-			const int top_a = main_index(jx0, jz0);
-			const int top_b = main_index(jx1, jz1);
-			const int bot_a = main_count + p0;
-			const int bot_b = main_count + p1;
-
-			idx.push_back(top_a);
-			idx.push_back(top_b);
-			idx.push_back(bot_a);
-			idx.push_back(top_b);
-			idx.push_back(bot_b);
-			idx.push_back(bot_a);
-
-			idx.push_back(top_a);
-			idx.push_back(bot_a);
-			idx.push_back(top_b);
-			idx.push_back(bot_a);
-			idx.push_back(bot_b);
-			idx.push_back(top_b);
-		}
-		return idx;
-	};
-
-	const PackedInt32Array base_indices = build_indices_for_stride(1);
-
-	Chunk &chunk = chunks[p_coord];
-	chunk.local_origin = Vector3(base_ix * spacing, 0, base_iz * spacing);
-
-	if (base_indices.is_empty()) {
-		// Every quad in this chunk is a hole: nothing to draw, collide with or
-		// occlude behind.
-		if (chunk.instance.is_valid()) {
-			RS::get_singleton()->free_rid(chunk.instance);
-			chunk.instance = RID();
-		}
-		_free_chunk_occluder(chunk);
-		chunk.mesh.unref();
-		return;
-	}
-
-	Array arrays;
-	arrays.resize(Mesh::ARRAY_MAX);
-	arrays[Mesh::ARRAY_VERTEX] = positions;
-	arrays[Mesh::ARRAY_NORMAL] = normals;
-	arrays[Mesh::ARRAY_TANGENT] = tangents;
-	arrays[Mesh::ARRAY_TEX_UV] = uvs;
-	arrays[Mesh::ARRAY_INDEX] = base_indices;
-
-	Dictionary lods;
-	for (int lod = 1; (1 << lod) <= CHUNK_QUADS; lod++) {
-		const int stride = 1 << lod;
-		const PackedInt32Array lod_indices = build_indices_for_stride(stride);
-		if (lod_indices.is_empty()) {
-			continue;
-		}
-		const float edge_length = spacing * (float)stride / MAX(lod_bias, 0.001f);
-		lods[edge_length] = lod_indices;
-	}
-
-	Ref<ArrayMesh> array_mesh;
-	array_mesh.instantiate();
-	array_mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, TypedArray<Array>(), lods);
-	array_mesh->surface_set_material(0, material);
-	chunk.mesh = array_mesh;
-
-	if (!chunk.instance.is_valid()) {
-		const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
-		chunk.instance = RS::get_singleton()->instance_create2(chunk.mesh->get_rid(), scenario);
-	} else {
-		RS::get_singleton()->instance_set_base(chunk.instance, chunk.mesh->get_rid());
-	}
-
-	_rebuild_chunk_occluder(chunk, p_coord);
-	_update_chunk_transform(chunk);
-	_apply_render_settings_to_chunk(chunk);
+	RS::get_singleton()->instance_set_transform(block.instance, _get_safe_global_transform() * Transform3D(Basis(), block.local_origin));
+	RS::get_singleton()->instance_set_visible(block.instance, is_visible_in_tree());
 }
 
 void Landscape3D::_ensure_collision_nodes() {
@@ -1427,7 +1995,14 @@ void Landscape3D::_ensure_collision_nodes() {
 }
 
 void Landscape3D::_on_layers_changed() {
-	_rebuild_textures();
+	const float previous_bound = displacement_bound;
+	_rebuild_layer_textures();
+	_rebuild_weight_texture();
+	if (displacement_bound != previous_bound && terrain_data.is_valid() && occluder_enabled && micro_detail_distance > 0.0f) {
+		// The occluders sit below the deepest displacement.
+		_rebuild_all_occluders();
+	}
+	lod_dirty = true;
 }
 
 void Landscape3D::_on_terrain_data_changed() {
@@ -1435,8 +2010,7 @@ void Landscape3D::_on_terrain_data_changed() {
 	// instead of through this node's own sculpt()/paint_layer()/set_hole()
 	// (which already know exactly which region to refresh, and refresh only
 	// that). This has no way to know what changed, so it rebuilds everything.
-	_rebuild_textures();
-	_rebuild_all_chunks();
+	_rebuild_terrain();
 	update_collision();
 	_emit_terrain_changed(_get_full_region());
 }
@@ -1453,13 +2027,26 @@ void Landscape3D::_connect_terrain_data_changed() {
 	}
 }
 
+Rect2i Landscape3D::_get_full_region() const {
+	if (terrain_data.is_null()) {
+		return Rect2i();
+	}
+	return Rect2i(0, 0, terrain_data->get_resolution(), terrain_data->get_resolution());
+}
+
+void Landscape3D::_emit_terrain_changed(const Rect2i &p_region) {
+	emit_signal(SNAME("terrain_changed"), p_region);
+}
+
 void Landscape3D::set_terrain_data(const Ref<TerrainData> &p_data) {
 	_disconnect_terrain_data_changed();
 	terrain_data = p_data;
 	_connect_terrain_data_changed();
 
-	_rebuild_textures();
-	_rebuild_all_chunks();
+	// A different terrain may have a different resolution: whatever was
+	// built for the previous one goes.
+	_clear_terrain();
+	_rebuild_terrain();
 	if (is_inside_tree()) {
 		update_collision();
 	}
@@ -1488,7 +2075,7 @@ void Landscape3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 		}
 	}
 
-	_rebuild_textures();
+	_on_layers_changed();
 	update_configuration_warnings();
 }
 
@@ -1496,18 +2083,93 @@ TypedArray<TerrainLayer> Landscape3D::get_layers() const {
 	return layers;
 }
 
-void Landscape3D::set_skirt_depth(float p_depth) {
-	skirt_depth = MAX(p_depth, 0.0f);
-	_rebuild_all_chunks();
+void Landscape3D::set_lod_pixel_error(float p_pixels) {
+	lod_pixel_error = MAX(p_pixels, 0.05f);
+	lod_dirty = true;
 }
 
-float Landscape3D::get_skirt_depth() const {
-	return skirt_depth;
+float Landscape3D::get_lod_pixel_error() const {
+	return lod_pixel_error;
 }
 
-void Landscape3D::set_lod_bias(float p_bias) {
-	lod_bias = MAX(p_bias, 0.001f);
-	_rebuild_all_chunks();
+void Landscape3D::set_lod_max_quad_pixels(float p_pixels) {
+	lod_max_quad_pixels = MAX(p_pixels, 1.0f);
+	lod_dirty = true;
+}
+
+float Landscape3D::get_lod_max_quad_pixels() const {
+	return lod_max_quad_pixels;
+}
+
+void Landscape3D::set_frustum_culling(bool p_enabled) {
+	frustum_culling = p_enabled;
+	lod_dirty = true;
+}
+
+bool Landscape3D::is_frustum_culling_enabled() const {
+	return frustum_culling;
+}
+
+void Landscape3D::set_gpu_lod_enabled(bool p_enabled) {
+	gpu_lod_enabled = p_enabled;
+	// The MultiMeshes are switched over on the next frame.
+	lod_dirty = true;
+}
+
+bool Landscape3D::is_gpu_lod_enabled() const {
+	return gpu_lod_enabled;
+}
+
+void Landscape3D::set_shadow_distance(float p_distance) {
+	shadow_distance = MAX(p_distance, 0.0f);
+	lod_dirty = true;
+}
+
+float Landscape3D::get_shadow_distance() const {
+	return shadow_distance;
+}
+
+void Landscape3D::set_micro_detail_levels(int p_levels) {
+	micro_detail_levels = CLAMP(p_levels, 0, LandscapeQuadtree::MAX_MICRO_LEVELS);
+	_update_micro_detail_params();
+}
+
+int Landscape3D::get_micro_detail_levels() const {
+	return micro_detail_levels;
+}
+
+void Landscape3D::set_micro_detail_distance(float p_distance) {
+	const bool was_displacing = micro_detail_distance > 0.0f;
+	micro_detail_distance = MAX(p_distance, 0.0f);
+	_update_micro_detail_params();
+	if ((micro_detail_distance > 0.0f) != was_displacing && terrain_data.is_valid() && occluder_enabled && displacement_bound > 0.0f) {
+		// The occluders sit below the deepest displacement, while there is any.
+		_rebuild_all_occluders();
+	}
+}
+
+float Landscape3D::get_micro_detail_distance() const {
+	return micro_detail_distance;
+}
+
+void Landscape3D::set_micro_detail_triangle_size(float p_pixels) {
+	micro_detail_triangle_size = MAX(p_pixels, 0.5f);
+	lod_dirty = true;
+}
+
+float Landscape3D::get_micro_detail_triangle_size() const {
+	return micro_detail_triangle_size;
+}
+
+void Landscape3D::set_debug_view(DebugView p_view) {
+	debug_view = p_view;
+	if (material.is_valid()) {
+		material->set_shader_parameter(SNAME("debug_view"), int(debug_view));
+	}
+}
+
+Landscape3D::DebugView Landscape3D::get_debug_view() const {
+	return debug_view;
 }
 
 void Landscape3D::set_occluder_enabled(bool p_enabled) {
@@ -1523,9 +2185,9 @@ bool Landscape3D::is_occluder_enabled() const {
 }
 
 void Landscape3D::set_occluder_detail(int p_detail) {
-	int detail = CLAMP(p_detail, 1, CHUNK_QUADS);
-	// Snap to a power of two, so the occluder grid lines up with the chunk's
-	// own vertices however it was set (the Inspector only offers those, but a
+	int detail = CLAMP(p_detail, 1, BLOCK_QUADS);
+	// Snap to a power of two, so the occluder grid lines up with the block's
+	// own samples however it was set (the Inspector only offers those, but a
 	// script can set anything).
 	int snapped = 1;
 	while (snapped * 2 <= detail) {
@@ -1542,15 +2204,10 @@ int Landscape3D::get_occluder_detail() const {
 	return occluder_detail;
 }
 
-float Landscape3D::get_lod_bias() const {
-	return lod_bias;
-}
-
 void Landscape3D::set_cast_shadow(GeometryInstance3D::ShadowCastingSetting p_setting) {
 	cast_shadow = p_setting;
-	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
-		_apply_render_settings_to_chunk(kv.value);
-	}
+	_update_draw_instances();
+	lod_dirty = true;
 }
 
 GeometryInstance3D::ShadowCastingSetting Landscape3D::get_cast_shadow() const {
@@ -1559,9 +2216,7 @@ GeometryInstance3D::ShadowCastingSetting Landscape3D::get_cast_shadow() const {
 
 void Landscape3D::set_gi_mode(GeometryInstance3D::GIMode p_mode) {
 	gi_mode = p_mode;
-	for (KeyValue<Vector2i, Chunk> &kv : chunks) {
-		_apply_render_settings_to_chunk(kv.value);
-	}
+	_update_draw_instances();
 }
 
 GeometryInstance3D::GIMode Landscape3D::get_gi_mode() const {
@@ -1592,25 +2247,16 @@ uint32_t Landscape3D::get_collision_mask() const {
 
 void Landscape3D::set_layer_texture_size_limit(int p_size) {
 	layer_texture_size_limit = CLAMP(p_size, 16, 8192);
-	_rebuild_textures();
+	_rebuild_layer_textures();
 }
 
 int Landscape3D::get_layer_texture_size_limit() const {
 	return layer_texture_size_limit;
 }
 
-void Landscape3D::set_debug_draw_chunks(bool p_enable) {
-	debug_draw_chunks = p_enable;
-	update_gizmos();
-}
-
-bool Landscape3D::is_debug_draw_chunks_enabled() const {
-	return debug_draw_chunks;
-}
-
 void Landscape3D::set_pom_enabled(bool p_enable) {
 	pom_enabled = p_enable;
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 bool Landscape3D::is_pom_enabled() const {
@@ -1619,7 +2265,7 @@ bool Landscape3D::is_pom_enabled() const {
 
 void Landscape3D::set_pom_min_layers(int p_layers) {
 	pom_min_layers = MAX(p_layers, 1);
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 int Landscape3D::get_pom_min_layers() const {
@@ -1628,7 +2274,7 @@ int Landscape3D::get_pom_min_layers() const {
 
 void Landscape3D::set_pom_max_layers(int p_layers) {
 	pom_max_layers = MAX(p_layers, 1);
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 int Landscape3D::get_pom_max_layers() const {
@@ -1637,7 +2283,7 @@ int Landscape3D::get_pom_max_layers() const {
 
 void Landscape3D::set_pom_flip_tangent(bool p_flip) {
 	pom_flip_tangent = p_flip;
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 bool Landscape3D::get_pom_flip_tangent() const {
@@ -1646,7 +2292,7 @@ bool Landscape3D::get_pom_flip_tangent() const {
 
 void Landscape3D::set_pom_flip_binormal(bool p_flip) {
 	pom_flip_binormal = p_flip;
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 bool Landscape3D::get_pom_flip_binormal() const {
@@ -1655,7 +2301,7 @@ bool Landscape3D::get_pom_flip_binormal() const {
 
 void Landscape3D::set_pom_self_shadow_enabled(bool p_enable) {
 	pom_self_shadow_enabled = p_enable;
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 bool Landscape3D::is_pom_self_shadow_enabled() const {
@@ -1664,7 +2310,7 @@ bool Landscape3D::is_pom_self_shadow_enabled() const {
 
 void Landscape3D::set_pom_shadow_steps(int p_steps) {
 	pom_shadow_steps = MAX(p_steps, 1);
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 int Landscape3D::get_pom_shadow_steps() const {
@@ -1673,7 +2319,7 @@ int Landscape3D::get_pom_shadow_steps() const {
 
 void Landscape3D::set_pom_shadow_strength(float p_strength) {
 	pom_shadow_strength = CLAMP(p_strength, 0.0f, 1.0f);
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 float Landscape3D::get_pom_shadow_strength() const {
@@ -1682,7 +2328,7 @@ float Landscape3D::get_pom_shadow_strength() const {
 
 void Landscape3D::set_pom_shadow_light_direction(const Vector3 &p_direction) {
 	pom_shadow_light_direction = p_direction;
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 Vector3 Landscape3D::get_pom_shadow_light_direction() const {
@@ -1691,7 +2337,7 @@ Vector3 Landscape3D::get_pom_shadow_light_direction() const {
 
 void Landscape3D::set_pom_fade_start(float p_distance) {
 	pom_fade_start = MAX(p_distance, 0.0f);
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 float Landscape3D::get_pom_fade_start() const {
@@ -1700,7 +2346,7 @@ float Landscape3D::get_pom_fade_start() const {
 
 void Landscape3D::set_pom_fade_end(float p_distance) {
 	pom_fade_end = MAX(p_distance, 0.0f);
-	_rebuild_textures();
+	_update_pom_params();
 }
 
 float Landscape3D::get_pom_fade_end() const {
@@ -1772,9 +2418,9 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 			SWAP(before, next);
 		}
 	}
-	auto sample_before = [&](int x, int z) -> float {
-		x = CLAMP(x, snapshot_region.position.x, snapshot_region.position.x + snapshot_w - 1);
-		z = CLAMP(z, snapshot_region.position.y, snapshot_region.position.y + snapshot_h - 1);
+	auto sample_before = [&](int p_x, int p_z) -> float {
+		const int x = CLAMP(p_x, snapshot_region.position.x, snapshot_region.position.x + snapshot_w - 1);
+		const int z = CLAMP(p_z, snapshot_region.position.y, snapshot_region.position.y + snapshot_h - 1);
 		return before[(z - snapshot_region.position.y) * snapshot_w + (x - snapshot_region.position.x)];
 	};
 
@@ -1816,7 +2462,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	_disconnect_terrain_data_changed();
 	terrain_data->set_height_region(region, heights);
 	_connect_terrain_data_changed();
-	_rebuild_chunks_in_region(region);
+	_refresh_region(region, true, false);
 	if (p_update_collision) {
 		update_collision();
 	}
@@ -1877,7 +2523,7 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 	}
 	_connect_terrain_data_changed();
 
-	_upload_weight_groups(layer_count);
+	_upload_weight_region(region, 0, layer_count);
 }
 
 void Landscape3D::set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision) {
@@ -1917,7 +2563,7 @@ void Landscape3D::set_hole(const Vector3 &p_local_position, float p_radius, bool
 	_disconnect_terrain_data_changed();
 	terrain_data->set_hole_region(region, holes);
 	_connect_terrain_data_changed();
-	_rebuild_chunks_in_region(region);
+	_refresh_region(region, false, true);
 	// p_update_collision is deliberately ignored: holes never affect the
 	// collision shape (see the class description), so rebuilding it here
 	// would only pay the cost of a full HeightMapShape3D rebuild for no
@@ -1934,7 +2580,7 @@ void Landscape3D::set_height_region(const Rect2i &p_region, const PackedFloat32A
 	_disconnect_terrain_data_changed();
 	terrain_data->set_height_region(p_region, p_heights);
 	_connect_terrain_data_changed();
-	_rebuild_chunks_in_region(p_region);
+	_refresh_region(p_region, true, false);
 	if (p_update_collision) {
 		update_collision();
 	}
@@ -1951,10 +2597,7 @@ void Landscape3D::set_layer_weight_region(const Rect2i &p_region, int p_layer_in
 	_disconnect_terrain_data_changed();
 	terrain_data->set_layer_weight_region(p_region, p_layer_index, p_weights);
 	_connect_terrain_data_changed();
-	if (weight_array.is_valid() && p_layer_index >= 0 && p_layer_index < TerrainData::MAX_LAYERS) {
-		const int group = p_layer_index / TerrainData::LAYERS_PER_WEIGHT_MAP;
-		weight_array->update_layer(terrain_data->get_weight_map_image(group), group);
-	}
+	_upload_weight_region(p_region, p_layer_index, 1);
 }
 
 PackedByteArray Landscape3D::get_hole_region(const Rect2i &p_region) const {
@@ -1967,7 +2610,7 @@ void Landscape3D::set_hole_region(const Rect2i &p_region, const PackedByteArray 
 	_disconnect_terrain_data_changed();
 	terrain_data->set_hole_region(p_region, p_holes);
 	_connect_terrain_data_changed();
-	_rebuild_chunks_in_region(p_region);
+	_refresh_region(p_region, false, true);
 }
 
 TypedArray<PackedFloat32Array> Landscape3D::get_height_regions(const TypedArray<Rect2i> &p_regions) const {
@@ -1993,7 +2636,7 @@ void Landscape3D::set_height_regions(const TypedArray<Rect2i> &p_regions, const 
 	}
 	_connect_terrain_data_changed();
 
-	_rebuild_chunks_in_regions(regions);
+	_refresh_regions(regions, true, false);
 	if (p_update_collision) {
 		update_collision();
 	}
@@ -2024,9 +2667,8 @@ void Landscape3D::set_layer_weight_regions(const TypedArray<Rect2i> &p_regions, 
 	}
 	_connect_terrain_data_changed();
 
-	if (weight_array.is_valid()) {
-		const int group = p_layer_index / TerrainData::LAYERS_PER_WEIGHT_MAP;
-		weight_array->update_layer(terrain_data->get_weight_map_image(group), group);
+	for (int i = 0; i < p_regions.size(); i++) {
+		_upload_weight_region(p_regions[i], p_layer_index, 1);
 	}
 }
 
@@ -2064,7 +2706,9 @@ void Landscape3D::paint_layer_regions(const TypedArray<Rect2i> &p_regions, int p
 	}
 	_connect_terrain_data_changed();
 
-	_upload_weight_groups(layer_count);
+	for (int r = 0; r < p_regions.size(); r++) {
+		_upload_weight_region(p_regions[r], 0, layer_count);
+	}
 }
 
 void Landscape3D::update_collision() {
@@ -2095,28 +2739,16 @@ Vector2i Landscape3D::local_position_to_index(const Vector3 &p_local_position) c
 	return Vector2i((int)Math::round(p_local_position.x / spacing), (int)Math::round(p_local_position.z / spacing));
 }
 
-Vector<AABB> Landscape3D::get_chunk_local_aabbs() const {
-	Vector<AABB> result;
-	for (const KeyValue<Vector2i, Chunk> &kv : chunks) {
-		if (kv.value.mesh.is_null()) {
-			continue;
-		}
-		AABB aabb = kv.value.mesh->get_aabb();
-		aabb.position += kv.value.local_origin;
-		result.push_back(aabb);
-	}
-	return result;
-}
-
 AABB Landscape3D::get_aabb() const {
-	if (terrain_data.is_null()) {
+	if (quadtree.is_empty()) {
 		return AABB();
 	}
-	const float size = terrain_data->get_size();
-	// Height bounds aren't tracked separately; pad generously above/below so
-	// the bound stays valid after sculpting without needing to be recomputed
-	// from the full heightmap on every edit.
-	return AABB(Vector3(0, -4096, 0), Vector3(size, 8192, size));
+	// The root's height range, widened by the most micro detail can add to it:
+	// Catmull-Rom interpolation overshooting the samples (under 30% of their
+	// range) and displacement.
+	const LandscapeQuadtree::NodeBounds root = quadtree.get_node_bounds(quadtree.get_top_level(), 0, 0, displacement_bound);
+	const float margin = MAX(float(root.max.y - root.min.y - 2.0f * displacement_bound) * 0.3f, 0.001f);
+	return AABB(root.min - Vector3(0, margin, 0), root.max - root.min + Vector3(0, 2.0f * margin, 0));
 }
 
 PackedStringArray Landscape3D::get_configuration_warnings() const {
@@ -2133,14 +2765,16 @@ PackedStringArray Landscape3D::get_configuration_warnings() const {
 }
 
 Landscape3D::Landscape3D() {
-	// Chunk instance transforms and the shader's terrain_origin uniform are
-	// kept in sync from NOTIFICATION_TRANSFORM_CHANGED, which Node3D only
-	// sends to nodes that opt in.
+	// Draw instance transforms and occluders are kept in sync from
+	// NOTIFICATION_TRANSFORM_CHANGED, which Node3D only sends to nodes that
+	// opt in.
 	set_notify_transform(true);
 }
 
 Landscape3D::~Landscape3D() {
-	_clear_chunks();
+	_disconnect_frame_hook();
+	_clear_occluders();
+	_free_draw_instances();
 	if (terrain_data.is_valid()) {
 		terrain_data->disconnect_changed(callable_mp(this, &Landscape3D::_on_terrain_data_changed));
 	}

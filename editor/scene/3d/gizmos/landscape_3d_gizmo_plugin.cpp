@@ -37,10 +37,6 @@
 Landscape3DGizmoPlugin::Landscape3DGizmoPlugin() {
 	const Color gizmo_color = EDITOR_GET("editors/3d_gizmos/gizmo_colors/landscape_3d");
 	create_material("bounds_material", gizmo_color);
-	// Distinct, unmissable color for the debug_draw_chunks wireframe, since it
-	// needs to stand out from both the bounds outline above and the terrain
-	// surface itself.
-	create_material("chunks_material", Color(1.0, 0.6, 0.0, 0.5));
 }
 
 bool Landscape3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
@@ -84,20 +80,4 @@ void Landscape3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	}
 	p_gizmo->add_lines(lines, material);
 	p_gizmo->add_collision_segments(lines);
-
-	if (terrain->is_debug_draw_chunks_enabled()) {
-		const Ref<Material> chunks_material = get_material("chunks_material", p_gizmo);
-		Vector<Vector3> chunk_lines;
-		for (const AABB &aabb : terrain->get_chunk_local_aabbs()) {
-			for (int i = 0; i < 12; i++) {
-				Vector3 a, b;
-				aabb.get_edge(i, a, b);
-				chunk_lines.push_back(a);
-				chunk_lines.push_back(b);
-			}
-		}
-		if (!chunk_lines.is_empty()) {
-			p_gizmo->add_lines(chunk_lines, chunks_material);
-		}
-	}
 }

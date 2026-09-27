@@ -494,7 +494,7 @@ public:
 	// Brings the mesh up to date now instead of at the end of the frame.
 	void update_mesh();
 
-	// The terrain regions (in heightmap samples, Landscape3D::CHUNK_QUADS on a
+	// The terrain regions (in heightmap samples, Landscape3D::BLOCK_QUADS on a
 	// side) apply_to_landscape() changes, e.g. to snapshot them for undo.
 	TypedArray<Rect2i> get_landscape_footprint() const;
 	// See GroundCoverage. False, with nothing filled in, when the spline covers

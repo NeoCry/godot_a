@@ -76,6 +76,9 @@ void TerrainLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_height_max", "height_max"), &TerrainLayer::set_height_max);
 	ClassDB::bind_method(D_METHOD("get_height_max"), &TerrainLayer::get_height_max);
 
+	ClassDB::bind_method(D_METHOD("set_displacement", "displacement"), &TerrainLayer::set_displacement);
+	ClassDB::bind_method(D_METHOD("get_displacement"), &TerrainLayer::get_displacement);
+
 	ClassDB::bind_method(D_METHOD("set_pom_enabled", "enable"), &TerrainLayer::set_pom_enabled);
 	ClassDB::bind_method(D_METHOD("is_pom_enabled"), &TerrainLayer::is_pom_enabled);
 
@@ -94,12 +97,14 @@ void TerrainLayer::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "roughness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_roughness", "get_roughness");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "specular", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_specular", "get_specular");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ao_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ao_strength", "get_ao_strength");
-	ADD_GROUP("Parallax Occlusion Mapping", "pom_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_enabled"), "set_pom_enabled", "is_pom_enabled");
+	ADD_GROUP("Height", "");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "height_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), "set_height_texture", "get_height_texture");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heightmap_scale", PROPERTY_HINT_RANGE, "-16,16,0.001"), "set_heightmap_scale", "get_heightmap_scale");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "height_min", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_height_min", "get_height_min");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "height_max", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_height_max", "get_height_max");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "displacement", PROPERTY_HINT_RANGE, "-4,4,0.001,or_less,or_greater,suffix:m"), "set_displacement", "get_displacement");
+	ADD_GROUP("Parallax Occlusion Mapping", "pom_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_enabled"), "set_pom_enabled", "is_pom_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "heightmap_scale", PROPERTY_HINT_RANGE, "-16,16,0.001"), "set_heightmap_scale", "get_heightmap_scale");
 	ADD_GROUP("Triplanar", "triplanar_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "triplanar_enabled"), "set_triplanar_enabled", "is_triplanar_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "triplanar_sharpness", PROPERTY_HINT_RANGE, "0,150,0.01"), "set_triplanar_sharpness", "get_triplanar_sharpness");
@@ -231,6 +236,15 @@ void TerrainLayer::set_height_max(float p_max) {
 
 float TerrainLayer::get_height_max() const {
 	return height_max;
+}
+
+void TerrainLayer::set_displacement(float p_displacement) {
+	displacement = p_displacement;
+	emit_changed();
+}
+
+float TerrainLayer::get_displacement() const {
+	return displacement;
 }
 
 void TerrainLayer::set_pom_enabled(bool p_enable) {
