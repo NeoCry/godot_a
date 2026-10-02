@@ -701,19 +701,6 @@ Vector2 TerrainData::get_height_range() const {
 	return Vector2(min_height, max_height);
 }
 
-Vector<real_t> TerrainData::get_collision_heights() const {
-	Vector<real_t> result;
-	result.resize(resolution * resolution);
-	real_t *w = result.ptrw();
-	int i = 0;
-	for (int z = 0; z < resolution; z++) {
-		for (int x = 0; x < resolution; x++) {
-			w[i++] = get_height(x, z);
-		}
-	}
-	return result;
-}
-
 TerrainData::TerrainData() {
 	_init_images();
 }

@@ -197,11 +197,6 @@ public:
 	Ref<Image> get_weight_map_image(int p_group) const;
 	Ref<Image> get_hole_map_image() const;
 
-	// A HeightMapShape3D-compatible column-major sample array (see
-	// HeightMapShape3D::set_map_data): same coordinate order, one real_t per
-	// sample, no format conversion needed by the caller.
-	Vector<real_t> get_collision_heights() const;
-
 	// The lowest and highest sample in the whole heightmap, as (min, max).
 	// Scans every sample, so it is meant for one-off queries (e.g. fitting a
 	// bounding volume to the sculpted terrain) rather than per-frame use;

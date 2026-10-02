@@ -1120,9 +1120,9 @@ void Landscape3D::_allocate_multimeshes(bool p_indirect) {
 		}
 		multimeshes[i] = rs->multimesh_create();
 		if (p_indirect) {
-			rs->multimesh_allocate_data(multimeshes[i], LandscapeGPUQuadtree::CAPACITY, RSE::MULTIMESH_TRANSFORM_3D, true, true, true);
+			rs->multimesh_allocate_data(multimeshes[i], gpu_quadtree.get_capacity(), RSE::MULTIMESH_TRANSFORM_3D, true, true, true);
 		}
-		multimesh_capacity[i] = p_indirect ? int(LandscapeGPUQuadtree::CAPACITY) : 0;
+		multimesh_capacity[i] = p_indirect ? int(gpu_quadtree.get_capacity()) : 0;
 		rs->multimesh_set_mesh(multimeshes[i], patch_mesh->get_rid());
 		if (draw_instances[i].is_valid()) {
 			rs->instance_set_base(draw_instances[i], multimeshes[i]);
@@ -1260,6 +1260,11 @@ void Landscape3D::_on_frame_pre_draw() {
 		if (gpu) {
 			gpu_quadtree.set_nodes(quadtree);
 		}
+	} else if (gpu && gpu_quadtree.get_wanted_capacity() > gpu_quadtree.get_capacity()) {
+		// A selection did not fit: until the MultiMeshes are this large, the
+		// GPU makes do with a coarser one.
+		gpu_quadtree.set_capacity(gpu_quadtree.get_wanted_capacity());
+		_allocate_multimeshes(true);
 	}
 
 	LandscapeQuadtree::SelectParams params;
@@ -1985,13 +1990,125 @@ void Landscape3D::_ensure_collision_nodes() {
 		return;
 	}
 	collision_body = memnew(StaticBody3D);
+	collision_body->set_collision_layer(collision_layer);
+	collision_body->set_collision_mask(collision_mask);
 	add_child(collision_body, false, INTERNAL_MODE_FRONT);
+}
 
-	collision_shape.instantiate();
+bool Landscape3D::_layout_collision_tiles() {
+	_ensure_collision_nodes();
 
-	collision_shape_node = memnew(CollisionShape3D);
-	collision_shape_node->set_shape(collision_shape);
-	collision_body->add_child(collision_shape_node, false, INTERNAL_MODE_FRONT);
+	const int quads = terrain_data->get_resolution() - 1;
+	const int tile_quads = MAX(MIN(COLLISION_TILE_QUADS, quads), 1);
+	const int per_side = (quads + tile_quads - 1) / tile_quads;
+	const bool new_layout = tile_quads != collision_tile_quads || per_side != collision_tiles_per_side;
+	if (new_layout) {
+		_clear_collision_tiles();
+		collision_tile_quads = tile_quads;
+		collision_tiles_per_side = per_side;
+		collision_tiles.resize(per_side * per_side);
+		for (int z = 0; z < per_side; z++) {
+			for (int x = 0; x < per_side; x++) {
+				CollisionTile &tile = collision_tiles[z * per_side + x];
+				// The last tile along each axis is moved back to end on the
+				// terrain's edge, overlapping the one before it, rather than
+				// cut short: Jolt Physics only builds a height field from a
+				// square heightmap, and a far slower triangle mesh otherwise.
+				tile.origin = Vector2i(MIN(x * tile_quads, quads - tile_quads), MIN(z * tile_quads, quads - tile_quads));
+				tile.shape.instantiate();
+				tile.shape->set_map_width(tile_quads + 1);
+				tile.shape->set_map_depth(tile_quads + 1);
+				tile.node = memnew(CollisionShape3D);
+				tile.node->set_shape(tile.shape);
+				collision_body->add_child(tile.node, false, INTERNAL_MODE_FRONT);
+			}
+		}
+	}
+
+	// HeightMapShape3D is centered on its node, one unit per quad.
+	const float spacing = terrain_data->get_vertex_spacing();
+	const float half = float(tile_quads) * 0.5f;
+	for (CollisionTile &tile : collision_tiles) {
+		tile.node->set_position(Vector3((float(tile.origin.x) + half) * spacing, 0, (float(tile.origin.y) + half) * spacing));
+		tile.node->set_scale(Vector3(spacing, 1.0f, spacing));
+	}
+	return new_layout;
+}
+
+void Landscape3D::_clear_collision_tiles() {
+	for (CollisionTile &tile : collision_tiles) {
+		if (tile.node != nullptr) {
+			tile.node->get_parent()->remove_child(tile.node);
+			memdelete(tile.node);
+		}
+	}
+	collision_tiles.clear();
+	collision_tile_quads = 0;
+	collision_tiles_per_side = 0;
+}
+
+void Landscape3D::_update_collision_tile(CollisionTile &p_tile, bool p_only_if_changed) {
+	const int resolution = terrain_data->get_resolution();
+	const int size = collision_tile_quads + 1;
+	const Ref<Image> heightmap = terrain_data->get_heightmap_image();
+	ERR_FAIL_COND(heightmap.is_null());
+	const float *heights = reinterpret_cast<const float *>(heightmap->ptr());
+
+	if (p_only_if_changed) {
+		// Comparing is far cheaper than having the physics engine rebuild a
+		// shape that would come out the same.
+		const Vector<real_t> current = p_tile.shape->get_map_data();
+		if (current.size() == size * size) {
+			const real_t *r = current.ptr();
+			bool same = true;
+			for (int z = 0; z < size && same; z++) {
+				const float *row = heights + (p_tile.origin.y + z) * resolution + p_tile.origin.x;
+				const real_t *shape_row = r + z * size;
+				for (int x = 0; x < size; x++) {
+					if (shape_row[x] != row[x]) {
+						same = false;
+						break;
+					}
+				}
+			}
+			if (same) {
+				return;
+			}
+		}
+	}
+
+	Vector<real_t> tile_heights;
+	tile_heights.resize(size * size);
+	real_t *w = tile_heights.ptrw();
+	for (int z = 0; z < size; z++) {
+		const float *row = heights + (p_tile.origin.y + z) * resolution + p_tile.origin.x;
+		for (int x = 0; x < size; x++) {
+			w[z * size + x] = row[x];
+		}
+	}
+	p_tile.shape->set_map_data(tile_heights);
+}
+
+void Landscape3D::_update_collision_regions(const Vector<Rect2i> &p_regions) {
+	if (terrain_data.is_null()) {
+		return;
+	}
+	if (_layout_collision_tiles()) {
+		for (CollisionTile &tile : collision_tiles) {
+			_update_collision_tile(tile, false);
+		}
+		return;
+	}
+	const Size2i tile_size(collision_tile_quads + 1, collision_tile_quads + 1);
+	for (CollisionTile &tile : collision_tiles) {
+		const Rect2i tile_samples(tile.origin, tile_size);
+		for (const Rect2i &region : p_regions) {
+			if (tile_samples.intersects(region)) {
+				_update_collision_tile(tile, false);
+				break;
+			}
+		}
+	}
 }
 
 void Landscape3D::_on_layers_changed() {
@@ -2464,7 +2581,7 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	_connect_terrain_data_changed();
 	_refresh_region(region, true, false);
 	if (p_update_collision) {
-		update_collision();
+		_update_collision_regions({ region });
 	}
 	_emit_terrain_changed(region);
 }
@@ -2565,9 +2682,7 @@ void Landscape3D::set_hole(const Vector3 &p_local_position, float p_radius, bool
 	_connect_terrain_data_changed();
 	_refresh_region(region, false, true);
 	// p_update_collision is deliberately ignored: holes never affect the
-	// collision shape (see the class description), so rebuilding it here
-	// would only pay the cost of a full HeightMapShape3D rebuild for no
-	// visible effect.
+	// collision shape (see the class description).
 }
 
 PackedFloat32Array Landscape3D::get_height_region(const Rect2i &p_region) const {
@@ -2582,7 +2697,7 @@ void Landscape3D::set_height_region(const Rect2i &p_region, const PackedFloat32A
 	_connect_terrain_data_changed();
 	_refresh_region(p_region, true, false);
 	if (p_update_collision) {
-		update_collision();
+		_update_collision_regions({ p_region });
 	}
 	_emit_terrain_changed(p_region);
 }
@@ -2638,7 +2753,7 @@ void Landscape3D::set_height_regions(const TypedArray<Rect2i> &p_regions, const 
 
 	_refresh_regions(regions, true, false);
 	if (p_update_collision) {
-		update_collision();
+		_update_collision_regions(regions);
 	}
 	for (const Rect2i &region : regions) {
 		_emit_terrain_changed(region);
@@ -2713,22 +2828,16 @@ void Landscape3D::paint_layer_regions(const TypedArray<Rect2i> &p_regions, int p
 
 void Landscape3D::update_collision() {
 	if (terrain_data.is_null()) {
+		_clear_collision_tiles();
 		return;
 	}
-	_ensure_collision_nodes();
-
-	const int res = terrain_data->get_resolution();
-	collision_shape->set_map_width(res);
-	collision_shape->set_map_depth(res);
-	collision_shape->set_map_data(terrain_data->get_collision_heights());
-
-	const float spacing = terrain_data->get_vertex_spacing();
-	const float half = (float)(res - 1) * 0.5f * spacing;
-	collision_shape_node->set_position(Vector3(half, 0, half));
-	collision_shape_node->set_scale(Vector3(spacing, 1.0f, spacing));
-
-	collision_body->set_collision_layer(collision_layer);
-	collision_body->set_collision_mask(collision_mask);
+	// Only the tiles whose heights differ from what their shapes hold are
+	// rebuilt, so that this stays cheap after an edit to a small part of a
+	// large terrain, whichever way that edit was made.
+	const bool new_layout = _layout_collision_tiles();
+	for (CollisionTile &tile : collision_tiles) {
+		_update_collision_tile(tile, !new_layout);
+	}
 }
 
 Vector2i Landscape3D::local_position_to_index(const Vector3 &p_local_position) const {

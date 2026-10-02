@@ -102,6 +102,12 @@ public:
 	// of this many quads a side.
 	static constexpr int BLOCK_QUADS = 32;
 
+	// Physics collides with the terrain through a grid of square
+	// HeightMapShape3D tiles this many quads a side, so that an edit only
+	// rebuilds the shapes under it: one shape for a whole 4097 x 4097
+	// heightmap takes the physics engine seconds to build.
+	static constexpr int COLLISION_TILE_QUADS = 256;
+
 private:
 	// Simplified stand-in geometry fed to the renderer's occlusion culling
 	// (see _rebuild_occluder_block), not drawn by itself.
@@ -130,7 +136,7 @@ private:
 	RID multimeshes[DRAW_MAX];
 	RID draw_instances[DRAW_MAX];
 	// What the MultiMeshes are currently allocated for: filled by the GPU
-	// (indirect, LandscapeGPUQuadtree::CAPACITY instances) or by the CPU
+	// (indirect, LandscapeGPUQuadtree::get_capacity() instances) or by the CPU
 	// (grown to whatever the selection needs).
 	bool multimeshes_indirect = false;
 	int multimesh_capacity[DRAW_MAX] = {};
@@ -213,9 +219,18 @@ private:
 	// the shared Texture2DArray (see _rebuild_layer_textures).
 	int layer_texture_size_limit = 2048;
 
+	struct CollisionTile {
+		CollisionShape3D *node = nullptr;
+		Ref<HeightMapShape3D> shape;
+		// The first sample it covers along X and Z.
+		Vector2i origin;
+	};
+
 	StaticBody3D *collision_body = nullptr;
-	CollisionShape3D *collision_shape_node = nullptr;
-	Ref<HeightMapShape3D> collision_shape;
+	// Row by row; collision_tile_quads + 1 samples a side each.
+	LocalVector<CollisionTile> collision_tiles;
+	int collision_tile_quads = 0;
+	int collision_tiles_per_side = 0;
 
 	// get_global_transform() errors when called outside the tree, but
 	// set_terrain_data()/set_layers() commonly run before that (scene
@@ -263,6 +278,10 @@ private:
 	void _update_occluder_transforms();
 
 	void _ensure_collision_nodes();
+	bool _layout_collision_tiles();
+	void _clear_collision_tiles();
+	void _update_collision_tile(CollisionTile &p_tile, bool p_only_if_changed);
+	void _update_collision_regions(const Vector<Rect2i> &p_regions);
 	void _on_layers_changed();
 	void _on_terrain_data_changed();
 

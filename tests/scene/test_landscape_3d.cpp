@@ -34,9 +34,12 @@ TEST_FORCE_LINK(test_landscape_3d)
 
 #include "core/templates/rid_owner.h"
 #include "scene/3d/landscape_3d.h"
+#include "scene/3d/physics/collision_shape_3d.h"
+#include "scene/3d/physics/static_body_3d.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#include "scene/resources/3d/height_map_shape_3d.h"
 #include "servers/rendering/renderer_scene_occlusion_cull.h"
 
 namespace TestLandscape3D {
@@ -206,6 +209,138 @@ TEST_CASE("[SceneTree][Landscape3D] Sculpting the terrain updates its occluders"
 	}
 	tester.draw();
 	CHECK(tester.is_occluded(foliage_cell_at(32, 56)));
+
+	memdelete(landscape);
+}
+
+// Every collision tile of the landscape, with the heights its shape holds
+// checked against the terrain's own. Returns how many samples of the terrain
+// no tile covers.
+static int check_collision_tiles(Landscape3D *p_landscape, Vector<const HeightMapShape3D *> &r_shapes) {
+	const Ref<TerrainData> data = p_landscape->get_terrain_data();
+	const int resolution = data->get_resolution();
+	const float spacing = data->get_vertex_spacing();
+	Vector<uint8_t> covered;
+	covered.resize(resolution * resolution);
+	covered.fill(0);
+	r_shapes.clear();
+
+	StaticBody3D *body = p_landscape->get_collision_body();
+	REQUIRE(body != nullptr);
+	for (int i = 0; i < body->get_child_count(true); i++) {
+		CollisionShape3D *node = Object::cast_to<CollisionShape3D>(body->get_child(i, true));
+		REQUIRE(node != nullptr);
+		const Ref<HeightMapShape3D> shape = node->get_shape();
+		REQUIRE(shape.is_valid());
+		r_shapes.push_back(shape.ptr());
+
+		// Square, so that Jolt Physics builds it as a height field.
+		const int size = shape->get_map_width();
+		CHECK(shape->get_map_depth() == size);
+		CHECK(node->get_scale().is_equal_approx(Vector3(spacing, 1, spacing)));
+		const Vector3 position = node->get_position() / spacing - Vector3(size - 1, 0, size - 1) * 0.5;
+		const Vector2i origin(Math::round(position.x), Math::round(position.z));
+		CHECK(origin.x >= 0);
+		CHECK(origin.y >= 0);
+		CHECK(origin.x + size <= resolution);
+		CHECK(origin.y + size <= resolution);
+
+		const Vector<real_t> heights = shape->get_map_data();
+		int mismatches = 0;
+		for (int z = 0; z < size; z++) {
+			for (int x = 0; x < size; x++) {
+				const int sx = origin.x + x;
+				const int sz = origin.y + z;
+				if (sx >= resolution || sz >= resolution) {
+					continue;
+				}
+				covered.write[sz * resolution + sx] = 1;
+				if (heights[z * size + x] != data->get_height(sx, sz)) {
+					mismatches++;
+				}
+			}
+		}
+		CHECK_MESSAGE(mismatches == 0, vformat("Collision tile at %s holds %d stale heights.", origin, mismatches));
+	}
+
+	int uncovered = 0;
+	for (int i = 0; i < covered.size(); i++) {
+		uncovered += covered[i] == 0 ? 1 : 0;
+	}
+	return uncovered;
+}
+
+TEST_CASE("[SceneTree][Landscape3D] Collision is built in tiles that follow edits") {
+	// Not a multiple of the tile size, so that the last tiles overlap.
+	const int resolution = Landscape3D::COLLISION_TILE_QUADS * 2 + 90;
+	Ref<TerrainData> data;
+	data.instantiate();
+	data->set_resolution(resolution);
+	data->set_vertex_spacing(2.0f);
+	for (int z = 0; z < resolution; z++) {
+		for (int x = 0; x < resolution; x++) {
+			data->set_height(x, z, float((x * 7 + z * 13) % 50));
+		}
+	}
+
+	Landscape3D *landscape = memnew(Landscape3D);
+	landscape->set_terrain_data(data);
+	SceneTree::get_singleton()->get_root()->add_child(landscape);
+
+	Vector<const HeightMapShape3D *> shapes;
+	CHECK(check_collision_tiles(landscape, shapes) == 0);
+	CHECK(shapes.size() == 9);
+	for (const HeightMapShape3D *shape : shapes) {
+		CHECK(shape->get_map_width() == Landscape3D::COLLISION_TILE_QUADS + 1);
+	}
+
+	SUBCASE("An edit only rebuilds the tiles under it") {
+		Vector<Vector<real_t>> before;
+		for (const HeightMapShape3D *shape : shapes) {
+			before.push_back(shape->get_map_data());
+		}
+
+		// Well inside the first tile.
+		landscape->sculpt(Vector3(100, 0, 100), 20.0f, 5.0f, Landscape3D::SCULPT_RAISE);
+		CHECK(check_collision_tiles(landscape, shapes) == 0);
+		int rebuilt = 0;
+		for (int i = 0; i < shapes.size(); i++) {
+			rebuilt += shapes[i]->get_map_data().ptr() != before[i].ptr() ? 1 : 0;
+		}
+		CHECK(rebuilt == 1);
+	}
+
+	SUBCASE("Edits that leave collision alone are picked up by update_collision()") {
+		// On a corner shared by all four tiles of the far corner, and on the
+		// overlap of the last ones.
+		const Vector3 corner = Vector3(Landscape3D::COLLISION_TILE_QUADS * 2, 0, Landscape3D::COLLISION_TILE_QUADS * 2) * 2.0f;
+		landscape->sculpt(corner, 30.0f, 5.0f, Landscape3D::SCULPT_RAISE, 1.0f, 0.0f, false);
+		landscape->sculpt(Vector3(resolution - 20, 0, resolution - 20) * 2.0f, 30.0f, 5.0f, Landscape3D::SCULPT_LOWER, 1.0f, 0.0f, false);
+		landscape->update_collision();
+		CHECK(check_collision_tiles(landscape, shapes) == 0);
+	}
+
+	SUBCASE("Batched region edits") {
+		TypedArray<Rect2i> regions;
+		TypedArray<PackedFloat32Array> heights;
+		for (int i = 0; i < 3; i++) {
+			const Rect2i region(i * 250 + 5, i * 250 + 5, 10, 10);
+			PackedFloat32Array values;
+			values.resize(100);
+			values.fill(-3.0f);
+			regions.push_back(region);
+			heights.push_back(values);
+		}
+		landscape->set_height_regions(regions, heights, true);
+		CHECK(check_collision_tiles(landscape, shapes) == 0);
+	}
+
+	SUBCASE("A new resolution lays the tiles out again") {
+		data->set_resolution(65);
+		CHECK(check_collision_tiles(landscape, shapes) == 0);
+		CHECK(shapes.size() == 1);
+		CHECK(shapes[0]->get_map_width() == 65);
+	}
 
 	memdelete(landscape);
 }
