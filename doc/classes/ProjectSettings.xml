@@ -3033,7 +3033,7 @@
 		<member name="rendering/environment/xegtao/fadeout_to" type="float" setter="" getter="" default="300.0">
 			Distance at which the XeGTAO ambient occlusion effect is fully faded out. Use this to hide ambient occlusion from far away.
 		</member>
-		<member name="rendering/environment/xegtao/half_size" type="bool" setter="" getter="" keywords="resolution" default="false">
+		<member name="rendering/environment/xegtao/half_size" type="bool" setter="" getter="" default="false" keywords="resolution">
 			If [code]true[/code], XeGTAO ambient occlusion is computed at half resolution and then upscaled with a depth-aware filter before being applied to the scene. This is significantly faster, but loses small details. If [code]false[/code], it is computed at full resolution, which is what XeGTAO was designed and tuned for.
 		</member>
 		<member name="rendering/environment/xegtao/quality" type="int" setter="" getter="" default="2">
