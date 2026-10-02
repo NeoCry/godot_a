@@ -4308,7 +4308,7 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 #endif // MODULE_TEXTURE_STREAMING_ENABLED
 	{
 		RD::Uniform u;
-		u.binding = 41;
+		u.binding = 42;
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 		u.append_id(sky.atmosphere.get_aerial_perspective_volume());
 		uniforms.push_back(u);

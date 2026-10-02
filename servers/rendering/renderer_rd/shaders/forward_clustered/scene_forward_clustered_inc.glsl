@@ -508,8 +508,9 @@ layout(set = 1, binding = 40) uniform texture2D hmao_buffer;
 layout(set = 1, binding = 39) uniform texture2D directional_shadow_cache_atlas;
 
 // The atmosphere's luminance and transmittance through the view frustum (see
-// AtmosphereRD), for everything seen through the air.
-layout(set = 1, binding = 41) uniform texture3D atmosphere_aerial_perspective_volume;
+// AtmosphereRD), for everything seen through the air. Binding 41 is SDFGI's
+// probe state, above.
+layout(set = 1, binding = 42) uniform texture3D atmosphere_aerial_perspective_volume;
 
 #endif
 
