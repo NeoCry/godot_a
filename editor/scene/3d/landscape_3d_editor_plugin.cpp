@@ -634,6 +634,11 @@ void Landscape3DEditorPlugin::_end_stroke() {
 		const DataKind kind = _get_mode_data_kind();
 		EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
 		ur->create_action(_get_mode_action_name());
+		// Heights go through one batched call each way, which refreshes the
+		// collision tiles under the whole stroke once, not once per block.
+		TypedArray<Rect2i> height_regions;
+		TypedArray<PackedFloat32Array> heights_before;
+		TypedArray<PackedFloat32Array> heights_after;
 		for (KeyValue<Vector2i, TouchedChunkRegion> &kv : touched_regions) {
 			const TouchedChunkRegion &snap = kv.value;
 			switch (kind) {
@@ -651,11 +656,15 @@ void Landscape3DEditorPlugin::_end_stroke() {
 					ur->add_undo_method(terrain, "set_hole_region", snap.region, snap.before_holes);
 				} break;
 				case DataKind::HEIGHT: {
-					const PackedFloat32Array after = terrain->get_height_region(snap.region);
-					ur->add_do_method(terrain, "set_height_region", snap.region, after, true);
-					ur->add_undo_method(terrain, "set_height_region", snap.region, snap.before_heights, true);
+					height_regions.push_back(snap.region);
+					heights_before.push_back(snap.before_heights);
+					heights_after.push_back(terrain->get_height_region(snap.region));
 				} break;
 			}
+		}
+		if (!height_regions.is_empty()) {
+			ur->add_do_method(terrain, "set_height_regions", height_regions, heights_after, true);
+			ur->add_undo_method(terrain, "set_height_regions", height_regions, heights_before, true);
 		}
 		ur->commit_action(false);
 
@@ -671,6 +680,8 @@ void Landscape3DEditorPlugin::_end_stroke() {
 void Landscape3DEditorPlugin::_cancel_stroke() {
 	if (stroke_active && terrain != nullptr) {
 		const DataKind kind = _get_mode_data_kind();
+		TypedArray<Rect2i> height_regions;
+		TypedArray<PackedFloat32Array> heights_before;
 		for (KeyValue<Vector2i, TouchedChunkRegion> &kv : touched_regions) {
 			switch (kind) {
 				case DataKind::WEIGHTS: {
@@ -682,9 +693,13 @@ void Landscape3DEditorPlugin::_cancel_stroke() {
 					terrain->set_hole_region(kv.value.region, kv.value.before_holes);
 				} break;
 				case DataKind::HEIGHT: {
-					terrain->set_height_region(kv.value.region, kv.value.before_heights, true);
+					height_regions.push_back(kv.value.region);
+					heights_before.push_back(kv.value.before_heights);
 				} break;
 			}
+		}
+		if (!height_regions.is_empty()) {
+			terrain->set_height_regions(height_regions, heights_before, true);
 		}
 	}
 	stroke_active = false;
