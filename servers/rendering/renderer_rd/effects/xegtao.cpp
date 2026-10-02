@@ -380,7 +380,11 @@ void XeGTAO::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers 
 
 	/* PASS 4: resolve to full resolution, apply intensity and distance fade out */
 	{
-		RD::get_singleton()->draw_command_begin_label(use_half_size ? "Upscale" : "Apply");
+		if (use_half_size) {
+			RD::get_singleton()->draw_command_begin_label("Upscale");
+		} else {
+			RD::get_singleton()->draw_command_begin_label("Apply");
+		}
 
 		memset(&apply.push_constant, 0, sizeof(ApplyPushConstant));
 		apply.push_constant.full_size[0] = full_size.x;
