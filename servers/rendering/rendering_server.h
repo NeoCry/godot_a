@@ -688,18 +688,14 @@ public:
 
 	virtual void environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) = 0;
 
-	virtual void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) = 0;
+	virtual void environment_set_xegtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_falloff_range, float p_sample_distribution_power, float p_thin_occluder_compensation, bool p_bent_normals, float p_light_affect, float p_ao_channel_affect) = 0;
 
-	virtual void environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
+	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
 	virtual void environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights) = 0;
 	virtual void environment_set_atmosphere_rayleigh(RID p_env, const Color &p_scattering, float p_scattering_scale, float p_exponential_distribution) = 0;
 	virtual void environment_set_atmosphere_mie(RID p_env, const Color &p_scattering, float p_scattering_scale, const Color &p_absorption, float p_absorption_scale, float p_anisotropy, float p_exponential_distribution) = 0;
 	virtual void environment_set_atmosphere_ozone(RID p_env, const Color &p_absorption, float p_absorption_scale, float p_tip_altitude, float p_width) = 0;
-
-	virtual void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) = 0;
-
-	virtual void environment_set_hmao_quality(RSE::EnvironmentHMAOQuality p_quality, bool p_half_size) = 0;
 
 	virtual void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness) = 0;
 
@@ -1174,9 +1170,7 @@ VARIANT_ENUM_CAST_EXT(RSE::EnvironmentGlowBlendMode, RenderingServer::Environmen
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentFogMode, RenderingServer::EnvironmentFogMode);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentToneMapper, RenderingServer::EnvironmentToneMapper);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSSRRoughnessQuality, RenderingServer::EnvironmentSSRRoughnessQuality);
-VARIANT_ENUM_CAST_EXT(RSE::EnvironmentGTAOQuality, RenderingServer::EnvironmentGTAOQuality);
-VARIANT_ENUM_CAST_EXT(RSE::EnvironmentHMAOQuality, RenderingServer::EnvironmentHMAOQuality);
-VARIANT_ENUM_CAST_EXT(RSE::EnvironmentHMAOResolution, RenderingServer::EnvironmentHMAOResolution);
+VARIANT_ENUM_CAST_EXT(RSE::EnvironmentXeGTAOQuality, RenderingServer::EnvironmentXeGTAOQuality);
 VARIANT_ENUM_CAST_EXT(RSE::ScreenSpaceContactShadowsLength, RenderingServer::ScreenSpaceContactShadowsLength);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSSILQuality, RenderingServer::EnvironmentSSILQuality);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSDFGIFramesToConverge, RenderingServer::EnvironmentSDFGIFramesToConverge);

@@ -448,8 +448,8 @@ void SSEffects::downsample_depth(Ref<RenderSceneBuffersRD> p_render_buffers, uin
 		p_render_buffers->create_texture(RB_SCOPE_SSDS, RB_LINEAR_DEPTH, RD::DATA_FORMAT_R16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, size, view_count * 4, 5);
 	}
 
-	// Downsample and deinterleave the depth buffer for SSIL. GTAO has its own dedicated downsampler
-	// (effects/gtao.cpp) so this one no longer needs to reconcile two independently-configured consumers;
+	// Downsample and deinterleave the depth buffer for SSIL. XeGTAO has its own dedicated downsampler
+	// (effects/xegtao.cpp) so this one no longer needs to reconcile two independently-configured consumers;
 	// SS_EFFECTS_DOWNSAMPLE_FULL_MIPS (for when they disagreed on half_size) is consequently unreachable
 	// below, but is left in place rather than torn out of the shared downsample shader/pipeline table.
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();

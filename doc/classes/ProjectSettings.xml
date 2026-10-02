@@ -2981,24 +2981,6 @@
 		<member name="rendering/environment/glow/upscale_mode.mobile" type="int" setter="" getter="" default="0">
 			Lower-end override for [member rendering/environment/glow/upscale_mode] on mobile devices, due to performance concerns or driver support.
 		</member>
-		<member name="rendering/environment/gtao/fadeout_from" type="float" setter="" getter="" default="50.0">
-			Distance at which the ground-truth ambient occlusion effect starts to fade out. Use this to hide ambient occlusion from far away.
-		</member>
-		<member name="rendering/environment/gtao/fadeout_to" type="float" setter="" getter="" default="300.0">
-			Distance at which the ground-truth ambient occlusion effect is fully faded out. Use this to hide ambient occlusion from far away.
-		</member>
-		<member name="rendering/environment/gtao/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
-			If [code]true[/code], ground-truth ambient occlusion will be computed at half size and then upscaled before being added to the scene. This is significantly faster but may miss small details. If [code]false[/code], ground-truth ambient occlusion will be computed at full size.
-		</member>
-		<member name="rendering/environment/gtao/quality" type="int" setter="" getter="" default="2">
-			Sets the quality of the ground-truth ambient occlusion effect. Higher values search more directions and steps around each pixel and so will result in better quality, at the cost of performance.
-		</member>
-		<member name="rendering/environment/hmao/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
-			If [code]true[/code], height map based ambient occlusion is gathered at half size and then upscaled with a depth-aware filter before being applied to the scene. If [code]false[/code], it is gathered at full size, which is slower and rarely visible on an effect this smooth.
-		</member>
-		<member name="rendering/environment/hmao/quality" type="int" setter="" getter="" default="1">
-			Sets the quality of the height map based ambient occlusion effect. Higher values gather more directions and steps over the height map around each pixel, which resolves narrow occluders and shallow relief more faithfully, at the cost of performance.
-		</member>
 		<member name="rendering/environment/screen_space_reflection/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
 			If [code]true[/code], screen-space reflections will be rendered at half size and then upscaled before being added to the scene. This is faster but may look pixelated or cause flickering. If [code]false[/code], screen-space reflections will be rendered at full size.
 		</member>
@@ -3040,6 +3022,22 @@
 		</member>
 		<member name="rendering/environment/volumetric_fog/volume_size" type="int" setter="" getter="" default="64">
 			Base size used to determine size of froxel buffer in the camera X-axis and Y-axis. The final size is scaled by the aspect ratio of the screen, so actual values may differ from what is set. Set a larger size for more detailed fog, set a smaller size for better performance.
+		</member>
+		<member name="rendering/environment/xegtao/denoise_passes" type="int" setter="" getter="" default="2">
+			Number of edge-aware spatial denoising passes XeGTAO runs over its result: [code]0[/code] (Disabled), [code]1[/code] (Sharp), [code]2[/code] (Medium) or [code]3[/code] (Soft). More passes remove more noise but also more fine detail.
+			When temporal antialiasing ([member rendering/anti_aliasing/quality/use_taa]) or FSR 2 is used, XeGTAO also varies its noise pattern from frame to frame and lets the temporal accumulation average it out, in which case [code]1[/code] is usually enough.
+		</member>
+		<member name="rendering/environment/xegtao/fadeout_from" type="float" setter="" getter="" default="50.0">
+			Distance at which the XeGTAO ambient occlusion effect starts to fade out. Use this to hide ambient occlusion from far away.
+		</member>
+		<member name="rendering/environment/xegtao/fadeout_to" type="float" setter="" getter="" default="300.0">
+			Distance at which the XeGTAO ambient occlusion effect is fully faded out. Use this to hide ambient occlusion from far away.
+		</member>
+		<member name="rendering/environment/xegtao/half_size" type="bool" setter="" getter="" keywords="resolution" default="false">
+			If [code]true[/code], XeGTAO ambient occlusion is computed at half resolution and then upscaled with a depth-aware filter before being applied to the scene. This is significantly faster, but loses small details. If [code]false[/code], it is computed at full resolution, which is what XeGTAO was designed and tuned for.
+		</member>
+		<member name="rendering/environment/xegtao/quality" type="int" setter="" getter="" default="2">
+			Sets the quality of the XeGTAO ambient occlusion effect, as the number of directions (slices) searched around each pixel and steps taken on each side of every slice: [code]0[/code] (Low) searches 1 slice with 2 steps, [code]1[/code] (Medium) 2 slices with 2 steps, [code]2[/code] (High) 3 slices with 3 steps and [code]3[/code] (Ultra) 9 slices with 3 steps. Higher values result in less noise, at the cost of performance.
 		</member>
 		<member name="rendering/gl_compatibility/driver" type="String" setter="" getter="" default="&quot;opengl3&quot;">
 			Sets the driver to be used by the renderer when using the Compatibility renderer. Editing this property has no effect in the default configuration, as first-party platforms each have platform-specific overrides. Use those overrides to configure the driver for each platform.

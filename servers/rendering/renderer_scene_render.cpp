@@ -470,45 +470,51 @@ float RendererSceneRender::environment_get_ssr_depth_tolerance(RID p_env) const 
 	return environment_storage.environment_get_ssr_depth_tolerance(p_env);
 }
 
-// GTAO
+// XeGTAO
 
-void RendererSceneRender::environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) {
-	environment_storage.environment_set_gtao(p_env, p_enable, p_radius, p_intensity, p_power, p_horizon, p_sharpness, p_light_affect, p_ao_channel_affect);
+void RendererSceneRender::environment_set_xegtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_falloff_range, float p_sample_distribution_power, float p_thin_occluder_compensation, bool p_bent_normals, float p_light_affect, float p_ao_channel_affect) {
+	environment_storage.environment_set_xegtao(p_env, p_enable, p_radius, p_intensity, p_power, p_falloff_range, p_sample_distribution_power, p_thin_occluder_compensation, p_bent_normals, p_light_affect, p_ao_channel_affect);
 }
 
-bool RendererSceneRender::environment_get_gtao_enabled(RID p_env) const {
-	return environment_storage.environment_get_gtao_enabled(p_env);
+bool RendererSceneRender::environment_get_xegtao_enabled(RID p_env) const {
+	return environment_storage.environment_get_xegtao_enabled(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_radius(RID p_env) const {
-	return environment_storage.environment_get_gtao_radius(p_env);
+float RendererSceneRender::environment_get_xegtao_radius(RID p_env) const {
+	return environment_storage.environment_get_xegtao_radius(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_intensity(RID p_env) const {
-	return environment_storage.environment_get_gtao_intensity(p_env);
+float RendererSceneRender::environment_get_xegtao_intensity(RID p_env) const {
+	return environment_storage.environment_get_xegtao_intensity(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_power(RID p_env) const {
-	return environment_storage.environment_get_gtao_power(p_env);
+float RendererSceneRender::environment_get_xegtao_power(RID p_env) const {
+	return environment_storage.environment_get_xegtao_power(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_horizon(RID p_env) const {
-	return environment_storage.environment_get_gtao_horizon(p_env);
+float RendererSceneRender::environment_get_xegtao_falloff_range(RID p_env) const {
+	return environment_storage.environment_get_xegtao_falloff_range(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_sharpness(RID p_env) const {
-	return environment_storage.environment_get_gtao_sharpness(p_env);
+float RendererSceneRender::environment_get_xegtao_sample_distribution_power(RID p_env) const {
+	return environment_storage.environment_get_xegtao_sample_distribution_power(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_direct_light_affect(RID p_env) const {
-	return environment_storage.environment_get_gtao_direct_light_affect(p_env);
+float RendererSceneRender::environment_get_xegtao_thin_occluder_compensation(RID p_env) const {
+	return environment_storage.environment_get_xegtao_thin_occluder_compensation(p_env);
 }
 
-float RendererSceneRender::environment_get_gtao_ao_channel_affect(RID p_env) const {
-	return environment_storage.environment_get_gtao_ao_channel_affect(p_env);
+bool RendererSceneRender::environment_get_xegtao_bent_normals(RID p_env) const {
+	return environment_storage.environment_get_xegtao_bent_normals(p_env);
 }
 
-// HMAO (height map ambient occlusion)
+float RendererSceneRender::environment_get_xegtao_direct_light_affect(RID p_env) const {
+	return environment_storage.environment_get_xegtao_direct_light_affect(p_env);
+}
+
+float RendererSceneRender::environment_get_xegtao_ao_channel_affect(RID p_env) const {
+	return environment_storage.environment_get_xegtao_ao_channel_affect(p_env);
+}
 
 // Atmosphere
 
@@ -534,26 +540,6 @@ bool RendererSceneRender::environment_get_atmosphere_enabled(RID p_env) const {
 
 RendererEnvironmentStorage::AtmosphereParams RendererSceneRender::environment_get_atmosphere(RID p_env) const {
 	return environment_storage.environment_get_atmosphere(p_env);
-}
-
-void RendererSceneRender::environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) {
-	environment_storage.environment_set_hmao(p_env, p_enable, p_amount, p_range, p_resolution);
-}
-
-bool RendererSceneRender::environment_get_hmao_enabled(RID p_env) const {
-	return environment_storage.environment_get_hmao_enabled(p_env);
-}
-
-float RendererSceneRender::environment_get_hmao_amount(RID p_env) const {
-	return environment_storage.environment_get_hmao_amount(p_env);
-}
-
-float RendererSceneRender::environment_get_hmao_range(RID p_env) const {
-	return environment_storage.environment_get_hmao_range(p_env);
-}
-
-RSE::EnvironmentHMAOResolution RendererSceneRender::environment_get_hmao_resolution(RID p_env) const {
-	return environment_storage.environment_get_hmao_resolution(p_env);
 }
 
 // SSCS (screen space contact shadows)

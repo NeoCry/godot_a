@@ -90,13 +90,6 @@ public:
 		GLOW_BLEND_MODE_MIX,
 	};
 
-	enum HMAOResolution {
-		HMAO_RESOLUTION_256,
-		HMAO_RESOLUTION_512,
-		HMAO_RESOLUTION_1024,
-		HMAO_RESOLUTION_2048,
-	};
-
 	enum SSCSLength {
 		SSCS_LENGTH_SHORT,
 		SSCS_LENGTH_MEDIUM,
@@ -142,16 +135,18 @@ private:
 	float ssr_depth_tolerance = 0.5;
 	void _update_ssr();
 
-	// GTAO
-	bool gtao_enabled = false;
-	float gtao_radius = 1.0;
-	float gtao_intensity = 2.0;
-	float gtao_power = 1.5;
-	float gtao_horizon = 0.06;
-	float gtao_sharpness = 0.98;
-	float gtao_direct_light_affect = 0.0;
-	float gtao_ao_channel_affect = 0.0;
-	void _update_gtao();
+	// XeGTAO
+	bool xegtao_enabled = false;
+	float xegtao_radius = 0.5;
+	float xegtao_intensity = 1.0;
+	float xegtao_power = 2.2;
+	float xegtao_falloff_range = 0.615;
+	float xegtao_sample_distribution_power = 2.0;
+	float xegtao_thin_occluder_compensation = 0.0;
+	bool xegtao_bent_normals = true;
+	float xegtao_direct_light_affect = 0.0;
+	float xegtao_ao_channel_affect = 0.0;
+	void _update_xegtao();
 
 	// Atmosphere
 	bool atmosphere_enabled = false;
@@ -177,13 +172,6 @@ private:
 	float atmosphere_aerial_perspective_distance_scale = 1.0;
 	float atmosphere_aerial_perspective_start_depth = 0.1;
 	void _update_atmosphere();
-
-	// HMAO (height map ambient occlusion)
-	bool hmao_enabled = false;
-	float hmao_amount = 1.0;
-	float hmao_range = 500.0;
-	HMAOResolution hmao_resolution = HMAO_RESOLUTION_512;
-	void _update_hmao();
 
 	// SSCS (screen space shadows)
 	bool sscs_enabled = false;
@@ -342,23 +330,27 @@ public:
 	void set_ssr_depth_tolerance(float p_depth_tolerance);
 	float get_ssr_depth_tolerance() const;
 
-	// GTAO
-	void set_gtao_enabled(bool p_enabled);
-	bool is_gtao_enabled() const;
-	void set_gtao_radius(float p_radius);
-	float get_gtao_radius() const;
-	void set_gtao_intensity(float p_intensity);
-	float get_gtao_intensity() const;
-	void set_gtao_power(float p_power);
-	float get_gtao_power() const;
-	void set_gtao_horizon(float p_horizon);
-	float get_gtao_horizon() const;
-	void set_gtao_sharpness(float p_sharpness);
-	float get_gtao_sharpness() const;
-	void set_gtao_direct_light_affect(float p_direct_light_affect);
-	float get_gtao_direct_light_affect() const;
-	void set_gtao_ao_channel_affect(float p_ao_channel_affect);
-	float get_gtao_ao_channel_affect() const;
+	// XeGTAO
+	void set_xegtao_enabled(bool p_enabled);
+	bool is_xegtao_enabled() const;
+	void set_xegtao_radius(float p_radius);
+	float get_xegtao_radius() const;
+	void set_xegtao_intensity(float p_intensity);
+	float get_xegtao_intensity() const;
+	void set_xegtao_power(float p_power);
+	float get_xegtao_power() const;
+	void set_xegtao_falloff_range(float p_falloff_range);
+	float get_xegtao_falloff_range() const;
+	void set_xegtao_sample_distribution_power(float p_sample_distribution_power);
+	float get_xegtao_sample_distribution_power() const;
+	void set_xegtao_thin_occluder_compensation(float p_thin_occluder_compensation);
+	float get_xegtao_thin_occluder_compensation() const;
+	void set_xegtao_bent_normals(bool p_enabled);
+	bool is_xegtao_bent_normals_enabled() const;
+	void set_xegtao_direct_light_affect(float p_direct_light_affect);
+	float get_xegtao_direct_light_affect() const;
+	void set_xegtao_ao_channel_affect(float p_ao_channel_affect);
+	float get_xegtao_ao_channel_affect() const;
 
 	// Atmosphere
 	void set_atmosphere_enabled(bool p_enabled);
@@ -405,16 +397,6 @@ public:
 	float get_atmosphere_aerial_perspective_distance_scale() const;
 	void set_atmosphere_aerial_perspective_start_depth(float p_aerial_perspective_start_depth);
 	float get_atmosphere_aerial_perspective_start_depth() const;
-
-	// HMAO (height map ambient occlusion)
-	void set_hmao_enabled(bool p_enabled);
-	bool is_hmao_enabled() const;
-	void set_hmao_amount(float p_amount);
-	float get_hmao_amount() const;
-	void set_hmao_range(float p_range);
-	float get_hmao_range() const;
-	void set_hmao_resolution(HMAOResolution p_resolution);
-	HMAOResolution get_hmao_resolution() const;
 
 	// SSCS (screen space shadows)
 	void set_sscs_enabled(bool p_enabled);
@@ -574,4 +556,3 @@ VARIANT_ENUM_CAST(Environment::SDFGIYScale)
 VARIANT_ENUM_CAST(Environment::GlowBlendMode)
 VARIANT_ENUM_CAST(Environment::FogMode)
 VARIANT_ENUM_CAST(Environment::SSCSLength)
-VARIANT_ENUM_CAST(Environment::HMAOResolution)

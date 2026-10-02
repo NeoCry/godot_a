@@ -30,7 +30,7 @@
 
 #pragma once
 
-// Ambient occlusion (GTAO) lives in its own dedicated effects/gtao.h/.cpp, not here — see that file for why.
+// Ambient occlusion (XeGTAO) lives in its own dedicated effects/xegtao.h/.cpp, not here — see that file for why.
 
 #include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_contact_shadows.glsl.gen.h"
