@@ -695,12 +695,13 @@
 			Draws the scene luminance buffer (if available) in the upper left quadrant of the [Viewport].
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="DEBUG_DRAW_GTAO" value="12" enum="DebugDraw">
-			Draws the screen-space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.gtao_enabled] set in your [WorldEnvironment].
+		<constant name="DEBUG_DRAW_XEGTAO" value="12" enum="DebugDraw">
+			Draws the XeGTAO ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.xegtao_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="DEBUG_DRAW_HMAO" value="13" enum="DebugDraw">
-			Objects are displayed with only the height map based ambient occlusion buffer, the large scale occlusion gathered from a top-down height map of the world around the camera. Requires [member Environment.hmao_enabled] to have a visible effect.
+		<constant name="DEBUG_DRAW_XEGTAO_BENT_NORMALS" value="13" enum="DebugDraw">
+			Draws the view-space bent normals computed by XeGTAO instead of the scene, encoded the same way as [constant DEBUG_DRAW_NORMAL_BUFFER]. In order for this display mode to work, you must have [member Environment.xegtao_enabled] and [member Environment.xegtao_bent_normals] set in your [WorldEnvironment].
+			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="DEBUG_DRAW_SSIL" value="14" enum="DebugDraw">
 			Draws the screen-space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].

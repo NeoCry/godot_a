@@ -145,22 +145,25 @@ layout(r8ui, set = 0, binding = 19) uniform restrict readonly uimage2D vrs_buffe
 // Temporal history: the `_prev` textures hold what the previous frame wrote and are
 // sampled at reprojected coordinates; the images are this frame's half of the ping-pong and
 // are written at the current pixel. `depth` is the linear view-space depth each stored
-// sample was traced at, which is what rejects history across a disocclusion.
+// sample was traced at (in x), which is what rejects history across a disocclusion, and the
+// alpha of the ambient light (in y), for screen probes, whose ambient history keeps something
+// else in its own alpha (see main()).
 layout(set = 0, binding = 26) uniform texture2D gi_history_ambient_prev;
 layout(set = 0, binding = 27) uniform texture2D gi_history_reflection_prev;
 layout(set = 0, binding = 28) uniform texture2D gi_history_depth_prev;
 
 layout(rgba16f, set = 0, binding = 29) uniform restrict writeonly image2D gi_history_ambient;
 layout(rgba16f, set = 0, binding = 30) uniform restrict writeonly image2D gi_history_reflection;
-layout(r32f, set = 0, binding = 31) uniform restrict writeonly image2D gi_history_depth;
+layout(rg32f, set = 0, binding = 31) uniform restrict writeonly image2D gi_history_depth;
 
 // Screen probes (see MODE_SCREEN_PROBE_TRACE below), one texel per probe: xyz where it is
-// (camera-relative world space, like everything SDFGI works with here), w its distance from the
-// camera, or 0 for a tile with no probe this frame; and the normal of the surface it sits on.
+// (camera-relative world space, like everything SDFGI and VoxelGI work with here), w its distance
+// from the camera, or 0 for a tile with no probe this frame; and the normal of the surface it sits on.
 layout(rgba32f, set = 0, binding = 32) uniform restrict image2D screen_probe_position;
 layout(rgba16f, set = 0, binding = 33) uniform restrict image2D screen_probe_normal;
 // The light the probes gathered, as 9 spherical harmonics coefficients each, in a 3x3 block of
-// texels: as their rays found it, and filtered with the neighboring probes.
+// texels: as their rays found it, and filtered with the neighboring probes. The alpha channel holds
+// those of how much of the light the rays left to the environment (see MODE_SCREEN_PROBE_TRACE).
 layout(rgba16f, set = 0, binding = 34) uniform restrict image2D screen_probe_sh;
 layout(rgba16f, set = 0, binding = 35) uniform restrict image2D screen_probe_sh_filtered;
 // The previous frame's image, before tonemapping, which the probes' screen traces take the light
@@ -210,6 +213,15 @@ params;
 
 // The previous frame's image is there for the screen probes to trace rays against.
 #define SCREEN_PROBE_FLAG_SCREEN_TRACES 1
+// Probes go on what SDFGI covers (rendering/global_illumination/sdfgi/screen_probes) and trace its
+// distance field.
+#define SCREEN_PROBE_FLAG_SDFGI_PROBES 2
+// Probes go on what the VoxelGI instances of their pixel cover
+// (rendering/global_illumination/voxel_gi/screen_probes) and cone trace those.
+#define SCREEN_PROBE_FLAG_VOXEL_GI_PROBES 4
+// SDFGI is there, whether or not probes go on it: the rays of VoxelGI probes that leave their
+// instances take the light the SDFGI probes see from there on.
+#define SCREEN_PROBE_FLAG_SDFGI 8
 
 vec2 octahedron_wrap(vec2 v) {
 	vec2 signVal;
@@ -694,6 +706,13 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 // would hit, as light interpolated between probes up to a probe spacing away can, and it resolves
 // contact and corners to the distance field's voxel, or to the pixel on screen, rather than to the
 // probe grid.
+//
+// VoxelGI (rendering/global_illumination/voxel_gi/screen_probes) works the same way, with probes on
+// what the VoxelGI instances of their pixel cover: past the depth buffer, each ray is a cone traced
+// through those instances, as narrow as the solid angle the ray stands for, rather than the four to
+// six wide cones a pixel traces on its own. Where the cone leaves an instance with light left to
+// find, that light comes from the SDFGI probes when SDFGI is there too, or from the environment
+// (the sky, or the ambient color), as it does for the pixels, through the alpha of the ambient light.
 
 // How far the probes' rays are traced before the SDFGI probes take over, in probe spacings of the
 // cascade they start in. By then a ray is far enough from the surface it left for the probes
@@ -729,6 +748,10 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 // (plus a small absolute margin for the dark), before it is pulled in towards it.
 #define SCREEN_PROBE_HISTORY_RANGE 2.0
 #define SCREEN_PROBE_HISTORY_MARGIN 0.005
+// The narrowest cone (as the tangent of its half angle) a VoxelGI probe's ray is traced as. A ray
+// stands for a sixty-fourth of the hemisphere, about 0.18, or less where importance sampling sends more
+// of them, and a narrow cone stays on the finest mipmaps for most of its way, which is slow.
+#define SCREEN_PROBE_VOXEL_GI_MIN_TAN 0.1
 
 // What the SDFGI probe maps hold (see MODE_STORE in sdfgi_integrate.glsl) is 4 / PI times the light
 // it stands for. The screen probes take what they sample from them back to radiance, to add it up
@@ -942,11 +965,12 @@ ivec2 screen_probe_sh_texel(ivec2 p_texel, uint p_index) {
 	return p_texel * 3 + ivec2(p_index % 3, p_index / 3);
 }
 
-// The light a surface facing p_normal gets from what p_probe gathered (filtered with its neighbors).
-vec3 screen_probe_irradiance(ivec2 p_probe, vec3 p_normal) {
-	vec3 light = vec3(0.0);
+// The light a surface facing p_normal gets from what p_probe gathered (filtered with its neighbors),
+// and in alpha, how much of it is left to the environment.
+vec4 screen_probe_irradiance(ivec2 p_probe, vec3 p_normal) {
+	vec4 light = vec4(0.0);
 	for (uint i = 0; i < 9; i++) {
-		light += imageLoad(screen_probe_sh_filtered, screen_probe_sh_texel(p_probe, i)).rgb * sh_basis(i, p_normal);
+		light += imageLoad(screen_probe_sh_filtered, screen_probe_sh_texel(p_probe, i)) * sh_basis(i, p_normal);
 	}
 	return light;
 }
@@ -964,7 +988,7 @@ float screen_probe_fit(vec3 p_probe_pos, vec3 p_probe_normal, vec3 p_pos, vec3 p
 // Adds how well the probe at p_probe fits the pixel whose camera-relative position and normal these
 // are, times p_weight, to r_weight, and the light it gathered for the pixel, weighted likewise, to
 // r_light (when p_light).
-void screen_probe_gather_probe(ivec2 p_probe, float p_weight, vec3 p_vertex, vec3 p_normal, float p_tolerance, bool p_light, inout vec3 r_light, inout float r_weight) {
+void screen_probe_gather_probe(ivec2 p_probe, float p_weight, vec3 p_vertex, vec3 p_normal, float p_tolerance, bool p_light, inout vec4 r_light, inout float r_weight) {
 	vec4 probe_position = imageLoad(screen_probe_position, p_probe);
 	if (probe_position.w <= 0.0) {
 		return;
@@ -988,7 +1012,7 @@ void screen_probe_gather_probe(ivec2 p_probe, float p_weight, vec3 p_vertex, vec
 // around the pixel, and so neither have the levels after it: they only put probes in the tiles of
 // the level before that have one, and the tiles a pixel looks at on one level lie within those it
 // looks at on the level before.
-bool screen_probe_gather_level(uint p_level, ivec2 p_pos, vec3 p_vertex, vec3 p_normal, float p_tolerance, bool p_light, inout vec3 r_light, inout float r_weight) {
+bool screen_probe_gather_level(uint p_level, ivec2 p_pos, vec3 p_vertex, vec3 p_normal, float p_tolerance, bool p_light, inout vec4 r_light, inout float r_weight) {
 	if (p_level == 0) {
 		vec2 lattice = vec2(p_pos - params.screen_probe_offset) / float(SCREEN_PROBE_TILE);
 		ivec2 base = ivec2(floor(lattice));
@@ -1034,11 +1058,12 @@ bool screen_probe_gather_level(uint p_level, ivec2 p_pos, vec3 p_vertex, vec3 p_
 }
 
 // Interpolates the screen probes around the pixel at p_pos (in screen pixels), whose camera-relative
-// position, normal and distance from the camera these are, into r_light. Returns how much of it to
-// use: 1 where the probes fit the pixel well enough, down to 0 where none of them does.
-float screen_probe_gather(ivec2 p_pos, vec3 p_vertex, vec3 p_normal, float p_depth, out vec3 r_light) {
+// position, normal and distance from the camera these are, into r_light (rgb), with how much of the
+// light they left to the environment (alpha). Returns how much of it to use: 1 where the probes fit
+// the pixel well enough, down to 0 where none of them does.
+float screen_probe_gather(ivec2 p_pos, vec3 p_vertex, vec3 p_normal, float p_depth, out vec4 r_light) {
 	float tolerance = p_depth * SCREEN_PROBE_PLANE_TOLERANCE;
-	vec3 light = vec3(0.0);
+	vec4 light = vec4(0.0);
 	float weight_sum = 0.0;
 	for (uint level = 0; level <= SCREEN_PROBE_ADAPTIVE_LEVELS; level++) {
 		if (!screen_probe_gather_level(level, p_pos, p_vertex, p_normal, tolerance, true, light, weight_sum)) {
@@ -1047,7 +1072,7 @@ float screen_probe_gather(ivec2 p_pos, vec3 p_vertex, vec3 p_normal, float p_dep
 	}
 
 	// Spherical harmonics this coarse ring below zero opposite bright light.
-	r_light = weight_sum > 0.0 ? max(light / weight_sum, vec3(0.0)) * sdfgi.energy : vec3(0.0);
+	r_light = weight_sum > 0.0 ? vec4(max(light.rgb / weight_sum, vec3(0.0)), clamp(light.a / weight_sum, 0.0, 1.0)) : vec4(0.0);
 	return clamp(weight_sum / SCREEN_PROBE_MIN_WEIGHT, 0.0, 1.0);
 }
 
@@ -1328,6 +1353,107 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_blend += blend;
 }
 
+// The (up to) two VoxelGI instances the geometry drawn at p_pos (in screen pixels) takes its light
+// from, as the depth pre-pass wrote them: indices into voxel_gi_instances, 0xFF for none.
+uvec2 voxel_gi_indices(ivec2 p_pos) {
+#ifdef SAMPLE_VOXEL_GI_NEAREST
+	return texelFetch(voxel_gi_buffer, p_pos, 0).rg;
+#else
+	return texelFetch(usampler2D(voxel_gi_buffer, linear_sampler), p_pos, 0).rg;
+#endif
+}
+
+// How much of the light at p_vertex (camera-relative), on a surface facing p_normal, VoxelGI instance
+// p_index gives, as voxel_gi_compute() weighs it: 1 deep inside it, falling to 0 at its bounds.
+float voxel_gi_blend(uint p_index, vec3 p_vertex, vec3 p_normal) {
+	vec3 position = (voxel_gi_instances.data[p_index].xform * vec4(p_vertex, 1.0)).xyz;
+	vec3 normal = normalize((voxel_gi_instances.data[p_index].xform * vec4(p_normal, 0.0)).xyz);
+	position += normal * voxel_gi_instances.data[p_index].normal_bias;
+	if (any(lessThan(position, vec3(0.0))) || any(greaterThan(position, voxel_gi_instances.data[p_index].bounds))) {
+		return 0.0;
+	}
+	vec3 blendv = abs(position / voxel_gi_instances.data[p_index].bounds * 2.0 - 1.0);
+	return clamp(1.0 - max(blendv.x, max(blendv.y, blendv.z)), 0.0, 1.0);
+}
+
+// The VoxelGI instances a screen probe at p_vertex (camera-relative), on the geometry drawn at p_pixel
+// facing p_normal, takes its light from, and how much from each (see voxel_gi_blend()), 0 for none.
+vec2 screen_probe_voxel_gi(ivec2 p_pixel, vec3 p_vertex, vec3 p_normal, out uvec2 r_indices) {
+	r_indices = voxel_gi_indices(clamp(p_pixel, ivec2(0), scene_data.screen_size - 1));
+	vec2 blend = vec2(0.0);
+	for (uint i = 0; i < 2; i++) {
+		if (r_indices[i] < params.max_voxel_gi_instances) {
+			blend[i] = voxel_gi_blend(r_indices[i], p_vertex, p_normal);
+		}
+	}
+	return blend;
+}
+
+// The size of a cell of VoxelGI instance p_index, in world (camera-relative) units.
+float voxel_gi_cell_size(uint p_index) {
+	return 1.0 / length(voxel_gi_instances.data[p_index].xform[0].xyz);
+}
+
+// The light a screen probe's ray from p_vertex (camera-relative), on a surface facing p_normal, finds
+// going along p_dir (unit length) in VoxelGI instance p_index: a cone of p_tan_half_angle, as wide as
+// the solid angle the ray stands for, traced as voxel_gi_compute() traces its own. rgb is the light it
+// finds, premultiplied by how much of the cone that blocks (alpha), as for the pixels; all of it is
+// blocked where the instance does not blend with the environment (VoxelGIData.interior).
+vec4 voxel_gi_trace_ray(uint p_index, vec3 p_vertex, vec3 p_normal, vec3 p_dir, float p_tan_half_angle) {
+	vec4 light = vec4(0.0);
+	// Index the texture arrays with the loop counter, as process_gi() does (see screen_probe_march()).
+	for (uint i = 0; i < params.max_voxel_gi_instances; i++) {
+		if (i == p_index) {
+			vec3 position = (voxel_gi_instances.data[i].xform * vec4(p_vertex, 1.0)).xyz;
+			vec3 normal = normalize((voxel_gi_instances.data[i].xform * vec4(p_normal, 0.0)).xyz);
+			vec3 dir = normalize((voxel_gi_instances.data[i].xform * vec4(p_dir, 0.0)).xyz);
+			position += normal * voxel_gi_instances.data[i].normal_bias;
+			float max_distance = length(voxel_gi_instances.data[i].bounds);
+			vec3 cell_size = 1.0 / voxel_gi_instances.data[i].bounds;
+			light = voxel_cone_trace(voxel_gi_textures[i], i, voxel_gi_instances.data[i].anisotropic_strength, cell_size, position, dir, p_tan_half_angle, 1.0, max_distance, voxel_gi_instances.data[i].bias);
+			light.rgb *= voxel_gi_instances.data[i].dynamic_range * voxel_gi_instances.data[i].exposure_normalization;
+			if (!voxel_gi_instances.data[i].blend_ambient) {
+				light.a = 1.0;
+			}
+		}
+	}
+	return light;
+}
+
+// How much light VoxelGI instance p_index has coming from around p_dir at p_vertex (camera-relative),
+// on a surface facing p_normal, roughly: a wide cone, through the coarse mipmaps, as a guide for where
+// to send a screen probe's rays (see MODE_SCREEN_PROBE_TRACE).
+float voxel_gi_guide(uint p_index, vec3 p_vertex, vec3 p_normal, vec3 p_dir) {
+	vec4 light = vec4(0.0);
+	for (uint i = 0; i < params.max_voxel_gi_instances; i++) {
+		if (i == p_index) {
+			vec3 position = (voxel_gi_instances.data[i].xform * vec4(p_vertex, 1.0)).xyz;
+			vec3 normal = normalize((voxel_gi_instances.data[i].xform * vec4(p_normal, 0.0)).xyz);
+			vec3 dir = normalize((voxel_gi_instances.data[i].xform * vec4(p_dir, 0.0)).xyz);
+			position += normal * voxel_gi_instances.data[i].normal_bias;
+			float max_distance = length(voxel_gi_instances.data[i].bounds);
+			vec3 cell_size = 1.0 / voxel_gi_instances.data[i].bounds;
+			light = voxel_cone_trace_45_degrees(voxel_gi_textures[i], i, voxel_gi_instances.data[i].anisotropic_strength, cell_size, position, dir, max_distance, voxel_gi_instances.data[i].bias);
+		}
+	}
+	return dot(max(light.rgb, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Whether a screen probe may go at p_vertex (camera-relative), on the geometry drawn at p_pixel facing
+// p_normal: where SDFGI covers, if probes go on SDFGI, or a VoxelGI instance of the pixel, if they go
+// on VoxelGI.
+bool screen_probe_covered(ivec2 p_pixel, vec3 p_vertex, vec3 p_normal) {
+	if (bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_SDFGI_PROBES) && sdfgi_first_cascade(p_vertex) < SDFGI_MAX_CASCADES) {
+		return true;
+	}
+	if (bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_VOXEL_GI_PROBES)) {
+		uvec2 indices;
+		vec2 blend = screen_probe_voxel_gi(p_pixel, p_vertex, p_normal, indices);
+		return blend.x + blend.y > 0.0;
+	}
+	return false;
+}
+
 void process_gi(ivec2 pos, vec3 vertex, inout vec4 ambient_light, inout vec4 reflection_light) {
 	vec4 normal_roughness = fetch_normal_and_roughness(pos);
 
@@ -1352,11 +1478,7 @@ void process_gi(ivec2 pos, vec3 vertex, inout vec4 ambient_light, inout vec4 ref
 
 #ifdef USE_VOXEL_GI_INSTANCES
 		{
-#ifdef SAMPLE_VOXEL_GI_NEAREST
-			uvec2 voxel_gi_tex = texelFetch(voxel_gi_buffer, pos, 0).rg;
-#else
-			uvec2 voxel_gi_tex = texelFetch(usampler2D(voxel_gi_buffer, linear_sampler), pos, 0).rg;
-#endif
+			uvec2 voxel_gi_tex = voxel_gi_indices(pos);
 			roughness *= roughness;
 			//find arbitrary tangent and bitangent, then build a matrix
 			vec3 v0 = abs(normal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
@@ -1395,8 +1517,8 @@ void process_gi(ivec2 pos, vec3 vertex, inout vec4 ambient_light, inout vec4 ref
 // Where the uniform probes go: one workgroup per tile, whose invocations look at 64 of its pixels
 // between them, spread over all of it.
 
-// xyz where each is (camera-relative), w its distance from the camera, 0 where nothing SDFGI covers
-// was drawn.
+// xyz where each is (camera-relative), w its distance from the camera, 0 where nothing a probe may go
+// on (see screen_probe_covered()) was drawn.
 shared vec4 screen_probe_candidate_position[64];
 shared vec3 screen_probe_candidate_normal[64];
 
@@ -1427,9 +1549,10 @@ void main() {
 	if (all(lessThan(candidate, scene_data.screen_size)) && texelFetch(sampler2D(depth_buffer, linear_sampler), candidate, 0).r > 0.0) {
 		vec3 view_vertex = reconstruct_position(candidate);
 		vec3 vertex = mat3(scene_data.cam_transform) * view_vertex;
-		if (sdfgi_first_cascade(vertex) < SDFGI_MAX_CASCADES) {
+		vec3 normal = normalize(mat3(scene_data.cam_transform) * fetch_normal_and_roughness(candidate).xyz);
+		if (screen_probe_covered(candidate, vertex, normal)) {
 			candidate_position = vec4(vertex, -view_vertex.z);
-			candidate_normal = normalize(mat3(scene_data.cam_transform) * fetch_normal_and_roughness(candidate).xyz);
+			candidate_normal = normal;
 		}
 	}
 	screen_probe_candidate_position[index] = candidate_position;
@@ -1534,10 +1657,10 @@ void main() {
 	if (all(lessThan(pixel, scene_data.screen_size)) && texelFetch(sampler2D(depth_buffer, linear_sampler), pixel, 0).r > 0.0) {
 		vec3 view_vertex = reconstruct_position(pixel);
 		vec3 vertex = mat3(scene_data.cam_transform) * view_vertex;
-		if (sdfgi_first_cascade(vertex) < SDFGI_MAX_CASCADES) {
-			normal = normalize(mat3(scene_data.cam_transform) * fetch_normal_and_roughness(pixel).xyz);
+		normal = normalize(mat3(scene_data.cam_transform) * fetch_normal_and_roughness(pixel).xyz);
+		if (screen_probe_covered(pixel, vertex, normal)) {
 			float depth = -view_vertex.z;
-			vec3 light = vec3(0.0);
+			vec4 light = vec4(0.0);
 			float weight = 0.0;
 			for (uint i = 0; i < level && weight < SCREEN_PROBE_MIN_WEIGHT; i++) {
 				screen_probe_gather_level(i, pixel, vertex, normal, depth * SCREEN_PROBE_PLANE_TOLERANCE, false, light, weight);
@@ -1599,11 +1722,12 @@ void main() {
 // One workgroup per probe, one invocation per ray: of the uniform probes (screen_probe_pass 0, a
 // workgroup per texel, for them all), or of the adaptive ones (1, as many as there are).
 
-shared vec3 screen_probe_ray_light[64]; // Weighted by the importance sampling (see below).
+shared vec4 screen_probe_ray_light[64]; // Weighted by the importance sampling (see below).
 shared vec3 screen_probe_ray_dir[64];
 // Importance sampling: the light expected from each of the 8x8 cells of equal solid angle the
 // hemisphere is cut into (as the running sum of it, in cell order, once added up), from the radiance
-// map of the SDFGI probe at xyz of screen_probe_guide_probe (w 0 when there is none to go by).
+// map of the SDFGI probe at xyz of screen_probe_guide_probe (w 0 when there is none to go by), or
+// from the coarse mipmaps of the VoxelGI instance the probe is in.
 shared float screen_probe_guide[64];
 shared ivec4 screen_probe_guide_probe;
 
@@ -1629,15 +1753,31 @@ void main() {
 	}
 
 	vec4 position = imageLoad(screen_probe_position, texel);
-	// Placement only puts probes where SDFGI covers.
-	uint cascade = position.w > 0.0 ? sdfgi_first_cascade(position.xyz) : SDFGI_MAX_CASCADES;
-	if (cascade >= SDFGI_MAX_CASCADES) {
+	vec3 normal = imageLoad(screen_probe_normal, texel).xyz;
+
+	// What the probe takes its light from (placement only puts probes where one of these covers):
+	// the VoxelGI instances of its pixel, if it is in one, or else the SDFGI cascade it is in. Every
+	// invocation of the workgroup works on the same probe, so these are the same for all of them.
+	uvec2 probe_voxel_gi = uvec2(0xFF);
+	vec2 probe_blend = vec2(0.0);
+	if (position.w > 0.0 && bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_VOXEL_GI_PROBES)) {
+		ivec2 pixel = ivec2(round(screen_probe_project(position.xyz * mat3(scene_data.cam_transform))));
+		probe_blend = screen_probe_voxel_gi(pixel, position.xyz, normal, probe_voxel_gi);
+	}
+	float probe_blend_sum = probe_blend.x + probe_blend.y;
+	bool probe_on_voxel_gi = probe_blend_sum > 0.0;
+	// The instance that gives the probe the most light, which its screen traces and guide go by.
+	uint probe_voxel_gi_main = probe_blend.y > probe_blend.x ? probe_voxel_gi.y : probe_voxel_gi.x;
+
+	uint cascade = position.w > 0.0 && bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_SDFGI) ? sdfgi_first_cascade(position.xyz) : SDFGI_MAX_CASCADES;
+	bool probe_on_sdfgi = !probe_on_voxel_gi && bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_SDFGI_PROBES) && cascade < SDFGI_MAX_CASCADES;
+
+	if (!probe_on_voxel_gi && !probe_on_sdfgi) {
 		if (ray < 9) {
 			imageStore(screen_probe_sh, screen_probe_sh_texel(texel, ray), vec4(0.0));
 		}
 		return;
 	}
-	vec3 normal = imageLoad(screen_probe_normal, texel).xyz;
 	vec3 y_scale = vec3(1.0, sdfgi.y_mult, 1.0);
 	vec3 cascade_vertex = position.xyz * y_scale;
 
@@ -1650,34 +1790,38 @@ void main() {
 
 	// Importance sampling. Half the rays are stratified over the hemisphere as evenly as they can
 	// be, 8x4 cells of equal solid angle, each at a point in its cell that changes every frame. The
-	// other half go where the light is expected to come from, as the most visible of the SDFGI probes
-	// around sees it, times the cosine: each at a random point of a cell drawn in proportion to that,
-	// by stratified samples of the running sum. Rays the light turns out to come from somewhere else
+	// other half go where the light is expected to come from, times the cosine: as the most visible of
+	// the SDFGI probes around sees it, or as a wide cone through the coarse mipmaps of the VoxelGI
+	// instance sees it. Each goes to a random point of a cell drawn in proportion to that, by
+	// stratified samples of the running sum. Rays the light turns out to come from somewhere else
 	// cost noise, not correctness: every ray is weighted by the balance heuristic for the two ways it
 	// could have been drawn, which is unbiased, and never weighs more than twice an even ray, because
 	// the even half covers everywhere.
 	if (ray == 0) {
-		vec3 cascade_pos = clamp((cascade_vertex - sdfgi.cascades[cascade].position) * sdfgi.cascades[cascade].to_probe, vec3(0.0), sdfgi.cascade_probe_size - 0.001);
-		ivec3 base = ivec3(floor(cascade_pos));
-		float best_weight = 0.0;
-		ivec3 best = base;
-		for (uint j = 0; j < 8; j++) {
-			ivec3 probe_posi = base + ((ivec3(j) >> ivec3(0, 1, 2)) & ivec3(1, 1, 1));
-			vec3 trilinear = vec3(1.0) - abs(cascade_pos - vec3(probe_posi));
-			float weight = trilinear.x * trilinear.y * trilinear.z * texelFetch(sampler2DArray(sdfgi_probe_state, linear_sampler), ivec3(probe_posi.x + probe_posi.z * sdfgi.probe_axis_size, probe_posi.y, int(cascade)), 0).w;
-			if (sdfgi.use_occlusion && weight > 0.0) {
-				weight *= sdfgi_probe_occlusion(cascade, probe_posi, cascade_pos);
+		screen_probe_guide_probe = ivec4(0);
+		if (probe_on_sdfgi) {
+			vec3 cascade_pos = clamp((cascade_vertex - sdfgi.cascades[cascade].position) * sdfgi.cascades[cascade].to_probe, vec3(0.0), sdfgi.cascade_probe_size - 0.001);
+			ivec3 base = ivec3(floor(cascade_pos));
+			float best_weight = 0.0;
+			ivec3 best = base;
+			for (uint j = 0; j < 8; j++) {
+				ivec3 probe_posi = base + ((ivec3(j) >> ivec3(0, 1, 2)) & ivec3(1, 1, 1));
+				vec3 trilinear = vec3(1.0) - abs(cascade_pos - vec3(probe_posi));
+				float weight = trilinear.x * trilinear.y * trilinear.z * texelFetch(sampler2DArray(sdfgi_probe_state, linear_sampler), ivec3(probe_posi.x + probe_posi.z * sdfgi.probe_axis_size, probe_posi.y, int(cascade)), 0).w;
+				if (sdfgi.use_occlusion && weight > 0.0) {
+					weight *= sdfgi_probe_occlusion(cascade, probe_posi, cascade_pos);
+				}
+				if (weight > best_weight) {
+					best_weight = weight;
+					best = probe_posi;
+				}
 			}
-			if (weight > best_weight) {
-				best_weight = weight;
-				best = probe_posi;
-			}
+			// Its radiance map (see sdfgi_probe_radiance()).
+			ivec3 tex_pos = ivec3(best.xy, int(cascade + sdfgi.max_cascades));
+			tex_pos.x += best.z * sdfgi.probe_axis_size;
+			tex_pos.xy = tex_pos.xy * (SDFGI_OCT_SIZE + 2) + ivec2(1);
+			screen_probe_guide_probe = ivec4(tex_pos, best_weight > 0.0 ? 1 : 0);
 		}
-		// Its radiance map (see sdfgi_probe_radiance()).
-		ivec3 tex_pos = ivec3(best.xy, int(cascade + sdfgi.max_cascades));
-		tex_pos.x += best.z * sdfgi.probe_axis_size;
-		tex_pos.xy = tex_pos.xy * (SDFGI_OCT_SIZE + 2) + ivec2(1);
-		screen_probe_guide_probe = ivec4(tex_pos, best_weight > 0.0 ? 1 : 0);
 	}
 
 	memoryBarrierShared();
@@ -1686,7 +1830,10 @@ void main() {
 	{
 		vec2 cell_center = (vec2(ray % 8, ray / 8) + 0.5) / 8.0;
 		float guide = 1.0;
-		if (screen_probe_guide_probe.w != 0) {
+		if (probe_on_voxel_gi) {
+			vec3 dir = screen_probe_hemisphere_dir(cell_center, tangent, bitangent, normal);
+			guide = voxel_gi_guide(probe_voxel_gi_main, position.xyz, normal, dir) * cell_center.x;
+		} else if (screen_probe_guide_probe.w != 0) {
 			vec3 dir = normalize(screen_probe_hemisphere_dir(cell_center, tangent, bitangent, normal) * y_scale);
 			vec3 uvw = (vec3(screen_probe_guide_probe.xyz) + vec3(octahedron_encode(dir) * float(SDFGI_OCT_SIZE), 0.0)) * sdfgi.lightprobe_tex_pixel_size;
 			guide = dot(max(textureLod(sampler2DArray(lightprobe_texture, linear_sampler), uvw, 0.0).rgb, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722)) * cell_center.x;
@@ -1739,22 +1886,53 @@ void main() {
 	uint cell_index = min(uint(cell.x * 8.0), 7u) + min(uint(cell.y * 8.0), 7u) * 8u;
 	float cell_guide = screen_probe_guide[cell_index] - (cell_index > 0 ? screen_probe_guide[cell_index - 1] : 0.0);
 	// 1 over what 32 even rays and 32 drawn ones make of the density there: 32 / (2 PI) of the even
-	// ones, and as much again times 64 times the cell's share of the guide.
+	// ones, and as much again times 64 times the cell's share of the guide. That is also the solid
+	// angle the ray stands for.
 	float weight = (2.0 * M_PI / 32.0) / (1.0 + 64.0 * cell_guide / guide_total);
 
 	vec3 ray_dir = screen_probe_hemisphere_dir(cell, tangent, bitangent, normal);
-	float cell_size = 1.0 / sdfgi.cascades[cascade].to_cell;
+	float cell_size = probe_on_voxel_gi ? voxel_gi_cell_size(probe_voxel_gi_main) : 1.0 / sdfgi.cascades[cascade].to_cell;
 
-	vec3 light;
+	// Everything the rays find is scaled to what the pixels would get from the same GI on their own:
+	// VoxelGI's light as it is, and SDFGI's like its probe maps (see SDFGI_PROBE_MAP_SCALE), with its
+	// energy, so that switching the probes on does not change the brightness of a single bounce. In
+	// alpha, how much of the light the ray leaves to the environment (see the pass's main()).
+	float sdfgi_scale = SDFGI_PROBE_MAP_SCALE * sdfgi.energy;
+	vec4 light = vec4(0.0);
 	bool hit = false;
 	if (bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_SCREEN_TRACES)) {
 		vec3 view_vertex = position.xyz * mat3(scene_data.cam_transform);
 		vec3 screen_from = params.orthogonal ? view_vertex + vec3(0.0, 0.0, position.w * SCREEN_PROBE_SCREEN_BIAS) : view_vertex * (1.0 - SCREEN_PROBE_SCREEN_BIAS);
 		float screen_jitter = float(screen_probe_hash(seed + ray + 64u) & 0xFFFFu) / 65536.0;
-		hit = screen_probe_screen_trace(screen_from, ray_dir * mat3(scene_data.cam_transform), SCREEN_PROBE_SCREEN_TRACE_CELLS * cell_size, screen_jitter, light);
+		vec3 screen_light;
+		hit = screen_probe_screen_trace(screen_from, ray_dir * mat3(scene_data.cam_transform), SCREEN_PROBE_SCREEN_TRACE_CELLS * cell_size, screen_jitter, screen_light);
+		if (hit) {
+			light.rgb = screen_light * (probe_on_voxel_gi ? 1.0 : sdfgi_scale);
+		}
 	}
 
-	if (!hit) {
+	if (!hit && probe_on_voxel_gi) {
+		// A cone as wide as the solid angle the ray stands for, but never so narrow that it takes
+		// longer to trace than the light it finds is worth.
+		float cos_half_angle = 1.0 - weight / (2.0 * M_PI);
+		float tan_half_angle = max(sqrt(max(1.0 - cos_half_angle * cos_half_angle, 0.0)) / cos_half_angle, SCREEN_PROBE_VOXEL_GI_MIN_TAN);
+		vec4 voxel_light = vec4(0.0);
+		for (uint i = 0; i < 2; i++) {
+			if (probe_blend[i] > 0.0) {
+				voxel_light += voxel_gi_trace_ray(probe_voxel_gi[i], position.xyz, normal, ray_dir, tan_half_angle) * probe_blend[i];
+			}
+		}
+		voxel_light /= probe_blend_sum;
+		light.rgb = voxel_light.rgb;
+		float left = clamp(1.0 - voxel_light.a, 0.0, 1.0);
+		if (left > 0.0 && cascade < SDFGI_MAX_CASCADES) {
+			// What the cone leaves to find, the SDFGI probes see from there on, as VoxelGI is blended
+			// over SDFGI for the pixels.
+			light.rgb += left * sdfgi_probe_radiance(cascade, cascade_vertex, normalize(ray_dir * y_scale)) * sdfgi.energy;
+		} else {
+			light.a = left;
+		}
+	} else if (!hit) {
 		// March in the cascades' space, where y is scaled.
 		vec3 cascade_ray_dir = normalize(ray_dir * y_scale);
 		vec3 view_dir = -normalize(position.xyz);
@@ -1763,9 +1941,11 @@ void main() {
 
 		vec3 end;
 		uint end_cascade;
-		if (!screen_probe_march(cascade, from, cascade_ray_dir, max_distance, light, end, end_cascade)) {
-			light = sdfgi_probe_radiance(end_cascade, end, cascade_ray_dir) / SDFGI_PROBE_MAP_SCALE;
+		vec3 march_light;
+		if (!screen_probe_march(cascade, from, cascade_ray_dir, max_distance, march_light, end, end_cascade)) {
+			march_light = sdfgi_probe_radiance(end_cascade, end, cascade_ray_dir) / SDFGI_PROBE_MAP_SCALE;
 		}
+		light.rgb = march_light * sdfgi_scale;
 	}
 
 	screen_probe_ray_light[ray] = light * weight;
@@ -1779,13 +1959,12 @@ void main() {
 		// angle (none go below the surface, which is left dark), and convolve them with the cosine
 		// lobe (over PI), so that evaluating them for a normal gives the irradiance of a surface facing
 		// that way, over PI: what the lighting multiplies by the albedo.
-		vec3 coefficient = vec3(0.0);
+		vec4 coefficient = vec4(0.0);
 		for (uint i = 0; i < 64; i++) {
 			coefficient += screen_probe_ray_light[i] * sh_basis(ray, screen_probe_ray_dir[i]);
 		}
 		float band_convolution = ray == 0 ? 1.0 : (ray < 4 ? 2.0 / 3.0 : 0.25);
-		coefficient *= band_convolution * SDFGI_PROBE_MAP_SCALE;
-		imageStore(screen_probe_sh, screen_probe_sh_texel(texel, ray), vec4(coefficient, 0.0));
+		imageStore(screen_probe_sh, screen_probe_sh_texel(texel, ray), coefficient * band_convolution);
 	}
 }
 
@@ -1797,7 +1976,7 @@ void main() {
 
 // Adds the probe at p_other to the average for the probe at p_probe, whose position, normal and
 // tolerance these are, weighted by how well it stands for it.
-void screen_probe_filter_add(ivec2 p_other, ivec2 p_probe, vec3 p_position, vec3 p_normal, float p_tolerance, inout vec3 r_sh[9], inout float r_weight) {
+void screen_probe_filter_add(ivec2 p_other, ivec2 p_probe, vec3 p_position, vec3 p_normal, float p_tolerance, inout vec4 r_sh[9], inout float r_weight) {
 	if (p_other == p_probe) {
 		return; // Already in.
 	}
@@ -1810,7 +1989,7 @@ void screen_probe_filter_add(ivec2 p_other, ivec2 p_probe, vec3 p_position, vec3
 		return;
 	}
 	for (uint c = 0; c < 9; c++) {
-		r_sh[c] += imageLoad(screen_probe_sh, screen_probe_sh_texel(p_other, c)).rgb * weight;
+		r_sh[c] += imageLoad(screen_probe_sh, screen_probe_sh_texel(p_other, c)) * weight;
 	}
 	r_weight += weight;
 }
@@ -1830,9 +2009,9 @@ void main() {
 		probe = screen_probe_adaptive_texel(index);
 	}
 
-	vec3 sh[9];
+	vec4 sh[9];
 	for (uint i = 0; i < 9; i++) {
-		sh[i] = vec3(0.0);
+		sh[i] = vec4(0.0);
 	}
 
 	vec4 position = imageLoad(screen_probe_position, probe);
@@ -1841,7 +2020,7 @@ void main() {
 		float tolerance = position.w * SCREEN_PROBE_PLANE_TOLERANCE;
 		// The probe itself, which fits itself perfectly, then those around it.
 		for (uint i = 0; i < 9; i++) {
-			sh[i] = imageLoad(screen_probe_sh, screen_probe_sh_texel(probe, i)).rgb;
+			sh[i] = imageLoad(screen_probe_sh, screen_probe_sh_texel(probe, i));
 		}
 		float weight_sum = 1.0;
 
@@ -1876,7 +2055,7 @@ void main() {
 	}
 
 	for (uint i = 0; i < 9; i++) {
-		imageStore(screen_probe_sh_filtered, screen_probe_sh_texel(probe, i), vec4(sh[i], 0.0));
+		imageStore(screen_probe_sh_filtered, screen_probe_sh_texel(probe, i), sh[i]);
 	}
 }
 
@@ -1937,6 +2116,7 @@ void main() {
 	bool history_valid = false;
 	vec4 history_ambient = vec4(0.0);
 	vec4 history_reflection = vec4(0.0);
+	float history_ambient_alpha = 0.0; // For screen probes (see below).
 
 	// The write below happens from the first frame after an allocation, but there is nothing
 	// worth reading back until a frame has actually written it.
@@ -1993,12 +2173,14 @@ void main() {
 						continue;
 					}
 					ivec2 tap = clamp(tap_base + tap_offsets[t], ivec2(0), history_size - 1);
-					float stored_depth = texelFetch(sampler2D(gi_history_depth_prev, linear_sampler), tap, 0).r;
+					vec2 stored = texelFetch(sampler2D(gi_history_depth_prev, linear_sampler), tap, 0).rg;
+					float stored_depth = stored.x;
 					if (stored_depth <= 0.0 || abs(stored_depth - expected_depth) >= expected_depth * 0.05) {
 						continue; // Nothing was stored here yet, or it belongs to another surface.
 					}
 					history_ambient += tap_weights[t] * texelFetch(sampler2D(gi_history_ambient_prev, linear_sampler), tap, 0);
 					history_reflection += tap_weights[t] * texelFetch(sampler2D(gi_history_reflection_prev, linear_sampler), tap, 0);
+					history_ambient_alpha += tap_weights[t] * stored.y;
 					weight_sum += tap_weights[t];
 				}
 
@@ -2006,6 +2188,7 @@ void main() {
 					history_valid = true;
 					history_ambient /= weight_sum;
 					history_reflection /= weight_sum;
+					history_ambient_alpha /= weight_sum;
 				}
 			}
 		}
@@ -2026,24 +2209,35 @@ void main() {
 
 	bool screen_probes = false;
 	// What the history keeps of the ambient light: all of it, but with screen probes the alpha, which
-	// the lighting takes from the ambient buffer and is worked out afresh every frame, is how many
-	// frames it averages instead.
+	// the lighting takes from the ambient buffer, is how many frames it averages instead, and the
+	// alpha goes with the depth.
 	vec4 ambient_history = vec4(0.0);
-#ifdef USE_SDFGI
+	float ambient_alpha_history = 0.0;
+#if defined(USE_SDFGI) || defined(USE_VOXEL_GI_INSTANCES)
 	screen_probes = params.screen_probe_grid.x > 0;
 	if (screen_probes) {
 		// Screen probes: the diffuse light of every pixel comes from the probes around it, every
 		// frame, averaged with its history. Only the reflections are traced on the checkerboard.
 		vec3 world_vertex = mat3(scene_data.cam_transform) * vertex;
 		vec3 world_normal = normalize(mat3(scene_data.cam_transform) * fetch_normal_and_roughness(pos).xyz);
-		vec3 probe_light;
-		float coverage = screen_probe_gather(pos, world_vertex, world_normal, linear_depth, probe_light);
+		vec4 probe_light = vec4(0.0);
+		float coverage = 0.0;
+		// Only where a probe could go: the probes around a pixel past the bounds of a VoxelGI instance
+		// (or SDFGI's) would carry their light out to it.
+		if (screen_probe_covered(pos, world_vertex, world_normal)) {
+			coverage = screen_probe_gather(pos, world_vertex, world_normal, linear_depth, probe_light);
+		}
 		if (trace || coverage < 1.0) {
-			// Where the probes around do not fit the pixel well enough, the SDFGI probes make up
-			// the difference.
+			// Where the probes around do not fit the pixel well enough, the GI of the pixel itself
+			// makes up the difference.
 			process_gi(pos, vertex, ambient_light, reflection_light);
 		}
-		ambient_light.rgb = mix(ambient_light.rgb, probe_light, coverage);
+		ambient_light.rgb = mix(ambient_light.rgb, probe_light.rgb, coverage);
+		// How much of the ambient light comes from GI rather than the environment. The probes on
+		// VoxelGI leave the light their rays did not find to the environment, as VoxelGI does for
+		// the pixels, where it blends with it (see voxel_gi_trace_ray()). Within SDFGI, which covers
+		// everything around the camera, it comes from GI throughout (see below).
+		ambient_light.a = mix(ambient_light.a, 1.0 - probe_light.a, coverage);
 
 		// The light each frame gathers is noisy, and each pixel averages it over up to
 		// 1 / screen_probe_blend frames, fewer while its history is young (after a disocclusion),
@@ -2061,10 +2255,14 @@ void main() {
 			float limited = clamp(previous, current / SCREEN_PROBE_HISTORY_RANGE - SCREEN_PROBE_HISTORY_MARGIN, current * SCREEN_PROBE_HISTORY_RANGE + SCREEN_PROBE_HISTORY_MARGIN);
 			vec3 history = previous > 0.0 ? history_ambient.rgb * (limited / previous) : history_ambient.rgb;
 			ambient_light.rgb = mix(history, ambient_light.rgb, 1.0 / frames);
+			ambient_light.a = mix(history_ambient_alpha, ambient_light.a, 1.0 / frames);
 			reflection_light = trace ? mix(history_reflection, reflection_light, params.temporal_blend) : history_reflection;
 		}
+#ifdef USE_SDFGI
 		ambient_light.a = sdfgi_ambient_alpha(world_vertex);
+#endif
 		ambient_history = vec4(ambient_light.rgb, frames);
+		ambient_alpha_history = ambient_light.a;
 	}
 #endif
 
@@ -2089,7 +2287,7 @@ void main() {
 	if (params.temporal_enabled) {
 		imageStore(gi_history_ambient, pos, screen_probes ? ambient_history : ambient_light);
 		imageStore(gi_history_reflection, pos, reflection_light);
-		imageStore(gi_history_depth, pos, vec4(linear_depth));
+		imageStore(gi_history_depth, pos, vec4(linear_depth, screen_probes ? ambient_alpha_history : ambient_light.a, 0.0, 0.0));
 	}
 
 #ifdef USE_VRS

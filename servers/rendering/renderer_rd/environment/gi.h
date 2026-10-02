@@ -702,6 +702,11 @@ public:
 	void voxel_gi_instance_free(RID p_rid);
 
 	RSE::VoxelGIQuality voxel_gi_quality = RSE::VOXEL_GI_QUALITY_LOW;
+	// Screen probes on VoxelGI (rendering/global_illumination/voxel_gi/screen_probes): the same
+	// probes SDFGI's screen probes are (see sdfgi_screen_probes), with their rays cone traced through
+	// the VoxelGI instances they are in.
+	bool voxel_gi_screen_probes = false;
+	uint32_t voxel_gi_screen_probe_history_frames = 24;
 
 	/* SDFGI */
 
@@ -1056,7 +1061,8 @@ public:
 	// surface in the tile, where there is one, and adaptive ones on tiles of half and a quarter of
 	// the size (SCREEN_PROBE_ADAPTIVE_LEVELS) where pixels are still left without one. What they
 	// gather is noisy from one frame to the next, and each pixel averages it over up to
-	// sdfgi_screen_probe_history_frames frames.
+	// sdfgi_screen_probe_history_frames frames (voxel_gi_screen_probe_history_frames with VoxelGI
+	// in view).
 	enum {
 		SCREEN_PROBE_TILE = 16,
 		SCREEN_PROBES_PER_TILE = 2,
@@ -1065,6 +1071,9 @@ public:
 	};
 	enum { // SCREEN_PROBE_FLAG_* in gi.glsl.
 		SCREEN_PROBE_FLAG_SCREEN_TRACES = 1, // The previous frame's image is there to trace rays against.
+		SCREEN_PROBE_FLAG_SDFGI_PROBES = 2, // Probes go on what SDFGI covers.
+		SCREEN_PROBE_FLAG_VOXEL_GI_PROBES = 4, // Probes go on what the VoxelGI instances of their pixel cover.
+		SCREEN_PROBE_FLAG_SDFGI = 8, // SDFGI is there, for the rays of VoxelGI probes to fall back on.
 	};
 
 	GiShaderRD shader;

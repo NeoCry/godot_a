@@ -174,23 +174,19 @@ private:
 		float ssr_fade_out = 2.0;
 		float ssr_depth_tolerance = 0.5;
 
-		// GTAO
-		bool gtao_enabled = false;
-		float gtao_radius = 1.0;
-		float gtao_intensity = 2.0;
-		float gtao_power = 1.5;
-		float gtao_horizon = 0.06;
-		float gtao_sharpness = 0.98;
-		float gtao_direct_light_affect = 0.0;
-		float gtao_ao_channel_affect = 0.0;
+		// XeGTAO
+		bool xegtao_enabled = false;
+		float xegtao_radius = 0.5;
+		float xegtao_intensity = 1.0;
+		float xegtao_power = 2.2;
+		float xegtao_falloff_range = 0.615;
+		float xegtao_sample_distribution_power = 2.0;
+		float xegtao_thin_occluder_compensation = 0.0;
+		bool xegtao_bent_normals = true;
+		float xegtao_direct_light_affect = 0.0;
+		float xegtao_ao_channel_affect = 0.0;
 
 		AtmosphereParams atmosphere;
-
-		// HMAO (height map ambient occlusion)
-		bool hmao_enabled = false;
-		float hmao_amount = 1.0;
-		float hmao_range = 500.0;
-		RSE::EnvironmentHMAOResolution hmao_resolution = RSE::ENV_HMAO_RESOLUTION_512;
 
 		// SSCS (screen space contact shadows)
 		bool sscs_enabled = false;
@@ -335,16 +331,18 @@ public:
 	float environment_get_ssr_fade_out(RID p_env) const;
 	float environment_get_ssr_depth_tolerance(RID p_env) const;
 
-	// GTAO
-	void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect);
-	bool environment_get_gtao_enabled(RID p_env) const;
-	float environment_get_gtao_radius(RID p_env) const;
-	float environment_get_gtao_intensity(RID p_env) const;
-	float environment_get_gtao_power(RID p_env) const;
-	float environment_get_gtao_horizon(RID p_env) const;
-	float environment_get_gtao_sharpness(RID p_env) const;
-	float environment_get_gtao_direct_light_affect(RID p_env) const;
-	float environment_get_gtao_ao_channel_affect(RID p_env) const;
+	// XeGTAO
+	void environment_set_xegtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_falloff_range, float p_sample_distribution_power, float p_thin_occluder_compensation, bool p_bent_normals, float p_light_affect, float p_ao_channel_affect);
+	bool environment_get_xegtao_enabled(RID p_env) const;
+	float environment_get_xegtao_radius(RID p_env) const;
+	float environment_get_xegtao_intensity(RID p_env) const;
+	float environment_get_xegtao_power(RID p_env) const;
+	float environment_get_xegtao_falloff_range(RID p_env) const;
+	float environment_get_xegtao_sample_distribution_power(RID p_env) const;
+	float environment_get_xegtao_thin_occluder_compensation(RID p_env) const;
+	bool environment_get_xegtao_bent_normals(RID p_env) const;
+	float environment_get_xegtao_direct_light_affect(RID p_env) const;
+	float environment_get_xegtao_ao_channel_affect(RID p_env) const;
 
 	// Atmosphere
 	void environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights);
@@ -353,13 +351,6 @@ public:
 	void environment_set_atmosphere_ozone(RID p_env, const Color &p_absorption, float p_absorption_scale, float p_tip_altitude, float p_width);
 	bool environment_get_atmosphere_enabled(RID p_env) const;
 	AtmosphereParams environment_get_atmosphere(RID p_env) const;
-
-	// HMAO
-	void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution);
-	bool environment_get_hmao_enabled(RID p_env) const;
-	float environment_get_hmao_amount(RID p_env) const;
-	float environment_get_hmao_range(RID p_env) const;
-	RSE::EnvironmentHMAOResolution environment_get_hmao_resolution(RID p_env) const;
 
 	// SSCS (screen space contact shadows)
 	void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness);

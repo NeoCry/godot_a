@@ -694,75 +694,87 @@ float RendererEnvironmentStorage::environment_get_ssr_depth_tolerance(RID p_env)
 	return env->ssr_depth_tolerance;
 }
 
-// GTAO
+// XeGTAO
 
-void RendererEnvironmentStorage::environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect) {
+void RendererEnvironmentStorage::environment_set_xegtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_falloff_range, float p_sample_distribution_power, float p_thin_occluder_compensation, bool p_bent_normals, float p_light_affect, float p_ao_channel_affect) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 #ifdef DEBUG_ENABLED
 	if (OS::get_singleton()->get_current_rendering_method() == "mobile" && p_enable) {
-		WARN_PRINT_ONCE_ED("Ground-truth ambient occlusion (GTAO) is only available when using the Forward+ renderer. The Compatibility renderer uses a separate screen-space ambient occlusion (SSAO) implementation.");
+		WARN_PRINT_ONCE_ED("XeGTAO ambient occlusion is only available when using the Forward+ renderer. The Compatibility renderer uses a separate screen-space ambient occlusion (SSAO) implementation.");
 	}
 #endif
-	env->gtao_enabled = p_enable;
-	env->gtao_radius = p_radius;
-	env->gtao_intensity = p_intensity;
-	env->gtao_power = p_power;
-	env->gtao_horizon = p_horizon;
-	env->gtao_sharpness = p_sharpness;
-	env->gtao_direct_light_affect = p_light_affect;
-	env->gtao_ao_channel_affect = p_ao_channel_affect;
+	env->xegtao_enabled = p_enable;
+	env->xegtao_radius = p_radius;
+	env->xegtao_intensity = p_intensity;
+	env->xegtao_power = p_power;
+	env->xegtao_falloff_range = p_falloff_range;
+	env->xegtao_sample_distribution_power = p_sample_distribution_power;
+	env->xegtao_thin_occluder_compensation = p_thin_occluder_compensation;
+	env->xegtao_bent_normals = p_bent_normals;
+	env->xegtao_direct_light_affect = p_light_affect;
+	env->xegtao_ao_channel_affect = p_ao_channel_affect;
 }
 
-bool RendererEnvironmentStorage::environment_get_gtao_enabled(RID p_env) const {
+bool RendererEnvironmentStorage::environment_get_xegtao_enabled(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, false);
-	return env->gtao_enabled;
+	return env->xegtao_enabled;
 }
 
-float RendererEnvironmentStorage::environment_get_gtao_radius(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_xegtao_radius(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.5);
+	return env->xegtao_radius;
+}
+
+float RendererEnvironmentStorage::environment_get_xegtao_intensity(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 1.0);
-	return env->gtao_radius;
+	return env->xegtao_intensity;
 }
 
-float RendererEnvironmentStorage::environment_get_gtao_intensity(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_xegtao_power(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 2.2);
+	return env->xegtao_power;
+}
+
+float RendererEnvironmentStorage::environment_get_xegtao_falloff_range(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.615);
+	return env->xegtao_falloff_range;
+}
+
+float RendererEnvironmentStorage::environment_get_xegtao_sample_distribution_power(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 2.0);
-	return env->gtao_intensity;
+	return env->xegtao_sample_distribution_power;
 }
 
-float RendererEnvironmentStorage::environment_get_gtao_power(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 1.5);
-	return env->gtao_power;
-}
-
-float RendererEnvironmentStorage::environment_get_gtao_horizon(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 0.06);
-	return env->gtao_horizon;
-}
-
-float RendererEnvironmentStorage::environment_get_gtao_sharpness(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 0.98);
-	return env->gtao_sharpness;
-}
-
-float RendererEnvironmentStorage::environment_get_gtao_direct_light_affect(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_xegtao_thin_occluder_compensation(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 0.0);
-	return env->gtao_direct_light_affect;
+	return env->xegtao_thin_occluder_compensation;
 }
 
-float RendererEnvironmentStorage::environment_get_gtao_ao_channel_affect(RID p_env) const {
+bool RendererEnvironmentStorage::environment_get_xegtao_bent_normals(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, true);
+	return env->xegtao_bent_normals;
+}
+
+float RendererEnvironmentStorage::environment_get_xegtao_direct_light_affect(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 0.0);
-	return env->gtao_ao_channel_affect;
+	return env->xegtao_direct_light_affect;
 }
 
-// HMAO (height map ambient occlusion)
+float RendererEnvironmentStorage::environment_get_xegtao_ao_channel_affect(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.0);
+	return env->xegtao_ao_channel_affect;
+}
 
 // Atmosphere
 
@@ -824,44 +836,6 @@ RendererEnvironmentStorage::AtmosphereParams RendererEnvironmentStorage::environ
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, AtmosphereParams());
 	return env->atmosphere;
-}
-
-void RendererEnvironmentStorage::environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution) {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL(env);
-#ifdef DEBUG_ENABLED
-	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
-		WARN_PRINT_ONCE_ED("Height map ambient occlusion (HMAO) is only available when using the Forward+ renderer.");
-	}
-#endif
-	env->hmao_enabled = p_enable;
-	env->hmao_amount = p_amount;
-	env->hmao_range = p_range;
-	env->hmao_resolution = p_resolution;
-}
-
-bool RendererEnvironmentStorage::environment_get_hmao_enabled(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, false);
-	return env->hmao_enabled;
-}
-
-float RendererEnvironmentStorage::environment_get_hmao_amount(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 1.0);
-	return env->hmao_amount;
-}
-
-float RendererEnvironmentStorage::environment_get_hmao_range(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 500.0);
-	return env->hmao_range;
-}
-
-RSE::EnvironmentHMAOResolution RendererEnvironmentStorage::environment_get_hmao_resolution(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, RSE::ENV_HMAO_RESOLUTION_512);
-	return env->hmao_resolution;
 }
 
 // SSCS (screen space contact shadows)

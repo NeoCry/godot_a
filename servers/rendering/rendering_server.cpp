@@ -3013,8 +3013,8 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SHADOW_ATLAS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DIRECTIONAL_SHADOW_ATLAS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SCENE_LUMINANCE);
-	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_GTAO);
-	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_HMAO);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_XEGTAO);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_XEGTAO_BENT_NORMALS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SSIL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DECAL_ATLAS);
@@ -3097,7 +3097,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_tonemap_agx_contrast", "env", "agx_contrast"), &RenderingServer::environment_set_tonemap_agx_contrast);
 	ClassDB::bind_method(D_METHOD("environment_set_adjustment", "env", "enable", "brightness", "contrast", "saturation", "use_1d_color_correction", "color_correction"), &RenderingServer::environment_set_adjustment);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr", "env", "enable", "max_steps", "fade_in", "fade_out", "depth_tolerance"), &RenderingServer::environment_set_ssr);
-	ClassDB::bind_method(D_METHOD("environment_set_gtao", "env", "enable", "radius", "intensity", "power", "horizon", "sharpness", "light_affect", "ao_channel_affect"), &RenderingServer::environment_set_gtao);
+	ClassDB::bind_method(D_METHOD("environment_set_xegtao", "env", "enable", "radius", "intensity", "power", "falloff_range", "sample_distribution_power", "thin_occluder_compensation", "bent_normals", "light_affect", "ao_channel_affect"), &RenderingServer::environment_set_xegtao);
 	ClassDB::bind_method(D_METHOD("environment_set_sscs", "env", "enable", "length", "surface_thickness"), &RenderingServer::environment_set_sscs);
 	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RSE::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_fog_depth", "env", "curve", "begin", "end"), &RenderingServer::environment_set_fog_depth);
@@ -3107,13 +3107,11 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_glow_set_use_bicubic_upscale", "enable"), &RenderingServer::environment_glow_set_use_bicubic_upscale);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr_half_size", "half_size"), &RenderingServer::environment_set_ssr_half_size);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr_roughness_quality", "quality"), &RenderingServer::environment_set_ssr_roughness_quality);
-	ClassDB::bind_method(D_METHOD("environment_set_gtao_quality", "quality", "half_size", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_gtao_quality);
+	ClassDB::bind_method(D_METHOD("environment_set_xegtao_quality", "quality", "denoise_passes", "half_size", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_xegtao_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere", "env", "enable", "planet_radius", "height", "ground_albedo", "multiscattering_factor", "sky_luminance_factor", "aerial_perspective_distance_scale", "aerial_perspective_start_depth", "affect_directional_lights"), &RenderingServer::environment_set_atmosphere);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_rayleigh", "env", "scattering", "scattering_scale", "exponential_distribution"), &RenderingServer::environment_set_atmosphere_rayleigh);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_mie", "env", "scattering", "scattering_scale", "absorption", "absorption_scale", "anisotropy", "exponential_distribution"), &RenderingServer::environment_set_atmosphere_mie);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_ozone", "env", "absorption", "absorption_scale", "tip_altitude", "width"), &RenderingServer::environment_set_atmosphere_ozone);
-	ClassDB::bind_method(D_METHOD("environment_set_hmao", "env", "enable", "amount", "range", "resolution"), &RenderingServer::environment_set_hmao);
-	ClassDB::bind_method(D_METHOD("environment_set_hmao_quality", "quality", "half_size"), &RenderingServer::environment_set_hmao_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_ssil_quality", "quality", "half_size", "adaptive_target", "blur_passes", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_ssil_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_ray_count", "ray_count"), &RenderingServer::environment_set_sdfgi_ray_count);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_frames_to_converge", "frames"), &RenderingServer::environment_set_sdfgi_frames_to_converge);
@@ -3165,23 +3163,11 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::ENV_SSR_ROUGHNESS_QUALITY_MEDIUM);
 	BIND_ENUM_CONSTANT(RSE::ENV_SSR_ROUGHNESS_QUALITY_HIGH);
 
-	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_VERY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_MEDIUM);
-	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_HIGH);
-	BIND_ENUM_CONSTANT(RSE::ENV_GTAO_QUALITY_ULTRA);
-
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_MEDIUM);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_HIGH);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_ULTRA);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_QUALITY_MAX);
-
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_256);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_512);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_1024);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_2048);
-	BIND_ENUM_CONSTANT(RSE::ENV_HMAO_RESOLUTION_MAX);
+	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_LOW);
+	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_MEDIUM);
+	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_HIGH);
+	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_ULTRA);
+	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT);
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM);
@@ -3787,6 +3773,8 @@ void RenderingServer::init() {
 	// the visible effect is that indirect light catches up over a few frames instead of
 	// snapping. 0 relights the whole probe in one frame.
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/relight_cells_per_frame", PROPERTY_HINT_RANGE, "0,4194304,1"), 0);
+	GLOBAL_DEF_RST("rendering/global_illumination/voxel_gi/screen_probes", false);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/screen_probe_history_frames", PROPERTY_HINT_RANGE, "4,64,1"), 24);
 
 	GLOBAL_DEF_RST("rendering/shading/overrides/force_vertex_shading", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley", false);
@@ -3802,13 +3790,11 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/camera/depth_of_field/depth_of_field_bokeh_quality", PROPERTY_HINT_ENUM, "Very Low (Fastest),Low (Fast),Medium (Average),High (Slow)"), 1);
 	GLOBAL_DEF("rendering/camera/depth_of_field/depth_of_field_use_jitter", false);
 
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/gtao/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 2);
-	GLOBAL_DEF("rendering/environment/gtao/half_size", true);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/gtao/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/gtao/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
-
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/hmao/quality", PROPERTY_HINT_ENUM, "Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 1);
-	GLOBAL_DEF("rendering/environment/hmao/half_size", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/xegtao/quality", PROPERTY_HINT_ENUM, "Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 2);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/xegtao/denoise_passes", PROPERTY_HINT_ENUM, "Disabled,Sharp,Medium,Soft"), 2);
+	GLOBAL_DEF("rendering/environment/xegtao/half_size", false);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/xegtao/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/xegtao/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

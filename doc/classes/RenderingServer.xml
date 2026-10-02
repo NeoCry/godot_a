@@ -1458,50 +1458,6 @@
 				Configures glow for the specified environment RID. See [code]glow_*[/code] properties in [Environment] for more information.
 			</description>
 		</method>
-		<method name="environment_set_gtao">
-			<return type="void" />
-			<param index="0" name="env" type="RID" />
-			<param index="1" name="enable" type="bool" />
-			<param index="2" name="radius" type="float" />
-			<param index="3" name="intensity" type="float" />
-			<param index="4" name="power" type="float" />
-			<param index="5" name="horizon" type="float" />
-			<param index="6" name="sharpness" type="float" />
-			<param index="7" name="light_affect" type="float" />
-			<param index="8" name="ao_channel_affect" type="float" />
-			<description>
-				Sets the variables to be used with the Ground-Truth Ambient Occlusion (GTAO) post-process effect. See [Environment] for more details.
-			</description>
-		</method>
-		<method name="environment_set_gtao_quality">
-			<return type="void" />
-			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentGTAOQuality" />
-			<param index="1" name="half_size" type="bool" />
-			<param index="2" name="fadeout_from" type="float" />
-			<param index="3" name="fadeout_to" type="float" />
-			<description>
-				Sets the quality level of the Ground-Truth Ambient Occlusion (GTAO) post-process effect. See [Environment] for more details.
-			</description>
-		</method>
-		<method name="environment_set_hmao">
-			<return type="void" />
-			<param index="0" name="env" type="RID" />
-			<param index="1" name="enable" type="bool" />
-			<param index="2" name="amount" type="float" />
-			<param index="3" name="range" type="float" />
-			<param index="4" name="resolution" type="int" enum="RenderingServer.EnvironmentHMAOResolution" />
-			<description>
-				Configures height map based ambient occlusion for the specified environment RID. See [code]hmao_*[/code] properties in [Environment] for more information.
-			</description>
-		</method>
-		<method name="environment_set_hmao_quality">
-			<return type="void" />
-			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentHMAOQuality" />
-			<param index="1" name="half_size" type="bool" />
-			<description>
-				Sets the quality level of the height map based ambient occlusion effect: how many directions and steps the world space gather takes per pixel, and whether it runs at half resolution. See [Environment] for more details.
-			</description>
-		</method>
 		<method name="environment_set_sdfgi">
 			<return type="void" />
 			<param index="0" name="env" type="RID" />
@@ -1662,6 +1618,34 @@
 			<param index="1" name="depth" type="int" />
 			<description>
 				Sets the resolution of the volumetric fog's froxel buffer. [param size] is modified by the screen's aspect ratio and then used to set the width and height of the buffer. While [param depth] is directly used to set the depth of the buffer.
+			</description>
+		</method>
+		<method name="environment_set_xegtao">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="radius" type="float" />
+			<param index="3" name="intensity" type="float" />
+			<param index="4" name="power" type="float" />
+			<param index="5" name="falloff_range" type="float" />
+			<param index="6" name="sample_distribution_power" type="float" />
+			<param index="7" name="thin_occluder_compensation" type="float" />
+			<param index="8" name="bent_normals" type="bool" />
+			<param index="9" name="light_affect" type="float" />
+			<param index="10" name="ao_channel_affect" type="float" />
+			<description>
+				Sets the variables to be used with the XeGTAO ambient occlusion post-process effect. See [code]xegtao_*[/code] properties in [Environment] for more details.
+			</description>
+		</method>
+		<method name="environment_set_xegtao_quality">
+			<return type="void" />
+			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentXeGTAOQuality" />
+			<param index="1" name="denoise_passes" type="int" />
+			<param index="2" name="half_size" type="bool" />
+			<param index="3" name="fadeout_from" type="float" />
+			<param index="4" name="fadeout_to" type="float" />
+			<description>
+				Sets the quality of the XeGTAO ambient occlusion post-process effect: the number of directions and steps searched per pixel, the number of denoising passes ([code]0[/code] to [code]3[/code]), whether it runs at half resolution, and the distance range over which it fades out. See [code]rendering/environment/xegtao/*[/code] in [ProjectSettings] for more details.
 			</description>
 		</method>
 		<method name="fog_volume_create">
@@ -5746,12 +5730,13 @@
 			Draws the estimated scene luminance. This is a 1×1 texture that is generated when autoexposure is enabled to control the scene's exposure.
 			[b]Note:[/b] Only supported when using the Forward+ or Mobile rendering methods.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_GTAO" value="12" enum="ViewportDebugDraw">
-			Draws the screen space ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.gtao_enabled] set in your [WorldEnvironment].
+		<constant name="VIEWPORT_DEBUG_DRAW_XEGTAO" value="12" enum="ViewportDebugDraw">
+			Draws the XeGTAO ambient occlusion texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.xegtao_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_HMAO" value="13" enum="ViewportDebugDraw">
-			Draws the height map based ambient occlusion buffer (see [member Environment.hmao_enabled]) over the viewport.
+		<constant name="VIEWPORT_DEBUG_DRAW_XEGTAO_BENT_NORMALS" value="13" enum="ViewportDebugDraw">
+			Draws the view-space bent normals computed by XeGTAO instead of the scene, encoded the same way as [constant VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER]. In order for this display mode to work, you must have [member Environment.xegtao_enabled] and [member Environment.xegtao_bent_normals] set in your [WorldEnvironment].
+			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="VIEWPORT_DEBUG_DRAW_SSIL" value="14" enum="ViewportDebugDraw">
 			Draws the screen space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].
@@ -5982,50 +5967,20 @@
 		<constant name="ENV_SSR_ROUGHNESS_QUALITY_HIGH" value="3" enum="EnvironmentSSRRoughnessQuality">
 			High quality of roughness filter for screen-space reflections. This is the slowest option.
 		</constant>
-		<constant name="ENV_GTAO_QUALITY_VERY_LOW" value="0" enum="EnvironmentGTAOQuality">
-			Lowest quality of screen-space ambient occlusion.
+		<constant name="ENV_XEGTAO_QUALITY_LOW" value="0" enum="EnvironmentXeGTAOQuality">
+			Lowest quality XeGTAO ambient occlusion: 1 direction searched per pixel, with 2 steps on each side.
 		</constant>
-		<constant name="ENV_GTAO_QUALITY_LOW" value="1" enum="EnvironmentGTAOQuality">
-			Low quality screen-space ambient occlusion.
+		<constant name="ENV_XEGTAO_QUALITY_MEDIUM" value="1" enum="EnvironmentXeGTAOQuality">
+			Medium quality XeGTAO ambient occlusion: 2 directions searched per pixel, with 2 steps on each side.
 		</constant>
-		<constant name="ENV_GTAO_QUALITY_MEDIUM" value="2" enum="EnvironmentGTAOQuality">
-			Medium quality screen-space ambient occlusion.
+		<constant name="ENV_XEGTAO_QUALITY_HIGH" value="2" enum="EnvironmentXeGTAOQuality">
+			High quality XeGTAO ambient occlusion: 3 directions searched per pixel, with 3 steps on each side.
 		</constant>
-		<constant name="ENV_GTAO_QUALITY_HIGH" value="3" enum="EnvironmentGTAOQuality">
-			High quality screen-space ambient occlusion.
+		<constant name="ENV_XEGTAO_QUALITY_ULTRA" value="3" enum="EnvironmentXeGTAOQuality">
+			Highest quality XeGTAO ambient occlusion: 9 directions searched per pixel, with 3 steps on each side.
 		</constant>
-		<constant name="ENV_GTAO_QUALITY_ULTRA" value="4" enum="EnvironmentGTAOQuality">
-			Highest quality ground-truth ambient occlusion, searching the most directions and steps around each pixel.
-		</constant>
-		<constant name="ENV_HMAO_QUALITY_LOW" value="0" enum="EnvironmentHMAOQuality">
-			Lowest quality height map based ambient occlusion, gathering the fewest directions and steps over the height map.
-		</constant>
-		<constant name="ENV_HMAO_QUALITY_MEDIUM" value="1" enum="EnvironmentHMAOQuality">
-			Medium quality height map based ambient occlusion.
-		</constant>
-		<constant name="ENV_HMAO_QUALITY_HIGH" value="2" enum="EnvironmentHMAOQuality">
-			High quality height map based ambient occlusion.
-		</constant>
-		<constant name="ENV_HMAO_QUALITY_ULTRA" value="3" enum="EnvironmentHMAOQuality">
-			Highest quality height map based ambient occlusion, gathering the most directions and steps over the height map.
-		</constant>
-		<constant name="ENV_HMAO_QUALITY_MAX" value="4" enum="EnvironmentHMAOQuality">
-			Represents the size of the [enum EnvironmentHMAOQuality] enum.
-		</constant>
-		<constant name="ENV_HMAO_RESOLUTION_256" value="0" enum="EnvironmentHMAOResolution">
-			Draw the height map based ambient occlusion height map at 256×256.
-		</constant>
-		<constant name="ENV_HMAO_RESOLUTION_512" value="1" enum="EnvironmentHMAOResolution">
-			Draw the height map based ambient occlusion height map at 512×512.
-		</constant>
-		<constant name="ENV_HMAO_RESOLUTION_1024" value="2" enum="EnvironmentHMAOResolution">
-			Draw the height map based ambient occlusion height map at 1024×1024.
-		</constant>
-		<constant name="ENV_HMAO_RESOLUTION_2048" value="3" enum="EnvironmentHMAOResolution">
-			Draw the height map based ambient occlusion height map at 2048×2048.
-		</constant>
-		<constant name="ENV_HMAO_RESOLUTION_MAX" value="4" enum="EnvironmentHMAOResolution">
-			Represents the size of the [enum EnvironmentHMAOResolution] enum.
+		<constant name="ENV_XEGTAO_QUALITY_MAX" value="4" enum="EnvironmentXeGTAOQuality">
+			Represents the size of the [enum EnvironmentXeGTAOQuality] enum.
 		</constant>
 		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT" value="0" enum="ScreenSpaceContactShadowsLength">
 			Cast shorter screen-space shadow rays. Fastest option, but the effect will not be able to reach as far.

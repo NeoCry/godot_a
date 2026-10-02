@@ -220,20 +220,21 @@ public:
 	virtual void environment_set_ssr_half_size(bool p_half_size) = 0;
 	virtual void environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) = 0;
 
-	// GTAO
-	void environment_set_gtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_horizon, float p_sharpness, float p_light_affect, float p_ao_channel_affect);
-	bool environment_get_gtao_enabled(RID p_env) const;
-	float environment_get_gtao_radius(RID p_env) const;
-	float environment_get_gtao_intensity(RID p_env) const;
-	float environment_get_gtao_power(RID p_env) const;
-	float environment_get_gtao_horizon(RID p_env) const;
-	float environment_get_gtao_sharpness(RID p_env) const;
-	float environment_get_gtao_direct_light_affect(RID p_env) const;
-	float environment_get_gtao_ao_channel_affect(RID p_env) const;
+	// XeGTAO
+	void environment_set_xegtao(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_power, float p_falloff_range, float p_sample_distribution_power, float p_thin_occluder_compensation, bool p_bent_normals, float p_light_affect, float p_ao_channel_affect);
+	bool environment_get_xegtao_enabled(RID p_env) const;
+	float environment_get_xegtao_radius(RID p_env) const;
+	float environment_get_xegtao_intensity(RID p_env) const;
+	float environment_get_xegtao_power(RID p_env) const;
+	float environment_get_xegtao_falloff_range(RID p_env) const;
+	float environment_get_xegtao_sample_distribution_power(RID p_env) const;
+	float environment_get_xegtao_thin_occluder_compensation(RID p_env) const;
+	bool environment_get_xegtao_bent_normals(RID p_env) const;
+	float environment_get_xegtao_direct_light_affect(RID p_env) const;
+	float environment_get_xegtao_ao_channel_affect(RID p_env) const;
 
-	virtual void environment_set_gtao_quality(RSE::EnvironmentGTAOQuality p_quality, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
+	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
-	// HMAO (height map ambient occlusion)
 	// Atmosphere
 	void environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights);
 	void environment_set_atmosphere_rayleigh(RID p_env, const Color &p_scattering, float p_scattering_scale, float p_exponential_distribution);
@@ -241,30 +242,6 @@ public:
 	void environment_set_atmosphere_ozone(RID p_env, const Color &p_absorption, float p_absorption_scale, float p_tip_altitude, float p_width);
 	bool environment_get_atmosphere_enabled(RID p_env) const;
 	RendererEnvironmentStorage::AtmosphereParams environment_get_atmosphere(RID p_env) const;
-
-	void environment_set_hmao(RID p_env, bool p_enable, float p_amount, float p_range, RSE::EnvironmentHMAOResolution p_resolution);
-	bool environment_get_hmao_enabled(RID p_env) const;
-	float environment_get_hmao_amount(RID p_env) const;
-	float environment_get_hmao_range(RID p_env) const;
-	RSE::EnvironmentHMAOResolution environment_get_hmao_resolution(RID p_env) const;
-
-	virtual void environment_set_hmao_quality(RSE::EnvironmentHMAOQuality p_quality, bool p_half_size) = 0;
-
-	// Square texture resolution an RSE::EnvironmentHMAOResolution stands for. Lives here because both sides
-	// of the effect need it: the renderer to size the height map, and the culler to work out the texel size
-	// it snaps the map's footprint to.
-	static _FORCE_INLINE_ uint32_t environment_hmao_resolution_size(RSE::EnvironmentHMAOResolution p_resolution) {
-		const uint32_t sizes[RSE::ENV_HMAO_RESOLUTION_MAX] = { 256, 512, 1024, 2048 };
-		return sizes[CLAMP(int(p_resolution), 0, int(RSE::ENV_HMAO_RESOLUTION_MAX) - 1)];
-	}
-
-	// Whether this renderer implements height map ambient occlusion at all: the culler skips gathering
-	// occluders for a map nothing would ever render or read.
-	virtual bool is_hmao_supported() const { return false; }
-
-	// Renders the top-down height map the effect gathers from. Called once per frame, right before the
-	// scene render it feeds, with the geometry the culler found inside p_bounds.
-	virtual void render_height_map_ao(RID p_environment, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances) {}
 
 	// SSCS (screen space contact shadows)
 	void environment_set_sscs(RID p_env, bool p_enable, RSE::ScreenSpaceContactShadowsLength p_length, float p_surface_thickness);

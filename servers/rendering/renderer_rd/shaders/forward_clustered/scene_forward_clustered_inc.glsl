@@ -197,12 +197,12 @@ layout(set = 0, binding = 2) uniform sampler shadow_sampler;
 //3 bits of stride
 #define INSTANCE_FLAGS_PARTICLE_TRAIL_MASK 0xFF
 
-#define SCREEN_SPACE_EFFECTS_FLAGS_USE_GTAO (1 << 0)
+#define SCREEN_SPACE_EFFECTS_FLAGS_USE_XEGTAO (1 << 0)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL (1 << 1)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSR (1 << 2)
 #define SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR (1 << 3)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS (1 << 4)
-#define SCREEN_SPACE_EFFECTS_FLAGS_USE_HMAO (1 << 5)
+#define SCREEN_SPACE_EFFECTS_FLAGS_USE_XEGTAO_BENT_NORMALS (1 << 5)
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer OmniLights {
 	LightData data[];
@@ -334,8 +334,8 @@ struct ImplementationData {
 	uint max_cluster_element_count_div_32;
 
 	uint ss_effects_flags;
-	float gtao_light_affect;
-	float gtao_ao_affect;
+	float xegtao_light_affect;
+	float xegtao_ao_affect;
 	uint pad1;
 
 	mat4 sdf_to_bounds;
@@ -492,13 +492,15 @@ layout(set = 1, binding = 34) uniform texture2DArray ssil_buffer;
 layout(set = 1, binding = 35) uniform texture2DArray ssr_buffer;
 layout(set = 1, binding = 36) uniform texture2DArray ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2DArray sscs_buffer;
-layout(set = 1, binding = 40) uniform texture2DArray hmao_buffer;
+// XeGTAO's view space bent normals (effects/xegtao.h), encoded as normal * 0.5 + 0.5.
+layout(set = 1, binding = 40) uniform texture2DArray xegtao_bent_normal_buffer;
 #else
 layout(set = 1, binding = 34) uniform texture2D ssil_buffer;
 layout(set = 1, binding = 35) uniform texture2D ssr_buffer;
 layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2DArray sscs_buffer;
-layout(set = 1, binding = 40) uniform texture2D hmao_buffer;
+// XeGTAO's view space bent normals (effects/xegtao.h), encoded as normal * 0.5 + 0.5.
+layout(set = 1, binding = 40) uniform texture2D xegtao_bent_normal_buffer;
 #endif // USE_MULTIVIEW
 
 // Cached far cascade atlas (see DirectionalLightData's shadow_cache_* fields in light_data_inc.glsl).

@@ -2981,24 +2981,6 @@
 		<member name="rendering/environment/glow/upscale_mode.mobile" type="int" setter="" getter="" default="0">
 			Lower-end override for [member rendering/environment/glow/upscale_mode] on mobile devices, due to performance concerns or driver support.
 		</member>
-		<member name="rendering/environment/gtao/fadeout_from" type="float" setter="" getter="" default="50.0">
-			Distance at which the ground-truth ambient occlusion effect starts to fade out. Use this to hide ambient occlusion from far away.
-		</member>
-		<member name="rendering/environment/gtao/fadeout_to" type="float" setter="" getter="" default="300.0">
-			Distance at which the ground-truth ambient occlusion effect is fully faded out. Use this to hide ambient occlusion from far away.
-		</member>
-		<member name="rendering/environment/gtao/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
-			If [code]true[/code], ground-truth ambient occlusion will be computed at half size and then upscaled before being added to the scene. This is significantly faster but may miss small details. If [code]false[/code], ground-truth ambient occlusion will be computed at full size.
-		</member>
-		<member name="rendering/environment/gtao/quality" type="int" setter="" getter="" default="2">
-			Sets the quality of the ground-truth ambient occlusion effect. Higher values search more directions and steps around each pixel and so will result in better quality, at the cost of performance.
-		</member>
-		<member name="rendering/environment/hmao/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
-			If [code]true[/code], height map based ambient occlusion is gathered at half size and then upscaled with a depth-aware filter before being applied to the scene. If [code]false[/code], it is gathered at full size, which is slower and rarely visible on an effect this smooth.
-		</member>
-		<member name="rendering/environment/hmao/quality" type="int" setter="" getter="" default="1">
-			Sets the quality of the height map based ambient occlusion effect. Higher values gather more directions and steps over the height map around each pixel, which resolves narrow occluders and shallow relief more faithfully, at the cost of performance.
-		</member>
 		<member name="rendering/environment/screen_space_reflection/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
 			If [code]true[/code], screen-space reflections will be rendered at half size and then upscaled before being added to the scene. This is faster but may look pixelated or cause flickering. If [code]false[/code], screen-space reflections will be rendered at full size.
 		</member>
@@ -3040,6 +3022,22 @@
 		</member>
 		<member name="rendering/environment/volumetric_fog/volume_size" type="int" setter="" getter="" default="64">
 			Base size used to determine size of froxel buffer in the camera X-axis and Y-axis. The final size is scaled by the aspect ratio of the screen, so actual values may differ from what is set. Set a larger size for more detailed fog, set a smaller size for better performance.
+		</member>
+		<member name="rendering/environment/xegtao/denoise_passes" type="int" setter="" getter="" default="2">
+			Number of edge-aware spatial denoising passes XeGTAO runs over its result: [code]0[/code] (Disabled), [code]1[/code] (Sharp), [code]2[/code] (Medium) or [code]3[/code] (Soft). More passes remove more noise but also more fine detail.
+			When temporal antialiasing ([member rendering/anti_aliasing/quality/use_taa]) or FSR 2 is used, XeGTAO also varies its noise pattern from frame to frame and lets the temporal accumulation average it out, in which case [code]1[/code] is usually enough.
+		</member>
+		<member name="rendering/environment/xegtao/fadeout_from" type="float" setter="" getter="" default="50.0">
+			Distance at which the XeGTAO ambient occlusion effect starts to fade out. Use this to hide ambient occlusion from far away.
+		</member>
+		<member name="rendering/environment/xegtao/fadeout_to" type="float" setter="" getter="" default="300.0">
+			Distance at which the XeGTAO ambient occlusion effect is fully faded out. Use this to hide ambient occlusion from far away.
+		</member>
+		<member name="rendering/environment/xegtao/half_size" type="bool" setter="" getter="" default="false" keywords="resolution">
+			If [code]true[/code], XeGTAO ambient occlusion is computed at half resolution and then upscaled with a depth-aware filter before being applied to the scene. This is significantly faster, but loses small details. If [code]false[/code], it is computed at full resolution, which is what XeGTAO was designed and tuned for.
+		</member>
+		<member name="rendering/environment/xegtao/quality" type="int" setter="" getter="" default="2">
+			Sets the quality of the XeGTAO ambient occlusion effect, as the number of directions (slices) searched around each pixel and steps taken on each side of every slice: [code]0[/code] (Low) searches 1 slice with 2 steps, [code]1[/code] (Medium) 2 slices with 2 steps, [code]2[/code] (High) 3 slices with 3 steps and [code]3[/code] (Ultra) 9 slices with 3 steps. Higher values result in less noise, at the cost of performance.
 		</member>
 		<member name="rendering/gl_compatibility/driver" type="String" setter="" getter="" default="&quot;opengl3&quot;">
 			Sets the driver to be used by the renderer when using the Compatibility renderer. Editing this property has no effect in the default configuration, as first-party platforms each have platform-specific overrides. Use those overrides to configure the driver for each platform.
@@ -3164,7 +3162,7 @@
 		</member>
 		<member name="rendering/global_illumination/sdfgi/screen_probes" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], signed distance field global illumination gathers diffuse indirect light at probes placed on the surfaces the camera sees, rather than interpolating it per pixel from the probes of its world-space grid, much like the final gather of Unreal Engine's Lumen. Each 16×16 pixel tile of the screen gets a probe, plus a second one where it shows another surface as well (the edge of an object against what is behind it, or a corner), and where pixels are still left without a probe on their own surface (thin objects, the edges of small ones), adaptive probes are added for them on tiles of 8×8, then 4×4 pixels. Every frame, each probe traces 64 rays over the hemisphere of its surface: first against the depth buffer, for a short distance, taking the light of whatever they hit on screen from the previous frame; then through the signed distance field, for up to two probe spacings; and from there on, the light the SDFGI probes see in that direction. Half of the rays are spread evenly over the hemisphere, and the other half are drawn towards where the nearest visible SDFGI probe sees the most light coming from (a window, a lit wall), which leaves less noise where the light comes from a few bright places. Each pixel then interpolates the probes around it that lie on its own surface, and averages the result over up to [member rendering/global_illumination/sdfgi/screen_probe_history_frames] frames, while keeping that average within a factor of two of what the probes gather at the moment, so that light switched on or off is still followed within a few frames.
-			Light gathered from exactly where each surface is cannot leak through a wall that surface's own rays would hit, and corners, contact between objects, and objects the signed distance field leaves out (too small or thin for its cells, or with [member GeometryInstance3D.gi_mode] set to [constant GeometryInstance3D.GI_MODE_DISABLED]) are resolved much more finely. The cost is the probes' rays, which scale with the screen resolution rather than with the scene, and slightly more noise from frame to frame, which temporal antialiasing further reduces. Reflections are not affected. Screen probes are only used together with [member rendering/global_illumination/gi/use_temporal_accumulation], without VoxelGI in view, and without multiview or variable rate shading; SDFGI falls back to its usual lookup otherwise. Screen-space indirect lighting ([member Environment.ssil_enabled]) adds much of the same light again, so turn it off when using this.
+			Light gathered from exactly where each surface is cannot leak through a wall that surface's own rays would hit, and corners, contact between objects, and objects the signed distance field leaves out (too small or thin for its cells, or with [member GeometryInstance3D.gi_mode] set to [constant GeometryInstance3D.GI_MODE_DISABLED]) are resolved much more finely. The cost is the probes' rays, which scale with the screen resolution rather than with the scene, and slightly more noise from frame to frame, which temporal antialiasing further reduces. Reflections are not affected. Screen probes are only used together with [member rendering/global_illumination/gi/use_temporal_accumulation], and without multiview or variable rate shading; SDFGI falls back to its usual lookup otherwise. With a [VoxelGI] in view, they are only used if [member rendering/global_illumination/voxel_gi/screen_probes] is enabled too. Screen-space indirect lighting ([member Environment.ssil_enabled]) adds much of the same light again, so turn it off when using this.
 			[b]Note:[/b] This property is only read when the project starts.
 		</member>
 		<member name="rendering/global_illumination/sdfgi/view_bias" type="float" setter="" getter="" default="1.0">
@@ -3179,6 +3177,16 @@
 			The most octree cells a single [VoxelGI] probe may relight in one frame, or [code]0[/code] for no cap. Relighting a probe touches every cell of its octree, which is one large spike on the frame a light inside it moves; capping it spreads that work over as many frames as the octree needs.
 			This trades indirect lighting latency for frame time, so it is off by default. A probe keeps showing its previous lighting until the relight finishes, which for a light that changes once just means indirect light arrives a few frames late. For a light that keeps moving, though, the probe updates once per relight instead of once per frame, so its indirect light advances in steps rather than smoothly, which reads as the bounce light popping. Only set a cap if the relight spike is a measured problem, and set it as high as the frame budget allows: an octree's cell count runs into the hundreds of thousands, so a cap below that is what splits the relight in the first place.
 			Probes containing dynamic objects are never capped, since they are re-lit every frame anyway and their texture has to be complete by the end of each one. On a probe using two bounces the second bounce is never spread either: it runs in the same frame the first bounce finishes, because between the two the probe's texture holds direct light only and is visibly dimmer than the finished result.
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
+		<member name="rendering/global_illumination/voxel_gi/screen_probe_history_frames" type="int" setter="" getter="" default="24">
+			How many frames each pixel averages the light [member rendering/global_illumination/voxel_gi/screen_probes] gather over, at most, while a [VoxelGI] is in view. See [member rendering/global_illumination/sdfgi/screen_probe_history_frames], which works the same way for SDFGI.
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
+		<member name="rendering/global_illumination/voxel_gi/screen_probes" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], [VoxelGI] gathers diffuse indirect light at probes placed on the surfaces the camera sees, rather than tracing a few wide cones through its voxels from every pixel. The probes are placed and used the same way as those of [member rendering/global_illumination/sdfgi/screen_probes]: a probe per 16×16 pixel tile, another one for a second surface in the tile, and adaptive ones where pixels are still left without a probe on their own surface. Every frame, each probe traces 64 rays over the hemisphere of its surface: first against the depth buffer, for a short distance, taking the light of whatever they hit on screen from the previous frame; then as cones through the [VoxelGI] it is in, each about as narrow as the share of the hemisphere its ray stands for. Half of the rays are drawn towards where the voxels show the most light coming from. Each pixel then interpolates the probes around it that lie on its own surface, and averages the result over up to [member rendering/global_illumination/voxel_gi/screen_probe_history_frames] frames.
+			Where a cone leaves the [VoxelGI] without finding all of its light, the rest comes from the signed distance field global illumination probes if SDFGI is enabled as well, or else from the environment, as it does for [VoxelGI] without screen probes (see [member VoxelGIData.interior]).
+			64 narrow cones per probe resolve where indirect light comes from much more finely than the 4 or 6 wide cones per pixel of [member rendering/global_illumination/voxel_gi/quality], so corners, contact between objects and the shadows of indirect light stay sharper, and light leaks less through thin geometry. The cost is the probes' rays, which scale with the screen resolution rather than with the scene, and slightly more noise from frame to frame, which temporal antialiasing further reduces. Reflections are not affected. Screen probes are only used together with [member rendering/global_illumination/gi/use_temporal_accumulation], and without multiview or variable rate shading; [VoxelGI] falls back to its usual per-pixel cones otherwise. Screen-space indirect lighting ([member Environment.ssil_enabled]) adds much of the same light again, so turn it off when using this.
 			[b]Note:[/b] This property is only read when the project starts.
 		</member>
 		<member name="rendering/lightmapping/bake_performance/max_rays_per_pass" type="int" setter="" getter="" default="4">
