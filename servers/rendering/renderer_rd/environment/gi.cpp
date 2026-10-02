@@ -4050,6 +4050,8 @@ void GI::init(SkyRD *p_sky) {
 		voxel_gi_lights = memnew_arr(VoxelGILight, voxel_gi_max_lights);
 		voxel_gi_lights_uniform = RD::get_singleton()->uniform_buffer_create(voxel_gi_max_lights * sizeof(VoxelGILight));
 		voxel_gi_quality = RSE::VoxelGIQuality(CLAMP(int(GLOBAL_GET("rendering/global_illumination/voxel_gi/quality")), 0, 1));
+		voxel_gi_screen_probes = GLOBAL_GET("rendering/global_illumination/voxel_gi/screen_probes");
+		voxel_gi_screen_probe_history_frames = CLAMP(int(GLOBAL_GET("rendering/global_illumination/voxel_gi/screen_probe_history_frames")), 1, 256);
 
 		String defines = "\n#define MAX_LIGHTS " + itos(voxel_gi_max_lights) + "\n";
 
@@ -4201,10 +4203,12 @@ void GI::init(SkyRD *p_sky) {
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n", default_enabled)); // MODE_SDFGI
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n", default_enabled)); // MODE_COMBINED
 			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n\n#define USE_VOXEL_GI_INSTANCES\n#define SAMPLE_VOXEL_GI_NEAREST\n", default_enabled)); // MODE_COMBINED_WITHOUT_SAMPLER
-			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_PLACE\n", default_enabled)); // MODE_SCREEN_PROBE_PLACE
-			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_ADAPT\n", default_enabled)); // MODE_SCREEN_PROBE_ADAPT
-			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_TRACE\n", default_enabled)); // MODE_SCREEN_PROBE_TRACE
-			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define MODE_SCREEN_PROBE_FILTER\n", default_enabled)); // MODE_SCREEN_PROBE_FILTER
+			// The screen probe passes work on SDFGI, VoxelGI or both, as their push constant's flags say.
+			// They read which VoxelGI instances a pixel has without a sampler, which is always valid.
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define SAMPLE_VOXEL_GI_NEAREST\n#define MODE_SCREEN_PROBE_PLACE\n", default_enabled)); // MODE_SCREEN_PROBE_PLACE
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define SAMPLE_VOXEL_GI_NEAREST\n#define MODE_SCREEN_PROBE_ADAPT\n", default_enabled)); // MODE_SCREEN_PROBE_ADAPT
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define SAMPLE_VOXEL_GI_NEAREST\n#define MODE_SCREEN_PROBE_TRACE\n", default_enabled)); // MODE_SCREEN_PROBE_TRACE
+			variants.push_back(ShaderRD::VariantDefine(group, vrs_base + "\n#define USE_SDFGI\n#define SAMPLE_VOXEL_GI_NEAREST\n#define MODE_SCREEN_PROBE_FILTER\n", default_enabled)); // MODE_SCREEN_PROBE_FILTER
 		}
 
 		shader.initialize(variants, defines);
@@ -4535,7 +4539,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	const bool use_temporal = temporal_accumulation && p_view_count == 1 && !has_vrs_texture;
 	// Screen probes rely on that history to average what they gather over several frames, so
 	// they are off wherever it is.
-	const bool use_screen_probe_buffers = sdfgi_screen_probes && use_temporal;
+	const bool use_screen_probe_buffers = (sdfgi_screen_probes || voxel_gi_screen_probes) && use_temporal;
 
 	if (rbgi->using_half_size_gi != half_resolution || rbgi->using_temporal_gi != use_temporal || rbgi->using_screen_probes != use_screen_probe_buffers) {
 		p_render_buffers->clear_context(RB_SCOPE_GI);
@@ -4566,7 +4570,8 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 			for (uint32_t i = 0; i < 2; i++) {
 				RID ambient = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_ambient_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
 				RID reflection = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_reflection_name(i), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
-				RID depth = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_depth_name(i), RD::DATA_FORMAT_R32_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
+				// The depth each sample was traced at, and the alpha of its ambient light (see gi.glsl).
+				RID depth = p_render_buffers->create_texture(RB_SCOPE_GI, gi_history_depth_name(i), RD::DATA_FORMAT_R32G32_SFLOAT, history_usage_bits, RD::TEXTURE_SAMPLES_1, history_size);
 				// A fresh texture holds whatever was in that memory. The pass never reads
 				// history until it has written some, so this is belt and braces, but it keeps a
 				// stray read from turning into stray colour.
@@ -4709,12 +4714,26 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		mode = without_sampler ? MODE_VOXEL_GI_WITHOUT_SAMPLER : MODE_VOXEL_GI;
 	}
 
-	// Screen probes take the place of the SDFGI probe lookup, and nothing else: VoxelGI is
-	// blended over that per pixel in process_gi(), which the pixels the probes cover skip, so
-	// they stand down while a VoxelGI is in view.
-	const bool use_screen_probes = rbgi->using_screen_probes && use_sdfgi && !use_voxel_gi_instances;
+	// Screen probes take the place of the per-pixel lookup of the GI they go on. The pixels the
+	// probes cover skip that lookup altogether, so with a VoxelGI in view, which process_gi()
+	// blends over SDFGI per pixel, they need to go on VoxelGI too, or not at all. Without one, it is
+	// up to SDFGI's setting. The rays of probes on VoxelGI take what they leave to find from SDFGI
+	// wherever it is there, whether or not probes go on it.
+	const bool use_voxel_gi_screen_probes = rbgi->using_screen_probes && use_voxel_gi_instances && voxel_gi_screen_probes;
+	const bool use_sdfgi_screen_probes = rbgi->using_screen_probes && use_sdfgi && sdfgi_screen_probes && (!use_voxel_gi_instances || use_voxel_gi_screen_probes);
+	const bool use_screen_probes = use_voxel_gi_screen_probes || use_sdfgi_screen_probes;
+	uint32_t screen_probe_gi_flags = 0;
+	if (use_sdfgi_screen_probes) {
+		screen_probe_gi_flags |= SCREEN_PROBE_FLAG_SDFGI_PROBES;
+	}
+	if (use_voxel_gi_screen_probes) {
+		screen_probe_gi_flags |= SCREEN_PROBE_FLAG_VOXEL_GI_PROBES;
+	}
+	if (use_sdfgi) {
+		screen_probe_gi_flags |= SCREEN_PROBE_FLAG_SDFGI;
+	}
 	push_constant.screen_probe_frame = rbgi->screen_probe_frame;
-	push_constant.screen_probe_blend = 1.0 / float(sdfgi_screen_probe_history_frames);
+	push_constant.screen_probe_blend = 1.0 / float(use_voxel_gi_screen_probes ? voxel_gi_screen_probe_history_frames : sdfgi_screen_probe_history_frames);
 	push_constant.screen_probe_grid[0] = use_screen_probes ? rbgi->screen_probe_grid.x : 0;
 	push_constant.screen_probe_grid[1] = use_screen_probes ? rbgi->screen_probe_grid.y : 0;
 	push_constant.screen_probe_offset[0] = 0;
@@ -4752,7 +4771,7 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 			}
 			rbgi->screen_probe_last_frame[v] = last_frame;
 		}
-		push_constant.screen_probe_flags = last_frame.is_valid() ? SCREEN_PROBE_FLAG_SCREEN_TRACES : 0;
+		push_constant.screen_probe_flags = screen_probe_gi_flags | (last_frame.is_valid() ? SCREEN_PROBE_FLAG_SCREEN_TRACES : 0);
 
 		// setup our uniform set
 		const uint32_t set_parity = rbgi->history_frame & 1;
@@ -4891,7 +4910,9 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 				RD::Uniform u;
 				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				u.binding = 14;
-				RID buffer = p_voxel_gi_buffer.is_valid() ? p_voxel_gi_buffer : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+				// An unsigned integer texture either way: the screen probe passes read this binding as one
+				// even where there is no VoxelGI (see voxel_gi_indices() in gi.glsl).
+				RID buffer = p_voxel_gi_buffer.is_valid() ? p_voxel_gi_buffer : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_UINT);
 				u.append_id(buffer);
 				uniforms.push_back(u);
 			}

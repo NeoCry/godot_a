@@ -3773,6 +3773,8 @@ void RenderingServer::init() {
 	// the visible effect is that indirect light catches up over a few frames instead of
 	// snapping. 0 relights the whole probe in one frame.
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/relight_cells_per_frame", PROPERTY_HINT_RANGE, "0,4194304,1"), 0);
+	GLOBAL_DEF_RST("rendering/global_illumination/voxel_gi/screen_probes", false);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/screen_probe_history_frames", PROPERTY_HINT_RANGE, "4,64,1"), 24);
 
 	GLOBAL_DEF_RST("rendering/shading/overrides/force_vertex_shading", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley", false);
