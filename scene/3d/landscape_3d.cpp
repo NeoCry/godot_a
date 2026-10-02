@@ -1120,9 +1120,9 @@ void Landscape3D::_allocate_multimeshes(bool p_indirect) {
 		}
 		multimeshes[i] = rs->multimesh_create();
 		if (p_indirect) {
-			rs->multimesh_allocate_data(multimeshes[i], LandscapeGPUQuadtree::CAPACITY, RSE::MULTIMESH_TRANSFORM_3D, true, true, true);
+			rs->multimesh_allocate_data(multimeshes[i], gpu_quadtree.get_capacity(), RSE::MULTIMESH_TRANSFORM_3D, true, true, true);
 		}
-		multimesh_capacity[i] = p_indirect ? int(LandscapeGPUQuadtree::CAPACITY) : 0;
+		multimesh_capacity[i] = p_indirect ? int(gpu_quadtree.get_capacity()) : 0;
 		rs->multimesh_set_mesh(multimeshes[i], patch_mesh->get_rid());
 		if (draw_instances[i].is_valid()) {
 			rs->instance_set_base(draw_instances[i], multimeshes[i]);
@@ -1260,6 +1260,11 @@ void Landscape3D::_on_frame_pre_draw() {
 		if (gpu) {
 			gpu_quadtree.set_nodes(quadtree);
 		}
+	} else if (gpu && gpu_quadtree.get_wanted_capacity() > gpu_quadtree.get_capacity()) {
+		// A selection did not fit: until the MultiMeshes are this large, the
+		// GPU makes do with a coarser one.
+		gpu_quadtree.set_capacity(gpu_quadtree.get_wanted_capacity());
+		_allocate_multimeshes(true);
 	}
 
 	LandscapeQuadtree::SelectParams params;

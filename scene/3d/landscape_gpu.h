@@ -110,6 +110,8 @@ class LandscapeGPUResources : public RefCounted {
 	RID params_buffer;
 	RID node_buffer;
 	uint32_t node_count = 0;
+	// Nodes each list holds, and patches each MultiMesh does.
+	uint32_t capacity = 0;
 	RID list_buffer;
 	RID final_buffer;
 	RID counter_buffer;
@@ -127,6 +129,10 @@ class LandscapeGPUResources : public RefCounted {
 	// Set once the compute shaders failed to build, so that Landscape3D falls
 	// back to selecting on the CPU.
 	SafeFlag failed;
+	// Set while the counters of a selection are being read back.
+	SafeFlag counters_pending;
+	// Raised when a selection did not fit the lists at the first attempt.
+	SafeNumeric<uint32_t> wanted_capacity;
 
 	bool _ensure_pipelines();
 	bool _ensure_buffers();
@@ -136,8 +142,9 @@ class LandscapeGPUResources : public RefCounted {
 
 	void rt_set_nodes(const PackedFloat32Array &p_nodes);
 	void rt_update_nodes(const PackedInt32Array &p_ranges, const PackedFloat32Array &p_data);
-	void rt_set_outputs(RID p_main_multimesh, RID p_shadow_multimesh);
+	void rt_set_outputs(RID p_main_multimesh, RID p_shadow_multimesh, uint32_t p_capacity);
 	void rt_dispatch(const PackedByteArray &p_params, int p_top_level, int p_min_level);
+	static void _rt_counters_read(const PackedByteArray &p_data, const Ref<LandscapeGPUResources> &p_resources, uint32_t p_capacity);
 };
 
 // Screen-space error LOD selection on the GPU, the compute counterpart of
@@ -155,17 +162,23 @@ class LandscapeGPUResources : public RefCounted {
 // MultiMeshes' indirect draw commands, so how many patches are drawn is never
 // known to (or sent from) the CPU.
 //
+// A selection that does not fit the lists is made again with a coarser LOD,
+// within the same frame (see rt_dispatch()), and the counters are read back a
+// few frames later to grow the lists when that happens.
+//
 // Like FoliageGPUCuller, every RenderingDevice call is queued onto the
 // rendering thread; the methods below only hand it copies of their data.
 class LandscapeGPUQuadtree {
 	Ref<LandscapeGPUResources> resources;
+	uint32_t capacity = INITIAL_CAPACITY;
 
 	static void rt_free(const Ref<LandscapeGPUResources> &p_resources);
 
 public:
-	// Patches either output list can hold; also the size of the MultiMeshes
-	// the lists are written into.
-	static constexpr uint32_t CAPACITY = 16384;
+	// Patches either output list holds to start with, and at most; also the
+	// sizes of the MultiMeshes the lists are written into.
+	static constexpr uint32_t INITIAL_CAPACITY = 16384;
+	static constexpr uint32_t MAX_CAPACITY = 131072;
 
 	// True if this renderer has compute shaders and indirect MultiMeshes.
 	static bool is_supported();
@@ -174,9 +187,15 @@ public:
 
 	void set_nodes(const LandscapeQuadtree &p_quadtree);
 	void update_nodes(const LandscapeQuadtree &p_quadtree, const LocalVector<Vector2i> &p_ranges);
-	// Both MultiMeshes must have been allocated for CAPACITY instances, with
-	// colors, custom data and indirect drawing, and have their mesh set.
+	// Both MultiMeshes must have been allocated for get_capacity() instances,
+	// with colors, custom data and indirect drawing, and have their mesh set.
 	void set_outputs(RID p_main_multimesh, RID p_shadow_multimesh);
+	// Takes effect with the next set_outputs().
+	void set_capacity(uint32_t p_capacity);
+	uint32_t get_capacity() const { return capacity; }
+	// More than get_capacity() once a selection has not fitted: the
+	// MultiMeshes should then be allocated again for this many patches.
+	uint32_t get_wanted_capacity() const;
 	void dispatch(const LandscapeQuadtree &p_quadtree, const LandscapeQuadtree::SelectParams &p_params);
 	void release();
 

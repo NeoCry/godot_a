@@ -64,7 +64,8 @@ RD::DataFormat get_rd_format(Image::Format p_format) {
 // MODE_TRAVERSE runs once per level, top down. Every node of the level's list
 // either appends its four children to the list of the level below (the two
 // lists alternate between the halves of one buffer), or appends itself to the
-// selected patches.
+// selected patches. Run with pc.reset set, a single thread of it starts a new
+// attempt at the selection instead (see rt_dispatch()).
 //
 // MODE_EMIT runs once over the selected patches: it works out how much coarser
 // each neighbor is, culls, and writes the patch into the MultiMesh instance
@@ -133,7 +134,15 @@ layout(set = 0, binding = 4, std430) restrict buffer Counters {
 	uint final_count;
 	uint visible_count;
 	uint shadow_count;
-	uint pad;
+	// Set when the selection ran out of room in a list: it is then missing
+	// patches, or has some coarser than the LOD asked for, and neither is
+	// stitched to its neighbors.
+	uint overflow;
+	// The attempt the lists hold.
+	uint attempt;
+	// Set once an attempt fitted, which leaves its selection in the lists.
+	uint done;
+	uint pad[2];
 } counters;
 
 #ifdef MODE_EMIT
@@ -160,7 +169,9 @@ layout(push_constant, std430) uniform PushConstant {
 	int level;
 	uint level_index;
 	uint capacity;
-	uint pad;
+	uint attempt;
+	uint reset;
+	uint pad[3];
 } pc;
 
 #if defined(MODE_TRAVERSE) || defined(MODE_EMIT)
@@ -239,7 +250,9 @@ bool should_subdivide(int p_level, ivec2 p_node) {
 	}
 	Bounds b = node_bounds(p_level, p_node);
 	precise float distance = box_distance(b.lo, b.hi);
-	precise float divisor = params.camera.w > 0.5 ? 1.0 : distance;
+	// Every limit is relaxed by the same power of two on later attempts,
+	// which leaves the comparisons as exact as on the first.
+	precise float divisor = (params.camera.w > 0.5 ? 1.0 : distance) * float(1u << counters.attempt);
 	precise float scale = params.lod.x;
 
 	precise float error_pixels = b.error * scale;
@@ -264,8 +277,33 @@ bool should_subdivide(int p_level, ivec2 p_node) {
 #ifdef MODE_TRAVERSE
 
 void main() {
+	if (counters.done != 0u) {
+		return;
+	}
 	uint index = gl_GlobalInvocationID.x;
 	uint level_index = pc.level_index;
+
+	if (pc.reset != 0u) {
+		if (index != 0u) {
+			return;
+		}
+		// The previous attempt fitted: it stands.
+		if (pc.attempt > 0u && counters.overflow == 0u) {
+			counters.done = 1u;
+			return;
+		}
+		for (uint i = 0u; i < 16u; i++) {
+			counters.level_count[i] = 0u;
+		}
+		// Every list empty but the top level's, which holds the root.
+		counters.level_count[level_index] = 1u;
+		lists.data[(level_index & 1u) * pc.capacity] = 0u;
+		counters.final_count = 0u;
+		counters.overflow = 0u;
+		counters.attempt = pc.attempt;
+		return;
+	}
+
 	uint count = min(counters.level_count[level_index], pc.capacity);
 	if (index >= count) {
 		return;
@@ -295,6 +333,7 @@ void main() {
 		}
 		// Out of room: this node is drawn as it is instead, and whatever part
 		// of the reserved range still fits is marked unused.
+		counters.overflow = 1u;
 		for (uint i = base; i < pc.capacity; i++) {
 			lists.data[offset + i] = INVALID_NODE;
 		}
@@ -303,6 +342,8 @@ void main() {
 	uint selected = atomicAdd(counters.final_count, 1u);
 	if (selected < pc.capacity) {
 		final_nodes.data[selected] = uvec2(packed, uint(level + LEVEL_BIAS));
+	} else {
+		counters.overflow = 1u;
 	}
 }
 
@@ -449,7 +490,9 @@ struct LandscapePushConstant {
 	int32_t level;
 	uint32_t level_index;
 	uint32_t capacity;
-	uint32_t pad;
+	uint32_t attempt;
+	uint32_t reset;
+	uint32_t pad[3];
 };
 
 // Mirrors the shader's Counters block.
@@ -458,8 +501,15 @@ struct LandscapeCounters {
 	uint32_t final_count;
 	uint32_t visible_count;
 	uint32_t shadow_count;
-	uint32_t pad;
+	uint32_t overflow;
+	uint32_t attempt;
+	uint32_t done;
+	uint32_t pad[2];
 };
+
+// Attempts at a selection that fits the lists, each with twice the screen
+// space error of the last.
+constexpr uint32_t LANDSCAPE_MAX_ATTEMPTS = 4;
 
 static_assert(LandscapeQuadtree::MAX_LEVEL_COUNT <= 16, "The shader's counters hold 16 levels.");
 static_assert(LandscapeQuadtree::MAX_TOP_LEVEL < 16, "The shader's level offsets hold 16 levels.");
@@ -620,11 +670,11 @@ bool LandscapeGPUResources::_ensure_buffers() {
 		ERR_FAIL_COND_V(params_buffer.is_null(), false);
 	}
 	if (list_buffer.is_null()) {
-		list_buffer = rd->storage_buffer_create(2 * LandscapeGPUQuadtree::CAPACITY * sizeof(uint32_t));
+		list_buffer = rd->storage_buffer_create(2 * capacity * sizeof(uint32_t));
 		ERR_FAIL_COND_V(list_buffer.is_null(), false);
 	}
 	if (final_buffer.is_null()) {
-		final_buffer = rd->storage_buffer_create(LandscapeGPUQuadtree::CAPACITY * 2 * sizeof(uint32_t));
+		final_buffer = rd->storage_buffer_create(capacity * 2 * sizeof(uint32_t));
 		ERR_FAIL_COND_V(final_buffer.is_null(), false);
 	}
 	if (counter_buffer.is_null()) {
@@ -757,8 +807,17 @@ void LandscapeGPUResources::rt_update_nodes(const PackedInt32Array &p_ranges, co
 	}
 }
 
-void LandscapeGPUResources::rt_set_outputs(RID p_main_multimesh, RID p_shadow_multimesh) {
+void LandscapeGPUResources::rt_set_outputs(RID p_main_multimesh, RID p_shadow_multimesh, uint32_t p_capacity) {
 	_free_sets();
+
+	if (p_capacity != capacity) {
+		// The lists hold as many nodes as the MultiMeshes hold patches.
+		RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+		ERR_FAIL_NULL(rd);
+		free_owned(rd, list_buffer);
+		free_owned(rd, final_buffer);
+		capacity = p_capacity;
+	}
 
 	RenderingServer *rs = RenderingServer::get_singleton();
 	const RID multimeshes[2] = { p_main_multimesh, p_shadow_multimesh };
@@ -785,33 +844,48 @@ void LandscapeGPUResources::rt_dispatch(const PackedByteArray &p_params, int p_t
 		return;
 	}
 
-	const uint32_t capacity = LandscapeGPUQuadtree::CAPACITY;
+	if (capacity == 0) {
+		return;
+	}
 	const uint32_t top_index = uint32_t(p_top_level - p_min_level);
 
 	rd->buffer_update(params_buffer, 0, sizeof(LandscapeGPUParams), p_params.ptr());
 
-	// Every list empty but the top level's, which holds the root.
-	LandscapeCounters counters = {};
-	counters.level_count[top_index] = 1;
+	const LandscapeCounters counters = {};
 	rd->buffer_update(counter_buffer, 0, sizeof(LandscapeCounters), &counters);
-	const uint32_t root = 0;
-	rd->buffer_update(list_buffer, (top_index & 1) * capacity * sizeof(uint32_t), sizeof(uint32_t), &root);
 
 	RD::ComputeListID compute_list = rd->compute_list_begin();
 
 	rd->compute_list_bind_compute_pipeline(compute_list, traverse_pipeline);
 	rd->compute_list_bind_uniform_set(compute_list, traverse_set, 0);
-	for (int level = p_top_level; level >= p_min_level; level--) {
-		LandscapePushConstant push_constant = {};
-		push_constant.level = level;
-		push_constant.level_index = uint32_t(level - p_min_level);
-		push_constant.capacity = capacity;
-		// No more nodes than the level has, nor than a list holds.
-		const uint32_t level_nodes = level >= 0 ? MIN(1u << (2 * (p_top_level - level)), capacity) : capacity;
-		rd->compute_list_set_push_constant(compute_list, &push_constant, sizeof(LandscapePushConstant));
-		rd->compute_list_dispatch(compute_list, Math::division_round_up(level_nodes, (uint32_t)LANDSCAPE_GROUP_SIZE), 1, 1);
-		// Each level reads the list the one before it wrote.
+	// A selection that does not fit the lists would have to leave patches out,
+	// and holes in the ground where they were. So whenever one does not fit,
+	// it is made again, with the screen space error relaxed: coarser ground for
+	// a frame or two, until the lists have grown to fit (see
+	// get_wanted_capacity()). Once an attempt fits, the next ones do nothing.
+	for (uint32_t attempt = 0; attempt < LANDSCAPE_MAX_ATTEMPTS; attempt++) {
+		LandscapePushConstant reset = {};
+		reset.level_index = top_index;
+		reset.capacity = capacity;
+		reset.attempt = attempt;
+		reset.reset = 1;
+		rd->compute_list_set_push_constant(compute_list, &reset, sizeof(LandscapePushConstant));
+		rd->compute_list_dispatch(compute_list, 1, 1, 1);
 		rd->compute_list_add_barrier(compute_list);
+
+		for (int level = p_top_level; level >= p_min_level; level--) {
+			LandscapePushConstant push_constant = {};
+			push_constant.level = level;
+			push_constant.level_index = uint32_t(level - p_min_level);
+			push_constant.capacity = capacity;
+			push_constant.attempt = attempt;
+			// No more nodes than the level has, nor than a list holds.
+			const uint32_t level_nodes = level >= 0 ? MIN(1u << (2 * (p_top_level - level)), capacity) : capacity;
+			rd->compute_list_set_push_constant(compute_list, &push_constant, sizeof(LandscapePushConstant));
+			rd->compute_list_dispatch(compute_list, Math::division_round_up(level_nodes, (uint32_t)LANDSCAPE_GROUP_SIZE), 1, 1);
+			// Each level reads the list the one before it wrote.
+			rd->compute_list_add_barrier(compute_list);
+		}
 	}
 
 	LandscapePushConstant push_constant = {};
@@ -832,6 +906,34 @@ void LandscapeGPUResources::rt_dispatch(const PackedByteArray &p_params, int p_t
 	rd->compute_list_dispatch(compute_list, 1, 1, 1);
 
 	rd->compute_list_end();
+
+	// Whether that took more than one attempt only shows a few frames later;
+	// one look at a time is plenty to grow the lists by.
+	if (!counters_pending.is_set()) {
+		counters_pending.set();
+		const Callable callback = callable_mp_static(&LandscapeGPUResources::_rt_counters_read).bind(Ref<LandscapeGPUResources>(this), capacity);
+		if (rd->buffer_get_data_async(counter_buffer, callback, 0, sizeof(LandscapeCounters)) != OK) {
+			counters_pending.clear();
+		}
+	}
+}
+
+void LandscapeGPUResources::_rt_counters_read(const PackedByteArray &p_data, const Ref<LandscapeGPUResources> &p_resources, uint32_t p_capacity) {
+	ERR_FAIL_COND(p_resources.is_null());
+	p_resources->counters_pending.clear();
+	ERR_FAIL_COND(p_data.size() < int64_t(sizeof(LandscapeCounters)));
+
+	LandscapeCounters counters;
+	memcpy(&counters, p_data.ptr(), sizeof(LandscapeCounters));
+	const bool fitted_first = counters.attempt == 0 && counters.overflow == 0;
+	if (!fitted_first) {
+		// Grown a step at a time: the counts of an attempt that ran out of
+		// room only say that more was needed, not how much.
+		const uint32_t wanted = MIN(p_capacity * 2, LandscapeGPUQuadtree::MAX_CAPACITY);
+		if (wanted > p_resources->wanted_capacity.get()) {
+			p_resources->wanted_capacity.set(wanted);
+		}
+	}
 }
 
 #else // !RD_ENABLED
@@ -853,8 +955,9 @@ void LandscapeGPUResources::_free_sets() {}
 void LandscapeGPUResources::_free_all() {}
 void LandscapeGPUResources::rt_set_nodes(const PackedFloat32Array &p_nodes) {}
 void LandscapeGPUResources::rt_update_nodes(const PackedInt32Array &p_ranges, const PackedFloat32Array &p_data) {}
-void LandscapeGPUResources::rt_set_outputs(RID p_main_multimesh, RID p_shadow_multimesh) {}
+void LandscapeGPUResources::rt_set_outputs(RID p_main_multimesh, RID p_shadow_multimesh, uint32_t p_capacity) {}
 void LandscapeGPUResources::rt_dispatch(const PackedByteArray &p_params, int p_top_level, int p_min_level) {}
+void LandscapeGPUResources::_rt_counters_read(const PackedByteArray &p_data, const Ref<LandscapeGPUResources> &p_resources, uint32_t p_capacity) {}
 
 #endif // RD_ENABLED
 
@@ -1063,7 +1166,18 @@ void LandscapeGPUQuadtree::set_outputs(RID p_main_multimesh, RID p_shadow_multim
 	if (resources.is_null()) {
 		resources.instantiate();
 	}
-	RenderingServer::get_singleton()->call_on_render_thread(callable_mp(resources.ptr(), &LandscapeGPUResources::rt_set_outputs).bind(p_main_multimesh, p_shadow_multimesh));
+	RenderingServer::get_singleton()->call_on_render_thread(callable_mp(resources.ptr(), &LandscapeGPUResources::rt_set_outputs).bind(p_main_multimesh, p_shadow_multimesh, capacity));
+}
+
+void LandscapeGPUQuadtree::set_capacity(uint32_t p_capacity) {
+	capacity = CLAMP(p_capacity, INITIAL_CAPACITY, MAX_CAPACITY);
+}
+
+uint32_t LandscapeGPUQuadtree::get_wanted_capacity() const {
+	if (resources.is_null()) {
+		return capacity;
+	}
+	return MAX(capacity, resources->wanted_capacity.get());
 }
 
 void LandscapeGPUQuadtree::dispatch(const LandscapeQuadtree &p_quadtree, const LandscapeQuadtree::SelectParams &p_params) {

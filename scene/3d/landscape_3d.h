@@ -136,7 +136,7 @@ private:
 	RID multimeshes[DRAW_MAX];
 	RID draw_instances[DRAW_MAX];
 	// What the MultiMeshes are currently allocated for: filled by the GPU
-	// (indirect, LandscapeGPUQuadtree::CAPACITY instances) or by the CPU
+	// (indirect, LandscapeGPUQuadtree::get_capacity() instances) or by the CPU
 	// (grown to whatever the selection needs).
 	bool multimeshes_indirect = false;
 	int multimesh_capacity[DRAW_MAX] = {};
