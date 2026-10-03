@@ -48,6 +48,20 @@ class ShaderMaterial;
 class StaticBody3D;
 class Texture2DArray;
 
+// Where Landscape3D::paint_layer() applies on the ground, as well as within its
+// brush: only within a band of heights and a band of slopes, each fading out
+// over its own falloff (see TerrainData::generate_layer_mask() for the same
+// bands). The defaults cover everything. Declared out here rather than inside
+// Landscape3D, whose own default arguments construct it.
+struct Landscape3DPaintMask {
+	float height_min = -100000.0f;
+	float height_max = 100000.0f;
+	float height_falloff = 0.0f;
+	float slope_min = 0.0f;
+	float slope_max = 90.0f;
+	float slope_falloff = 0.0f;
+};
+
 // A large, sculptable, texture-splatted heightfield terrain, rendered as a GPU
 // driven quadtree (see LandscapeQuadtree and LandscapeGPUQuadtree).
 //
@@ -91,6 +105,12 @@ public:
 		SCULPT_FLATTEN,
 	};
 
+	enum PaintOperation {
+		PAINT_ADD,
+		PAINT_ERASE,
+		PAINT_BLEND,
+	};
+
 	enum DebugView {
 		DEBUG_VIEW_DISABLED,
 		DEBUG_VIEW_LOD_LEVELS,
@@ -108,6 +128,8 @@ public:
 	// rebuilds the shapes under it: one shape for a whole 4097 x 4097
 	// heightmap takes the physics engine seconds to build.
 	static constexpr int COLLISION_TILE_QUADS = 256;
+
+	using PaintMask = Landscape3DPaintMask;
 
 private:
 	// Simplified stand-in geometry fed to the renderer's occlusion culling
@@ -187,6 +209,11 @@ private:
 
 	HashMap<Vector2i, OccluderBlock> occluder_blocks;
 
+	// The settings below, but for shadow_distance, debug_view and
+	// virtual_texture_layers, are the same for every landscape in a project:
+	// they follow the landscape_3d/* project settings (see
+	// register_project_settings()), and are set from them whenever those
+	// change. The setters stay public for the editor and tests.
 	float lod_pixel_error = 2.0;
 	float lod_max_quad_pixels = 48.0;
 	bool frustum_culling = true;
@@ -253,6 +280,10 @@ private:
 	// The largest a layer texture is kept at when it has to be resampled into
 	// the shared Texture2DArray (see _rebuild_layer_textures).
 	int layer_texture_size_limit = 2048;
+	// How many of the layers are used: the rest are kept, but neither drawn
+	// nor painted. 4, 8 or TerrainData::MAX_LAYERS.
+	int max_material_layers = TerrainData::MAX_LAYERS;
+	bool project_settings_connected = false;
 
 	struct CollisionTile {
 		CollisionShape3D *node = nullptr;
@@ -317,12 +348,25 @@ private:
 	void _on_layer_texture_changed(ObjectID p_texture);
 	void _watch_layer_texture(const Ref<Texture2D> &p_texture, bool p_watch);
 	void _rebuild_layer_textures(uint32_t p_which);
+	// Everything built from the layers that are used: their parameters,
+	// texture arrays and weight maps.
+	void _rebuild_layers();
 	void _update_material_params();
 	void _update_micro_detail_params();
 	void _update_pom_params();
 
 	Rect2i _get_full_region() const;
 	void _emit_terrain_changed(const Rect2i &p_region);
+
+	// Sets everything the landscape_3d/* project settings hold.
+	void _apply_project_settings();
+	void _on_project_settings_changed();
+	void _connect_project_settings();
+	void _disconnect_project_settings();
+
+	// The bound form of paint_layer(), with the mask spelled out.
+	void _paint_layer_bind(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff, PaintOperation p_operation, const Vector2 &p_height_range, const Vector2 &p_slope_range, float p_height_falloff, float p_slope_falloff);
+	float _get_paint_mask_weight(int p_x, int p_z, const PaintMask &p_mask) const;
 
 	Vector2i _get_block_grid_size() const;
 	void _add_blocks_in_region(const Rect2i &p_samples, HashSet<Vector2i> &r_blocks) const;
@@ -357,6 +401,10 @@ protected:
 public:
 	static void init_shaders();
 	static void finish_shaders();
+	// Defines the landscape_3d/* project settings: level of detail, micro
+	// detail, virtual texturing, occlusion culling, parallax occlusion mapping
+	// and how many material layers a landscape may use.
+	static void register_project_settings();
 
 	void set_terrain_data(const Ref<TerrainData> &p_data);
 	Ref<TerrainData> get_terrain_data() const;
@@ -433,6 +481,12 @@ public:
 	void set_layer_texture_size_limit(int p_size);
 	int get_layer_texture_size_limit() const;
 
+	void set_max_material_layers(int p_layers);
+	int get_max_material_layers() const;
+	// How many of the layers are drawn and can be painted: as many as there
+	// are, up to get_max_material_layers().
+	int get_used_layer_count() const;
+
 	void set_pom_enabled(bool p_enable);
 	bool is_pom_enabled() const;
 
@@ -474,7 +528,13 @@ public:
 	// many averaging passes to smooth by rather than a per-stamp amount - see
 	// the comment in sculpt() for why that operation cannot use one.
 	void sculpt(const Vector3 &p_local_position, float p_radius, float p_strength, SculptOperation p_operation, float p_falloff = 1.0, float p_flatten_height = 0.0, bool p_update_collision = true);
-	void paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff = 1.0);
+	// PAINT_ADD raises p_layer_index's weight, taking it from the other
+	// layers; PAINT_ERASE lowers it, handing it to the other layers (where
+	// none has any weight left, to layer 0; erasing layer 0 itself there
+	// leaves it); PAINT_BLEND averages every layer's weight with its
+	// neighbors', softening the edges between them, and ignores
+	// p_layer_index. p_mask keeps all three to part of the ground.
+	void paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff = 1.0, PaintOperation p_operation = PAINT_ADD, const PaintMask &p_mask = PaintMask());
 	void set_hole(const Vector3 &p_local_position, float p_radius, bool p_hole, bool p_update_collision = true);
 
 	PackedFloat32Array get_height_region(const Rect2i &p_region) const;
@@ -519,4 +579,5 @@ public:
 };
 
 VARIANT_ENUM_CAST(Landscape3D::SculptOperation)
+VARIANT_ENUM_CAST(Landscape3D::PaintOperation)
 VARIANT_ENUM_CAST(Landscape3D::DebugView)

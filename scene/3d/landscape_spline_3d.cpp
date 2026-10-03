@@ -807,7 +807,7 @@ void LandscapeSpline3D::_validate_property(PropertyInfo &p_property) const {
 		// Offer only the layers the landscape actually has.
 		const Landscape3D *landscape = _get_landscape();
 		if (landscape != nullptr) {
-			p_property.hint_string = vformat("-1,%d,1", MAX(landscape->get_layers().size() - 1, 0));
+			p_property.hint_string = vformat("-1,%d,1", MAX(landscape->get_used_layer_count() - 1, 0));
 		}
 	}
 }
@@ -2087,7 +2087,7 @@ void LandscapeSpline3D::_compute_footprint(Landscape3D *p_landscape, LocalVector
 	const float spacing = terrain_data->get_vertex_spacing();
 	const Transform3D to_terrain = p_landscape->get_global_transform().affine_inverse() * get_global_transform();
 
-	const bool paint = paint_layer >= 0 && paint_layer < p_landscape->get_layers().size() && paint_strength > 0.0f;
+	const bool paint = paint_layer >= 0 && paint_layer < p_landscape->get_used_layer_count() && paint_strength > 0.0f;
 	const float falloff = MAX(carve_enabled ? _get_carve_shoulder(p_landscape) + carve_falloff : 0.0f, paint ? paint_falloff : 0.0f);
 
 	r_rings.resize(rings.size());
@@ -2261,7 +2261,7 @@ void LandscapeSpline3D::_compute_fill_footprint(Landscape3D *p_landscape, float 
 	// measures along its own, from its own.
 	r_level = to_terrain.xform(rings_up * r_level).y;
 
-	const bool paint = paint_layer >= 0 && paint_layer < p_landscape->get_layers().size() && paint_strength > 0.0f;
+	const bool paint = paint_layer >= 0 && paint_layer < p_landscape->get_used_layer_count() && paint_strength > 0.0f;
 	const float reach = MAX(carve_enabled ? _get_carve_shoulder(p_landscape) + carve_falloff : 0.0f, paint ? paint_falloff : 0.0f);
 
 	HashMap<Vector2i, uint32_t> block_indices;
@@ -2422,7 +2422,7 @@ void LandscapeSpline3D::apply_to_landscape() {
 		_update();
 	}
 
-	const bool paint = paint_layer >= 0 && paint_layer < landscape->get_layers().size() && paint_strength > 0.0f;
+	const bool paint = paint_layer >= 0 && paint_layer < landscape->get_used_layer_count() && paint_strength > 0.0f;
 	if (!carve_enabled && !paint) {
 		return;
 	}

@@ -102,10 +102,12 @@ public:
 	static constexpr int MIN_RESOLUTION = 2;
 	static constexpr int MAX_RESOLUTION = 4097;
 
-	// Hard cap on distinct TerrainLayers (must match Landscape3D's shader:
-	// layer_uv_scales' fixed uniform array size). Weights for every layer up
-	// to this count are always allocated, packed 4 per RGBA8 weight map.
-	static constexpr int MAX_LAYERS = 32;
+	// Hard cap on distinct TerrainLayers (Landscape3D's shader sizes its
+	// per-layer uniform arrays from it). Weights for every layer up to this
+	// count are always allocated, packed 4 per RGBA8 weight map; a project can
+	// use fewer still (see Landscape3D::set_max_material_layers()). Data saved
+	// with more layers than this loads with the extra layers' weights dropped.
+	static constexpr int MAX_LAYERS = 16;
 	static constexpr int LAYERS_PER_WEIGHT_MAP = 4;
 	static constexpr int WEIGHT_MAP_COUNT = MAX_LAYERS / LAYERS_PER_WEIGHT_MAP;
 
