@@ -32,6 +32,7 @@
 
 TEST_FORCE_LINK(test_landscape_3d)
 
+#include "core/object/message_queue.h"
 #include "core/templates/rid_owner.h"
 #include "scene/3d/landscape_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
@@ -40,6 +41,7 @@ TEST_FORCE_LINK(test_landscape_3d)
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 #include "scene/resources/3d/height_map_shape_3d.h"
+#include "scene/resources/image_texture.h"
 #include "servers/rendering/renderer_scene_occlusion_cull.h"
 #include "servers/rendering/rendering_server.h"
 #include "tests/test_tools.h"
@@ -380,6 +382,90 @@ TEST_CASE("[SceneTree][Landscape3D] Without virtual texturing, layers are blende
 	landscape->set_virtual_texture_enabled(false);
 	CHECK_FALSE(landscape->is_virtual_texture_enabled());
 	CHECK(landscape->get_virtual_texture().is_null());
+
+	memdelete(landscape);
+}
+
+// Counts how often its image is read back, which is what building the layer texture arrays does.
+class CountingTexture : public ImageTexture {
+	GDSOFTCLASS(CountingTexture, ImageTexture);
+
+public:
+	mutable int reads = 0;
+
+	virtual Ref<Image> get_image() const override {
+		reads++;
+		return ImageTexture::get_image();
+	}
+
+	static Ref<CountingTexture> make(const Color &p_color) {
+		Ref<CountingTexture> texture;
+		texture.instantiate();
+		Ref<Image> image = Image::create_empty(16, 16, false, Image::FORMAT_RGBA8);
+		image->fill(p_color);
+		texture->set_image(image);
+		return texture;
+	}
+};
+
+TEST_CASE("[SceneTree][Landscape3D] Editing a layer only rebuilds the textures that changed") {
+	Ref<CountingTexture> albedo = CountingTexture::make(Color(1, 0, 0));
+	Ref<CountingTexture> normal = CountingTexture::make(Color(0.5, 0.5, 1));
+	Ref<TerrainLayer> layer;
+	layer.instantiate();
+	layer->set_albedo_texture(albedo);
+	layer->set_normal_texture(normal);
+
+	Landscape3D *landscape = memnew(Landscape3D);
+	landscape->set_terrain_data(make_hill_terrain());
+	TypedArray<TerrainLayer> layers;
+	layers.push_back(layer);
+	landscape->set_layers(layers);
+	SceneTree::get_singleton()->get_root()->add_child(landscape);
+	REQUIRE(albedo->reads == 1);
+	REQUIRE(normal->reads == 1);
+
+	SUBCASE("Colors, roughness and UV scale are only uniforms") {
+		layer->set_albedo_color(Color(0.5, 0.5, 0.5));
+		layer->set_roughness(0.3);
+		layer->set_uv_scale(2.0);
+		layer->set_normal_strength(0.5);
+		MessageQueue::get_singleton()->flush();
+		CHECK(albedo->reads == 1);
+		CHECK(normal->reads == 1);
+	}
+
+	SUBCASE("A new texture rebuilds its own array, once, at the end of the frame") {
+		Ref<CountingTexture> other = CountingTexture::make(Color(0, 1, 0));
+		layer->set_albedo_texture(other);
+		layer->set_albedo_color(Color(0.5, 0.5, 0.5));
+		layer->set_albedo_texture(albedo);
+		layer->set_albedo_texture(other);
+		CHECK(other->reads == 0);
+		MessageQueue::get_singleton()->flush();
+		CHECK(other->reads == 1);
+		CHECK(normal->reads == 1);
+	}
+
+	SUBCASE("A reimported texture rebuilds the arrays it is in") {
+		normal->emit_changed();
+		MessageQueue::get_singleton()->flush();
+		CHECK(normal->reads == 2);
+		CHECK(albedo->reads == 1);
+	}
+
+	SUBCASE("New layers rebuild what they change, right away") {
+		Ref<TerrainLayer> second;
+		second.instantiate();
+		second->set_albedo_texture(albedo);
+		TypedArray<TerrainLayer> more;
+		more.push_back(layer);
+		more.push_back(second);
+		landscape->set_layers(more);
+		// Two layers now: every array has a layer more.
+		CHECK(albedo->reads == 3);
+		CHECK(normal->reads == 2);
+	}
 
 	memdelete(landscape);
 }

@@ -33,6 +33,7 @@
 #include "core/config/project_settings.h"
 #include "core/object/callable_mp.h"
 #include "core/templates/sort_array.h"
+#include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
@@ -87,11 +88,20 @@ bool VirtualTextureStorage::_ensure_cache(Cache p_cache) {
 	RD *rd = RD::get_singleton();
 
 	if (downsample_shader_version.is_null()) {
+		// The heights of runtime pages are kept at 16 bits where the GPU can write those from a compute
+		// shader, and at 32 otherwise.
+		const BitField<RD::TextureUsageBits> height_usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+		height_format = rd->texture_is_format_supported_for_usage(RD::DATA_FORMAT_R16_UNORM, height_usage) ? RD::DATA_FORMAT_R16_UNORM : RD::DATA_FORMAT_R32_SFLOAT;
+
 		Vector<String> modes;
-		modes.push_back("\n");
-		downsample_shader.initialize(modes);
+		modes.push_back("\n"); // DOWNSAMPLE_MODE_COLOR
+		modes.push_back("\n#define MODE_DOWNSAMPLE_HEIGHT\n");
+		modes.push_back("\n#define MODE_RESOLVE_HEIGHT\n");
+		downsample_shader.initialize(modes, height_format == RD::DATA_FORMAT_R16_UNORM ? "\n#define HEIGHT_FORMAT r16\n" : "\n#define HEIGHT_FORMAT r32f\n");
 		downsample_shader_version = downsample_shader.version_create();
-		downsample_pipeline = rd->compute_pipeline_create(downsample_shader.version_get_shader(downsample_shader_version, 0));
+		for (int i = 0; i < DOWNSAMPLE_MODE_MAX; i++) {
+			downsample_pipelines[i] = rd->compute_pipeline_create(downsample_shader.version_get_shader(downsample_shader_version, i));
+		}
 	}
 
 	pool.layers = p_cache == CACHE_RUNTIME ? RUNTIME_LAYERS : 1;
@@ -116,6 +126,29 @@ bool VirtualTextureStorage::_ensure_cache(Cache p_cache) {
 	pool.texture_srgb = rd->texture_create_shared(srgb_view, pool.texture);
 	for (int i = 0; i < TILE_MIPMAPS; i++) {
 		pool.storage_mips[i] = rd->texture_create_shared_from_slice(RD::TextureView(), pool.texture, 0, i, 1, RD::TEXTURE_SLICE_2D_ARRAY, pool.layers);
+	}
+
+	if (p_cache == CACHE_RUNTIME) {
+		RD::TextureFormat htf;
+		htf.format = height_format;
+		htf.width = tf.width;
+		htf.height = tf.height;
+		htf.array_layers = 1;
+		htf.texture_type = RD::TEXTURE_TYPE_2D_ARRAY;
+		htf.mipmaps = TILE_MIPMAPS;
+		htf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+		pool.height = rd->texture_create(htf, RD::TextureView());
+		if (pool.height.is_null()) {
+			_free_cache(p_cache);
+			ERR_FAIL_V_MSG(false, "Could not create the runtime virtual texture height cache.");
+		}
+		rd->set_resource_name(pool.height, "Runtime virtual texture height cache");
+		// Nothing has been drawn yet, anywhere: no ground. The tile of pages that are not there yet
+		// keeps it that way.
+		rd->texture_clear(pool.height, Color(0, 0, 0, 0), 0, TILE_MIPMAPS, 0, 1);
+		for (int i = 0; i < TILE_MIPMAPS; i++) {
+			pool.height_storage_mips[i] = rd->texture_create_shared_from_slice(RD::TextureView(), pool.height, 0, i, 1, RD::TEXTURE_SLICE_2D_ARRAY, 1);
+		}
 	}
 
 	const uint32_t tile_count = pool.tiles_per_side * pool.tiles_per_side;
@@ -164,6 +197,14 @@ void VirtualTextureStorage::_free_cache(Cache p_cache) {
 			rd->free_rid(pool.storage_mips[i]);
 			pool.storage_mips[i] = RID();
 		}
+		if (pool.height_storage_mips[i].is_valid()) {
+			rd->free_rid(pool.height_storage_mips[i]);
+			pool.height_storage_mips[i] = RID();
+		}
+	}
+	if (pool.height.is_valid()) {
+		rd->free_rid(pool.height);
+		pool.height = RID();
 	}
 	if (pool.texture_srgb.is_valid()) {
 		rd->free_rid(pool.texture_srgb);
@@ -651,32 +692,37 @@ void VirtualTextureStorage::_downsample_tiles() {
 	}
 	RD *rd = RD::get_singleton();
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
-	RID shader = downsample_shader.version_get_shader(downsample_shader_version, 0);
-	ERR_FAIL_COND(shader.is_null());
+	RID color_shader = downsample_shader.version_get_shader(downsample_shader_version, DOWNSAMPLE_MODE_COLOR);
+	RID height_shader = downsample_shader.version_get_shader(downsample_shader_version, DOWNSAMPLE_MODE_HEIGHT);
+	ERR_FAIL_COND(color_shader.is_null() || height_shader.is_null());
 
 	for (int level = 1; level < TILE_MIPMAPS; level++) {
 		const int size = TILE_SIZE >> level;
 		RD::ComputeListID compute_list = rd->compute_list_begin();
-		rd->compute_list_bind_compute_pipeline(compute_list, downsample_pipeline);
-		int bound_cache = -1;
-		for (const DownsampleTile &ds : downsample_tiles) {
-			CachePool &pool = caches[ds.cache];
-			if (pool.texture.is_null()) {
-				continue;
+		// The color layers of every tile, then the heights of the runtime ones.
+		for (int mode = DOWNSAMPLE_MODE_COLOR; mode <= DOWNSAMPLE_MODE_HEIGHT; mode++) {
+			rd->compute_list_bind_compute_pipeline(compute_list, downsample_pipelines[mode]);
+			int bound_cache = -1;
+			for (const DownsampleTile &ds : downsample_tiles) {
+				CachePool &pool = caches[ds.cache];
+				const bool height = mode == DOWNSAMPLE_MODE_HEIGHT;
+				if (pool.texture.is_null() || (height && pool.height.is_null())) {
+					continue;
+				}
+				if (bound_cache != int(ds.cache)) {
+					RD::Uniform u_source(RD::UNIFORM_TYPE_IMAGE, 0, height ? pool.height_storage_mips[level - 1] : pool.storage_mips[level - 1]);
+					RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 1, height ? pool.height_storage_mips[level] : pool.storage_mips[level]);
+					rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(height ? height_shader : color_shader, 0, u_source, u_dest), 0);
+					bound_cache = int(ds.cache);
+				}
+				DownsamplePushConstant push_constant = {};
+				push_constant.dest_origin[0] = int32_t((ds.tile % pool.tiles_per_side) * size);
+				push_constant.dest_origin[1] = int32_t((ds.tile / pool.tiles_per_side) * size);
+				push_constant.dest_size = size;
+				push_constant.layers = height ? 1 : pool.layers;
+				rd->compute_list_set_push_constant(compute_list, &push_constant, sizeof(DownsamplePushConstant));
+				rd->compute_list_dispatch_threads(compute_list, size, size, 1);
 			}
-			if (bound_cache != int(ds.cache)) {
-				RD::Uniform u_source(RD::UNIFORM_TYPE_IMAGE, 0, pool.storage_mips[level - 1]);
-				RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 1, pool.storage_mips[level]);
-				rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_source, u_dest), 0);
-				bound_cache = int(ds.cache);
-			}
-			DownsamplePushConstant push_constant;
-			push_constant.dest_origin[0] = int32_t((ds.tile % pool.tiles_per_side) * size);
-			push_constant.dest_origin[1] = int32_t((ds.tile / pool.tiles_per_side) * size);
-			push_constant.dest_size = size;
-			push_constant.layers = pool.layers;
-			rd->compute_list_set_push_constant(compute_list, &push_constant, sizeof(DownsamplePushConstant));
-			rd->compute_list_dispatch_threads(compute_list, size, size, 1);
 		}
 		rd->compute_list_end();
 	}
@@ -750,8 +796,9 @@ bool VirtualTextureStorage::_ensure_runtime_target() {
 	tf.format = RD::DATA_FORMAT_R16_SFLOAT;
 	runtime_target.depth_output = rd->texture_create(tf, RD::TextureView());
 
-	tf.format = rd->texture_is_format_supported_for_usage(RD::DATA_FORMAT_D32_SFLOAT, RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) ? RD::DATA_FORMAT_D32_SFLOAT : RD::DATA_FORMAT_X8_D24_UNORM_PACK32;
-	tf.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	// Sampled afterwards, for the height of the ground (see _resolve_heights()).
+	tf.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
+	tf.format = rd->texture_is_format_supported_for_usage(RD::DATA_FORMAT_D32_SFLOAT, tf.usage_bits) ? RD::DATA_FORMAT_D32_SFLOAT : RD::DATA_FORMAT_X8_D24_UNORM_PACK32;
 	runtime_target.depth = rd->texture_create(tf, RD::TextureView());
 
 	ERR_FAIL_COND_V(runtime_target.albedo_srgb.is_null() || runtime_target.normal.is_null() || runtime_target.orm.is_null() || runtime_target.emission.is_null() || runtime_target.depth_output.is_null() || runtime_target.depth.is_null(), false);
@@ -780,6 +827,11 @@ void VirtualTextureStorage::_free_runtime_target() {
 	runtime_target.framebuffer = RID();
 }
 
+void VirtualTextureStorage::_page_depth_range(const VirtualTexture *p_texture, real_t &r_margin, real_t &r_volume_height) {
+	r_volume_height = MAX(p_texture->volume.basis.get_column(1).length(), (real_t)CMP_EPSILON);
+	r_margin = MAX(r_volume_height * 0.01, 0.01);
+}
+
 void VirtualTextureStorage::_page_camera(const VirtualTexture *p_texture, uint64_t p_page, RendererTextureStorage::VirtualTextureRenderPage &r_page) const {
 	const uint32_t mip = _page_mip(p_page);
 	const float pages_x = float(p_texture->width >> mip);
@@ -804,13 +856,15 @@ void VirtualTextureStorage::_page_camera(const VirtualTexture *p_texture, uint64
 	const Vector3 cam_z = axis_y / length_y;
 	const Vector3 cam_y = cam_z.cross(cam_x).normalized();
 
-	const real_t margin = MAX(length_y * 0.01, 0.01);
+	real_t margin = 0.0;
+	real_t volume_height = 0.0;
+	_page_depth_range(p_texture, margin, volume_height);
 	const Vector3 top = volume.xform(Vector3((u0 + u1) * 0.5f, 1.0f, (v0 + v1) * 0.5f)) + cam_z * margin;
 	r_page.cam_transform = Transform3D(Basis(cam_x, cam_y, cam_z), top);
 
 	const real_t half_width = (u1 - u0) * 0.5f * length_x;
 	const real_t half_height = (v1 - v0) * 0.5f * length_z;
-	r_page.cam_projection.set_orthogonal(-half_width, half_width, -half_height, half_height, margin * 0.5, length_y + margin * 2.0);
+	r_page.cam_projection.set_orthogonal(-half_width, half_width, -half_height, half_height, margin * 0.5, volume_height + margin * 2.0);
 
 	AABB aabb;
 	for (int i = 0; i < 8; i++) {
@@ -1160,11 +1214,53 @@ RID VirtualTextureStorage::runtime_begin(RID p_virtual_texture, LocalVector<Rend
 	return runtime_target.framebuffer;
 }
 
+void VirtualTextureStorage::_resolve_heights(const VirtualTexture *p_texture) {
+	CachePool &pool = caches[CACHE_RUNTIME];
+	if (pool.height.is_null() || p_texture->drawing.is_empty()) {
+		return;
+	}
+	RD *rd = RD::get_singleton();
+	RID shader = downsample_shader.version_get_shader(downsample_shader_version, DOWNSAMPLE_MODE_RESOLVE_HEIGHT);
+	ERR_FAIL_COND(shader.is_null());
+
+	// Pages are drawn from margin over the top of the volume, between near (margin / 2) and far
+	// (volume_height + 2 margin), with reversed depth: 1 at near, 0 at far. So a depth is at
+	// far - depth * (far - near) from the camera, and volume_height + margin - that over the bottom.
+	real_t margin = 0.0;
+	real_t volume_height = 0.0;
+	_page_depth_range(p_texture, margin, volume_height);
+	const real_t z_near = margin * 0.5;
+	const real_t z_far = volume_height + margin * 2.0;
+
+	const RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	RD::Uniform u_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ sampler, runtime_target.depth }));
+	RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 1, pool.height_storage_mips[0]);
+
+	RD::ComputeListID compute_list = rd->compute_list_begin();
+	rd->compute_list_bind_compute_pipeline(compute_list, downsample_pipelines[DOWNSAMPLE_MODE_RESOLVE_HEIGHT]);
+	rd->compute_list_bind_uniform_set(compute_list, UniformSetCacheRD::get_singleton()->get_cache(shader, 0, u_depth, u_dest), 0);
+	for (const VirtualTexture::Drawing &drawing : p_texture->drawing) {
+		DownsamplePushConstant push_constant = {};
+		push_constant.dest_origin[0] = int32_t((drawing.tile % pool.tiles_per_side) * TILE_SIZE);
+		push_constant.dest_origin[1] = int32_t((drawing.tile / pool.tiles_per_side) * TILE_SIZE);
+		push_constant.dest_size = TILE_SIZE;
+		push_constant.layers = 1;
+		push_constant.source_origin[0] = drawing.region.position.x;
+		push_constant.source_origin[1] = drawing.region.position.y;
+		push_constant.depth_to_height_scale = float((z_far - z_near) / volume_height);
+		push_constant.depth_to_height_bias = float((volume_height + margin - z_far) / volume_height);
+		rd->compute_list_set_push_constant(compute_list, &push_constant, sizeof(DownsamplePushConstant));
+		rd->compute_list_dispatch_threads(compute_list, TILE_SIZE, TILE_SIZE, 1);
+	}
+	rd->compute_list_end();
+}
+
 void VirtualTextureStorage::runtime_end(RID p_virtual_texture) {
 	VirtualTexture *texture = texture_owner.get_or_null(p_virtual_texture);
 	if (!texture) {
 		return;
 	}
+	_resolve_heights(texture);
 	CachePool &pool = caches[CACHE_RUNTIME];
 	RD *rd = RD::get_singleton();
 	const RID sources[RUNTIME_LAYERS] = { runtime_target.albedo, runtime_target.normal, runtime_target.orm };
@@ -1220,6 +1316,14 @@ void VirtualTextureStorage::get_scene_uniforms(RD::Uniform *r_uniforms, uint32_t
 	u.binding = p_first_binding + 2;
 	u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 	u.append_id(feedback_buffer);
+
+	// Until there is a runtime cache, no ground anywhere.
+	RD::Uniform &u_height = r_uniforms[3];
+	u_height = RD::Uniform();
+	u_height.binding = p_first_binding + 3;
+	u_height.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+	const RID height = caches[CACHE_RUNTIME].height;
+	u_height.append_id(height.is_valid() ? height : TextureStorage::get_singleton()->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK));
 }
 
 VirtualTextureStorage::VirtualTextureStorage() {

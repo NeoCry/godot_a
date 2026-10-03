@@ -231,6 +231,7 @@
 #include "scene/3d/ambient_probe_volume_3d.h"
 #include "scene/3d/audio_listener_3d.h"
 #include "scene/3d/audio_stream_player_3d.h"
+#include "scene/3d/blend_landscape_3d.h"
 #include "scene/3d/bone_attachment_3d.h"
 #include "scene/3d/bone_constraint_3d.h"
 #include "scene/3d/bone_space_adjuster_3d.h"
@@ -791,6 +792,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(TerrainLayer);
 	GDREGISTER_CLASS(TerrainData);
 	GDREGISTER_CLASS(Landscape3D);
+	GDREGISTER_CLASS(BlendLandscape3D);
 
 	GDREGISTER_CLASS(Curve3D);
 	GDREGISTER_CLASS(Path3D);

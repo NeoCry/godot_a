@@ -78,6 +78,9 @@ public:
 	static constexpr uint32_t FEEDBACK_SLOTS = 8192;
 	static constexpr uint32_t FEEDBACK_HEADER_SIZE = 16;
 	static constexpr int RUNTIME_LAYERS = 3;
+	// Sampling a runtime virtual texture's layer 3 reads the height of the ground there instead, from 0
+	// at the bottom of its volume to 1 at its top (0 too where there is none).
+	static constexpr int RUNTIME_HEIGHT_LAYER = 3;
 
 	enum Cache {
 		CACHE_STREAMED,
@@ -121,6 +124,10 @@ private:
 		RID texture;
 		RID texture_srgb;
 		RID storage_mips[TILE_MIPMAPS];
+		// Runtime cache only: the height of the ground in every tile, its RUNTIME_HEIGHT_LAYER, kept
+		// apart as it needs more precision than a byte (height_format).
+		RID height;
+		RID height_storage_mips[TILE_MIPMAPS];
 		LocalVector<Tile> tiles;
 		LocalVector<uint32_t> free_tiles;
 		uint32_t reserved_tiles = 0;
@@ -189,12 +196,24 @@ private:
 		int32_t dest_origin[2];
 		int32_t dest_size;
 		int32_t layers;
+		int32_t source_origin[2];
+		float depth_to_height_scale;
+		float depth_to_height_bias;
+	};
+
+	enum DownsampleMode {
+		DOWNSAMPLE_MODE_COLOR,
+		DOWNSAMPLE_MODE_HEIGHT,
+		DOWNSAMPLE_MODE_RESOLVE_HEIGHT,
+		DOWNSAMPLE_MODE_MAX,
 	};
 
 	// What runtime pages are drawn into, a grid of tiles of it at a time, before they are copied into
 	// the cache. Laid out like render_material() wants it: albedo, normal, ORM, emission and depth
 	// outputs, then the depth buffer. Albedo is drawn through an sRGB view, so what is copied out of it
-	// is already encoded the way the cache's sRGB view reads it back.
+	// is already encoded the way the cache's sRGB view reads it back. The height of the ground comes
+	// from the depth buffer: what is drawn with depth (opaque surfaces) is ground, what is blended over
+	// it (decals) is not.
 	struct RuntimeTarget {
 		int grid = 0;
 		RID albedo;
@@ -243,7 +262,8 @@ private:
 
 	VirtualTextureDownsampleShaderRD downsample_shader;
 	RID downsample_shader_version;
-	RID downsample_pipeline;
+	RID downsample_pipelines[DOWNSAMPLE_MODE_MAX];
+	RD::DataFormat height_format = RD::DATA_FORMAT_R16_UNORM;
 
 	static _FORCE_INLINE_ uint64_t _make_page(uint32_t p_mip, uint32_t p_x, uint32_t p_y) {
 		return (uint64_t(p_mip) << 40) | (uint64_t(p_y) << 20) | uint64_t(p_x);
@@ -284,7 +304,10 @@ private:
 
 	bool _ensure_runtime_target();
 	void _free_runtime_target();
+	// How far above and below a runtime texture's volume its pages are drawn from.
+	static void _page_depth_range(const VirtualTexture *p_texture, real_t &r_margin, real_t &r_volume_height);
 	void _page_camera(const VirtualTexture *p_texture, uint64_t p_page, RendererTextureStorage::VirtualTextureRenderPage &r_page) const;
+	void _resolve_heights(const VirtualTexture *p_texture);
 
 public:
 	static VirtualTextureStorage *get_singleton() { return singleton; }
@@ -325,9 +348,9 @@ public:
 	uint64_t get_bindings_version() const { return bindings_version; }
 	RID get_cache_texture(Cache p_cache, bool p_srgb) const;
 	RID get_feedback_buffer() const { return feedback_buffer; }
-	// The bindings virtual_texture_inc.glsl's including shaders declare: the caches, their sRGB views and
-	// the feedback buffer, at three consecutive bindings from p_first_binding.
-	static constexpr int SCENE_UNIFORM_COUNT = 3;
+	// The bindings virtual_texture_inc.glsl's including shaders declare: the caches, their sRGB views,
+	// the feedback buffer and the runtime cache's heights, at consecutive bindings from p_first_binding.
+	static constexpr int SCENE_UNIFORM_COUNT = 4;
 	void get_scene_uniforms(RD::Uniform *r_uniforms, uint32_t p_first_binding) const;
 
 	VirtualTextureStorage();

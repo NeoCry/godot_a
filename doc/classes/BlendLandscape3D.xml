@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="BlendLandscape3D" inherits="StandardMaterial3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A [StandardMaterial3D] that blends into the ground of a [Landscape3D] where it meets it.
+	</brief_description>
+	<description>
+		A [BlendLandscape3D] is a [StandardMaterial3D] for whatever stands on a [Landscape3D]: rocks, cliffs, walls, ruins, tree roots. Within [member blend_height] of the ground, its surface takes on the ground's own albedo, normal, roughness, metallic, ambient occlusion and specular, fading into its own above. So it seems to grow out of the terrain, without a visible seam where it meets it, however the terrain is painted around it.
+		Everything it needs comes from the landscape's runtime virtual texture (see [member Landscape3D.virtual_texture_enabled]), which also keeps the height of the ground: the blend follows where the surface actually meets the ground, whatever the mesh's pivot, rotation or scale, and wherever it is moved. Nothing needs to be set up: the material binds itself to the first [Landscape3D] whose [member Landscape3D.virtual_texture_layers] share a bit with its [member blend_landscape_layers], and follows it as it moves or changes. Anything else drawn into the landscape's virtual texture, such as a road (see [member GeometryInstance3D.virtual_texture_draw_layers]), is blended in too.
+		The ground is projected from straight above, so on steep faces its texels stretch down them; [member blend_slope] keeps the blend to the faces turned up, and [member blend_noise_texture] breaks up the line where the blend ends.
+		[b]Note:[/b] Needs the Forward+ or Mobile renderer (see [method RenderingServer.is_virtual_texturing_supported]). Elsewhere, or with no landscape to blend into, it is a plain [StandardMaterial3D].
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="blend_falloff" type="float" setter="set_blend_falloff" getter="get_blend_falloff" default="0.7">
+			How much of [member blend_height] the blend fades over, from the top down: at [code]1.0[/code] the surface fades from the ground's at the ground itself to its own at [member blend_height]; at [code]0.2[/code], it is the ground's up to 80% of the way, then fades over the rest.
+		</member>
+		<member name="blend_height" type="float" setter="set_blend_height" getter="get_blend_height" default="0.3">
+			How high over the ground, in meters, the surface blends into it (see [member blend_falloff]). [code]0.0[/code] turns the blend off.
+		</member>
+		<member name="blend_landscape_layers" type="int" setter="set_blend_landscape_layers" getter="get_blend_landscape_layers" default="1">
+			The landscapes this material blends into: the first [Landscape3D] whose [member Landscape3D.virtual_texture_layers] share a bit with these.
+		</member>
+		<member name="blend_noise_scale" type="float" setter="set_blend_noise_scale" getter="get_blend_noise_scale" default="2.0">
+			How large [member blend_noise_texture] is laid over the world, in meters for one repeat of it, from above.
+		</member>
+		<member name="blend_noise_strength" type="float" setter="set_blend_noise_strength" getter="get_blend_noise_strength" default="0.5">
+			How far [member blend_noise_texture] moves the line where the blend ends, up and down, as a share of [member blend_height].
+		</member>
+		<member name="blend_noise_texture" type="Texture2D" setter="set_blend_noise_texture" getter="get_blend_noise_texture">
+			A grayscale texture that moves the line where the blend ends up (white) and down (black), so that it is not as level as the ground. Laid over the world from above, at [member blend_noise_scale]; [NoiseTexture2D] makes a good one.
+		</member>
+		<member name="blend_normal_strength" type="float" setter="set_blend_normal_strength" getter="get_blend_normal_strength" default="1.0">
+			How much of the ground's normal the surface takes on where it blends: at [code]1.0[/code], lighting matches the ground's exactly at the ground; lower values keep more of the surface's own shape (and normal map) there.
+		</member>
+		<member name="blend_offset" type="float" setter="set_blend_offset" getter="get_blend_offset" default="0.0">
+			Moves the blend up (positive) or down (negative), in meters: the ground is taken to be this much higher than it is.
+		</member>
+		<member name="blend_slope" type="float" setter="set_blend_slope" getter="get_blend_slope" default="0.0">
+			How much only the faces turned up blend into the ground: at [code]0.0[/code] every face does, whichever way it faces; at [code]1.0[/code], only those facing up, fading out on the steeper ones. Raising it keeps the ground's texels from stretching down steep faces.
+		</member>
+	</members>
+</class>

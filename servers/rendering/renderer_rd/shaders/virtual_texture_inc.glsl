@@ -5,9 +5,10 @@
 // that spot. The shader compiler turns texture(), textureLod(), textureGrad() and textureSize() on
 // such a uniform into the vt_texture*() functions below.
 //
-// The including shader declares the caches (vt_cache and vt_cache_srgb, one texture2DArray per cache)
-// and the feedback buffer (vt_feedback), and defines VT_STAGE_FRAGMENT in its fragment stage and
-// VT_FEEDBACK where sampling should also report the pages it wanted.
+// The including shader declares the caches (vt_cache and vt_cache_srgb, one texture2DArray per cache,
+// and vt_cache_height, the runtime cache's heights) and the feedback buffer (vt_feedback), and defines
+// VT_STAGE_FRAGMENT in its fragment stage and VT_FEEDBACK where sampling should also report the pages
+// it wanted.
 
 #define VT_PAGE_SIZE 128.0
 #define VT_PAGE_BORDER 4.0
@@ -18,6 +19,9 @@
 #define VT_MAX_ANISOTROPY 4.0
 #define VT_FEEDBACK_SLOTS 8192u
 #define VT_FEEDBACK_SLOT_BITS 13u
+
+// Layer 3 of a runtime virtual texture is the height of the ground, kept in a cache of its own.
+#define VT_RUNTIME_HEIGHT_LAYER 3.0
 
 #define VT_FLAG_SRGB 1u
 #define VT_FLAG_REPEAT 2u
@@ -53,6 +57,9 @@ vec4 vt_cache_grad(uint p_cache, bool p_srgb, vec3 p_coord, vec2 p_dx, vec2 p_dy
 		}
 		return textureGrad(sampler2DArray(vt_cache[0], SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), p_coord, p_dx, p_dy);
 	}
+	if (p_coord.z > VT_RUNTIME_HEIGHT_LAYER - 0.5) {
+		return vec4(textureGrad(sampler2DArray(vt_cache_height, SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), vec3(p_coord.xy, 0.0), p_dx, p_dy).r, 0.0, 0.0, 1.0);
+	}
 	if (p_srgb) {
 		return textureGrad(sampler2DArray(vt_cache_srgb[1], SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), p_coord, p_dx, p_dy);
 	}
@@ -65,6 +72,9 @@ vec4 vt_cache_lod(uint p_cache, bool p_srgb, vec3 p_coord, float p_lod) {
 			return textureLod(sampler2DArray(vt_cache_srgb[0], SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), p_coord, p_lod);
 		}
 		return textureLod(sampler2DArray(vt_cache[0], SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), p_coord, p_lod);
+	}
+	if (p_coord.z > VT_RUNTIME_HEIGHT_LAYER - 0.5) {
+		return vec4(textureLod(sampler2DArray(vt_cache_height, SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), vec3(p_coord.xy, 0.0), p_lod).r, 0.0, 0.0, 1.0);
 	}
 	if (p_srgb) {
 		return textureLod(sampler2DArray(vt_cache_srgb[1], SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_CLAMP), p_coord, p_lod);

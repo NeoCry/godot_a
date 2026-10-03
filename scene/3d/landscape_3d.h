@@ -128,6 +128,7 @@ private:
 	TypedArray<TerrainLayer> layers;
 
 	static inline Ref<Shader> shader;
+	static inline Ref<Shader> writer_shader;
 	static inline Ref<ArrayMesh> patch_mesh;
 	// Nodes can be built on worker threads (threaded scene loading).
 	static inline Mutex patch_mesh_mutex;
@@ -167,6 +168,20 @@ private:
 	Ref<Texture2DArray> normal_array;
 	Ref<Texture2DArray> orm_array;
 	Ref<Texture2DArray> height_array;
+	// The arrays above, and the layer textures each was last built from (one per array layer):
+	// reading textures back and resampling them is slow, so an array is only built again when its
+	// textures change, not when a layer's color or roughness does.
+	enum LayerTexture {
+		LAYER_TEXTURE_ALBEDO,
+		LAYER_TEXTURE_NORMAL,
+		LAYER_TEXTURE_ORM,
+		LAYER_TEXTURE_HEIGHT,
+		LAYER_TEXTURE_MAX,
+	};
+	Vector<Ref<Texture2D>> layer_texture_sources[LAYER_TEXTURE_MAX];
+	// Arrays (bits by LayerTexture) to build again at the end of the frame.
+	uint32_t layer_textures_dirty = 0;
+	bool layer_textures_queued = false;
 	// The most any layer's displacement moves the surface, up or down.
 	float displacement_bound = 0.0f;
 
@@ -293,7 +308,14 @@ private:
 	void _rebuild_gradients();
 	void _rebuild_weight_texture();
 	void _upload_weight_region(const Rect2i &p_region, int p_first_layer, int p_layer_count);
-	void _rebuild_layer_textures();
+	void _update_layer_params();
+	Ref<Texture2D> _get_layer_texture(int p_layer, LayerTexture p_which) const;
+	uint32_t _get_changed_layer_textures() const;
+	void _queue_layer_textures(uint32_t p_which);
+	void _flush_layer_textures();
+	void _on_layer_texture_changed(ObjectID p_texture);
+	void _watch_layer_texture(const Ref<Texture2D> &p_texture, bool p_watch);
+	void _rebuild_layer_textures(uint32_t p_which);
 	void _update_material_params();
 	void _update_micro_detail_params();
 	void _update_pom_params();

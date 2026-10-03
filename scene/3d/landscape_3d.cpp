@@ -36,6 +36,7 @@
 #include "core/math/math_funcs_binary.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "scene/3d/blend_landscape_3d.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/foliage_gpu_culler.h"
 #include "scene/3d/physics/collision_shape_3d.h"
@@ -224,8 +225,7 @@ bool lod_params_equal(const LandscapeQuadtree::SelectParams &p_a, const Landscap
 // its weight maps, so the two hard caps have to agree.
 
 void Landscape3D::init_shaders() {
-	shader.instantiate();
-	shader->set_code(R"(
+	const String code = R"(
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
@@ -841,6 +841,13 @@ void fragment() {
 	METALLIC = orm.b;
 	SPECULAR = specular;
 
+#ifdef LANDSCAPE_RVT_WRITER
+	// The height of the ground in the virtual texture is read back from the depth its pages are drawn
+	// with (see BlendLandscape3D), and the ground's own keeps what lies under it hidden.
+	vec4 ground_clip = PROJECTION_MATRIX * (VIEW_MATRIX * (MODEL_MATRIX * vec4(position, 1.0)));
+	DEPTH = ground_clip.z / ground_clip.w;
+#endif
+
 	if (rvt_mode == 2) {
 		// Debug views are drawn over the virtual texture, not into it.
 	} else if (debug_view == 1) {
@@ -862,11 +869,19 @@ void fragment() {
 		ALBEDO = mix(ALBEDO, vec3(0.2, 0.9, 0.3), 0.5 * rvt_amount);
 	}
 }
-)");
+)";
+	shader.instantiate();
+	shader->set_code(code);
+	// What draws the terrain into its runtime virtual texture: the same, but writing the depth of the
+	// ground rather than of the flat quad it draws, which the terrain's own passes have no need for
+	// (and would lose their early depth test over).
+	writer_shader.instantiate();
+	writer_shader->set_code(code.replace_first("shader_type spatial;\n", "shader_type spatial;\n#define LANDSCAPE_RVT_WRITER\n"));
 }
 
 void Landscape3D::finish_shaders() {
 	shader.unref();
+	writer_shader.unref();
 	patch_mesh.unref();
 	writer_mesh.unref();
 }
@@ -1212,7 +1227,7 @@ void Landscape3D::_ensure_material() {
 	material.instantiate();
 	material->set_shader(shader);
 	writer_material.instantiate();
-	writer_material->set_shader(shader);
+	writer_material->set_shader(writer_shader);
 	writer_material->set_shader_parameter(SNAME("rvt_mode"), 2);
 	_update_pom_params();
 	_update_micro_detail_params();
@@ -1259,6 +1274,9 @@ void Landscape3D::_update_virtual_texture() {
 
 void Landscape3D::_free_virtual_texture() {
 	RenderingServer *rs = RS::get_singleton();
+	if (virtual_texture.is_valid()) {
+		BlendLandscape3D::remove_landscape_source(get_instance_id());
+	}
 	if (writer_instance.is_valid()) {
 		rs->free_rid(writer_instance);
 		writer_instance = RID();
@@ -1337,7 +1355,18 @@ void Landscape3D::_update_virtual_texture_volume() {
 	}
 	const Transform3D local = _get_virtual_texture_local_volume();
 	const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
-	RS::get_singleton()->texture_virtual_set_runtime_volume(virtual_texture, scenario, _get_safe_global_transform() * local, virtual_texture_layers);
+	const Transform3D volume = _get_safe_global_transform() * local;
+	RS::get_singleton()->texture_virtual_set_runtime_volume(virtual_texture, scenario, volume, virtual_texture_layers);
+	// For the materials that blend into the ground (see BlendLandscape3D).
+	if (scenario.is_valid()) {
+		BlendLandscape3D::LandscapeSource source;
+		source.texture = virtual_texture;
+		source.volume = volume;
+		source.layers = virtual_texture_layers;
+		BlendLandscape3D::set_landscape_source(get_instance_id(), source);
+	} else {
+		BlendLandscape3D::remove_landscape_source(get_instance_id());
+	}
 	// The writer lies at the bottom of the volume, under everything else drawn into it.
 	writer_material->set_shader_parameter(SNAME("rvt_writer_height"), local.origin.y + local.basis.get_column(1).y * 0.001f);
 	if (writer_instance.is_valid()) {
@@ -1898,20 +1927,10 @@ void Landscape3D::_update_pom_params() {
 	material->set_shader_parameter(SNAME("pom_fade_end"), pom_fade_end);
 }
 
-void Landscape3D::_rebuild_layer_textures() {
+void Landscape3D::_update_layer_params() {
 	_ensure_material();
 
 	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
-	const int array_layers = MAX(layer_count, 1);
-
-	Vector<Ref<Image>> albedo_images;
-	Vector<Ref<Image>> normal_images;
-	Vector<Ref<Image>> orm_images;
-	Vector<Ref<Image>> height_images;
-	albedo_images.resize(array_layers);
-	normal_images.resize(array_layers);
-	orm_images.resize(array_layers);
-	height_images.resize(array_layers);
 
 	PackedFloat32Array uv_scales;
 	uv_scales.resize(TerrainData::MAX_LAYERS);
@@ -1942,82 +1961,34 @@ void Landscape3D::_rebuild_layer_textures() {
 	triplanar_sharpness_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array displacement_values;
 	displacement_values.resize(TerrainData::MAX_LAYERS);
-	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
-		uv_scales.write[i] = 1.0f;
-		albedo_colors.write[i] = Color(1, 1, 1);
-		roughness_values.write[i] = 1.0f;
-		specular_values.write[i] = 0.5f;
-		ao_strength_values.write[i] = 1.0f;
-		normal_strength_values.write[i] = 1.0f;
-		heightmap_scale_values.write[i] = 5.0f;
-		height_min_values.write[i] = 0.0f;
-		height_max_values.write[i] = 1.0f;
-		pom_enabled_values.write[i] = 0.0f;
-		triplanar_values.write[i] = 0.0f;
-		triplanar_sharpness_values.write[i] = 1.0f;
-		displacement_values.write[i] = 0.0f;
-	}
 
 	displacement_bound = 0.0f;
-
-	auto source_image = [](const Ref<Texture2D> &p_texture) -> Ref<Image> {
-		return p_texture.is_valid() ? p_texture->get_image() : Ref<Image>();
-	};
-	for (int i = 0; i < array_layers; i++) {
+	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		Ref<TerrainLayer> layer;
-		if (i < layers.size()) {
+		if (i < layer_count) {
 			layer = layers[i];
 		}
-
-		Ref<Texture2D> albedo_tex = layer.is_valid() ? layer->get_albedo_texture() : Ref<Texture2D>();
-		Ref<Texture2D> normal_tex = layer.is_valid() ? layer->get_normal_texture() : Ref<Texture2D>();
-		Ref<Texture2D> orm_tex = layer.is_valid() ? layer->get_orm_texture() : Ref<Texture2D>();
-		Ref<Texture2D> height_tex = layer.is_valid() ? layer->get_height_texture() : Ref<Texture2D>();
-
-		albedo_images.write[i] = source_image(albedo_tex);
-		normal_images.write[i] = source_image(normal_tex);
-		orm_images.write[i] = source_image(orm_tex);
-		height_images.write[i] = source_image(height_tex);
-
-		if (i < TerrainData::MAX_LAYERS) {
-			uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
-			albedo_colors.write[i] = layer.is_valid() ? layer->get_albedo_color() : Color(1, 1, 1);
-			roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
-			specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
-			ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
-			normal_strength_values.write[i] = layer.is_valid() ? layer->get_normal_strength() : 1.0f;
-			heightmap_scale_values.write[i] = layer.is_valid() ? layer->get_heightmap_scale() : 5.0f;
-			height_min_values.write[i] = layer.is_valid() ? layer->get_height_min() : 0.0f;
-			height_max_values.write[i] = layer.is_valid() ? layer->get_height_max() : 1.0f;
-			pom_enabled_values.write[i] = (layer.is_valid() && layer->is_pom_enabled()) ? 1.0f : 0.0f;
-			triplanar_values.write[i] = (layer.is_valid() && layer->is_triplanar_enabled()) ? 1.0f : 0.0f;
-			triplanar_sharpness_values.write[i] = layer.is_valid() ? layer->get_triplanar_sharpness() : 1.0f;
-			// Displacement needs something to displace by: a layer without a
-			// height texture would only lift its whole area by a constant.
-			if (layer.is_valid() && height_tex.is_valid() && i < layer_count) {
-				displacement_values.write[i] = layer->get_displacement();
-				displacement_bound = MAX(displacement_bound, Math::abs(layer->get_displacement()) * 0.5f);
-			}
+		uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
+		albedo_colors.write[i] = layer.is_valid() ? layer->get_albedo_color() : Color(1, 1, 1);
+		roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
+		specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
+		ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
+		normal_strength_values.write[i] = layer.is_valid() ? layer->get_normal_strength() : 1.0f;
+		heightmap_scale_values.write[i] = layer.is_valid() ? layer->get_heightmap_scale() : 5.0f;
+		height_min_values.write[i] = layer.is_valid() ? layer->get_height_min() : 0.0f;
+		height_max_values.write[i] = layer.is_valid() ? layer->get_height_max() : 1.0f;
+		pom_enabled_values.write[i] = (layer.is_valid() && layer->is_pom_enabled()) ? 1.0f : 0.0f;
+		triplanar_values.write[i] = (layer.is_valid() && layer->is_triplanar_enabled()) ? 1.0f : 0.0f;
+		triplanar_sharpness_values.write[i] = layer.is_valid() ? layer->get_triplanar_sharpness() : 1.0f;
+		displacement_values.write[i] = 0.0f;
+		// Displacement needs something to displace by: a layer without a
+		// height texture would only lift its whole area by a constant.
+		if (layer.is_valid() && layer->get_height_texture().is_valid()) {
+			displacement_values.write[i] = layer->get_displacement();
+			displacement_bound = MAX(displacement_bound, Math::abs(layer->get_displacement()) * 0.5f);
 		}
 	}
 
-	albedo_array = build_layer_texture_array(albedo_images, Color(0.6, 0.6, 0.6, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
-	// Mipmaps are renormalized: averaging two normals shortens the result, and
-	// a normal map whose vectors are not unit length reads as a flattened,
-	// washed-out surface at distance.
-	normal_array = build_layer_texture_array(normal_images, Color(0.5, 0.5, 1.0, 1.0), Image::FORMAT_RGBA8, true, layer_texture_size_limit);
-	orm_array = build_layer_texture_array(orm_images, Color(1.0, 0.5, 0.0, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
-	// Single-channel, unlike the other three: POM and displacement only ever
-	// read one value per sample. White = a height of 1.0 = zero parallax depth
-	// (see pom_offset()), so a layer with no height_texture is unaffected by
-	// POM even while it is enabled on the node.
-	height_array = build_layer_texture_array(height_images, Color(1, 1, 1), Image::FORMAT_R8, false, layer_texture_size_limit);
-
-	_set_shader_parameter(SNAME("albedo_array"), albedo_array);
-	_set_shader_parameter(SNAME("normal_array"), normal_array);
-	_set_shader_parameter(SNAME("orm_array"), orm_array);
-	_set_shader_parameter(SNAME("height_array"), height_array);
-	_set_shader_parameter(SNAME("height_texture_size"), float(MAX(height_array->get_width(), 1)));
 	_set_shader_parameter(SNAME("layer_uv_scales"), uv_scales);
 	_set_shader_parameter(SNAME("layer_albedo_colors"), albedo_colors);
 	_set_shader_parameter(SNAME("layer_roughness"), roughness_values);
@@ -2035,6 +2006,159 @@ void Landscape3D::_rebuild_layer_textures() {
 
 	_update_micro_detail_params();
 	_update_draw_aabb();
+	_invalidate_virtual_texture_all();
+}
+
+Ref<Texture2D> Landscape3D::_get_layer_texture(int p_layer, LayerTexture p_which) const {
+	if (p_layer >= layers.size()) {
+		return Ref<Texture2D>();
+	}
+	const Ref<TerrainLayer> layer = layers[p_layer];
+	if (layer.is_null()) {
+		return Ref<Texture2D>();
+	}
+	switch (p_which) {
+		case LAYER_TEXTURE_ALBEDO:
+			return layer->get_albedo_texture();
+		case LAYER_TEXTURE_NORMAL:
+			return layer->get_normal_texture();
+		case LAYER_TEXTURE_ORM:
+			return layer->get_orm_texture();
+		case LAYER_TEXTURE_HEIGHT:
+			return layer->get_height_texture();
+		case LAYER_TEXTURE_MAX:
+			break;
+	}
+	return Ref<Texture2D>();
+}
+
+uint32_t Landscape3D::_get_changed_layer_textures() const {
+	const int array_layers = MAX(CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS), 1);
+	uint32_t changed = 0;
+	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
+		const Vector<Ref<Texture2D>> &sources = layer_texture_sources[which];
+		if (sources.size() != array_layers) {
+			changed |= 1u << which;
+			continue;
+		}
+		for (int i = 0; i < array_layers; i++) {
+			if (sources[i] != _get_layer_texture(i, LayerTexture(which))) {
+				changed |= 1u << which;
+				break;
+			}
+		}
+	}
+	return changed;
+}
+
+void Landscape3D::_queue_layer_textures(uint32_t p_which) {
+	if (p_which == 0) {
+		return;
+	}
+	layer_textures_dirty |= p_which;
+	if (!layer_textures_queued) {
+		// Picking a texture in the inspector, or reimporting one, changes it a few times in a row:
+		// the arrays are rebuilt once, at the end of the frame.
+		layer_textures_queued = true;
+		callable_mp(this, &Landscape3D::_flush_layer_textures).call_deferred();
+	}
+}
+
+void Landscape3D::_flush_layer_textures() {
+	layer_textures_queued = false;
+	const uint32_t which = layer_textures_dirty;
+	layer_textures_dirty = 0;
+	_rebuild_layer_textures(which);
+}
+
+void Landscape3D::_on_layer_texture_changed(ObjectID p_texture) {
+	// A texture a layer uses was reimported or edited: its contents are new, though it is the same
+	// texture. Whichever arrays use it are built again.
+	uint32_t which = 0;
+	for (int kind = 0; kind < LAYER_TEXTURE_MAX; kind++) {
+		for (const Ref<Texture2D> &texture : layer_texture_sources[kind]) {
+			if (texture.is_valid() && texture->get_instance_id() == p_texture) {
+				which |= 1u << kind;
+				break;
+			}
+		}
+	}
+	_queue_layer_textures(which);
+}
+
+void Landscape3D::_watch_layer_texture(const Ref<Texture2D> &p_texture, bool p_watch) {
+	if (p_texture.is_null()) {
+		return;
+	}
+	const Callable callback = callable_mp(this, &Landscape3D::_on_layer_texture_changed).bind(p_texture->get_instance_id());
+	const bool watched = p_texture->is_connected(CoreStringName(changed), callback);
+	if (p_watch && !watched) {
+		p_texture->connect(CoreStringName(changed), callback);
+	} else if (!p_watch && watched) {
+		p_texture->disconnect(CoreStringName(changed), callback);
+	}
+}
+
+void Landscape3D::_rebuild_layer_textures(uint32_t p_which) {
+	_ensure_material();
+	if (p_which == 0) {
+		return;
+	}
+
+	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
+	const int array_layers = MAX(layer_count, 1);
+
+	struct ArraySpec {
+		Color default_color;
+		Image::Format format;
+		// Mipmaps of a normal map are renormalized: averaging two normals shortens the result, and
+		// a normal map whose vectors are not unit length reads as a flattened, washed-out surface
+		// at distance.
+		bool renormalize;
+		StringName param;
+	};
+	// The height array is single-channel, unlike the other three: POM and displacement only ever
+	// read one value per sample. White = a height of 1.0 = zero parallax depth (see pom_offset()),
+	// so a layer with no height_texture is unaffected by POM even while it is enabled on the node.
+	const ArraySpec specs[LAYER_TEXTURE_MAX] = {
+		{ Color(0.6, 0.6, 0.6, 1.0), Image::FORMAT_RGBA8, false, SNAME("albedo_array") },
+		{ Color(0.5, 0.5, 1.0, 1.0), Image::FORMAT_RGBA8, true, SNAME("normal_array") },
+		{ Color(1.0, 0.5, 0.0, 1.0), Image::FORMAT_RGBA8, false, SNAME("orm_array") },
+		{ Color(1, 1, 1), Image::FORMAT_R8, false, SNAME("height_array") },
+	};
+	Ref<Texture2DArray> *arrays[LAYER_TEXTURE_MAX] = { &albedo_array, &normal_array, &orm_array, &height_array };
+
+	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
+		if (!(p_which & (1u << which))) {
+			continue;
+		}
+		// Only the arrays asked for are read back and resampled: that is what takes long, a whole
+		// set of textures with mipmaps for each.
+		Vector<Ref<Texture2D>> &sources = layer_texture_sources[which];
+		for (const Ref<Texture2D> &texture : sources) {
+			_watch_layer_texture(texture, false);
+		}
+		sources.resize(array_layers);
+		Vector<Ref<Image>> images;
+		images.resize(array_layers);
+		for (int i = 0; i < array_layers; i++) {
+			const Ref<Texture2D> texture = _get_layer_texture(i, LayerTexture(which));
+			sources.write[i] = texture;
+			images.write[i] = texture.is_valid() ? texture->get_image() : Ref<Image>();
+		}
+		*arrays[which] = build_layer_texture_array(images, specs[which].default_color, specs[which].format, specs[which].renormalize, layer_texture_size_limit);
+		_set_shader_parameter(specs[which].param, *arrays[which]);
+	}
+	// Kept up to date with their contents too, whichever array they are in.
+	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
+		for (const Ref<Texture2D> &texture : layer_texture_sources[which]) {
+			_watch_layer_texture(texture, true);
+		}
+	}
+
+	if (p_which & (1u << LAYER_TEXTURE_HEIGHT)) {
+		_set_shader_parameter(SNAME("height_texture_size"), float(MAX(height_array->get_width(), 1)));
+	}
 	_invalidate_virtual_texture_all();
 }
 
@@ -2380,9 +2504,11 @@ void Landscape3D::_update_collision_regions(const Vector<Rect2i> &p_regions) {
 }
 
 void Landscape3D::_on_layers_changed() {
+	// A layer's color, roughness, UV scale and such only change uniforms; its textures are read back
+	// and resampled into the arrays only when they are not the ones the arrays were built from.
 	const float previous_bound = displacement_bound;
-	_rebuild_layer_textures();
-	_rebuild_weight_texture();
+	_update_layer_params();
+	_queue_layer_textures(_get_changed_layer_textures());
 	if (displacement_bound != previous_bound && terrain_data.is_valid() && occluder_enabled && micro_detail_distance > 0.0f) {
 		// The occluders sit below the deepest displacement.
 		_rebuild_all_occluders();
@@ -2460,7 +2586,15 @@ void Landscape3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 		}
 	}
 
-	_on_layers_changed();
+	// A new set of layers: everything is built right away, as the scene that holds them is loaded.
+	const float previous_bound = displacement_bound;
+	_update_layer_params();
+	_rebuild_layer_textures(_get_changed_layer_textures());
+	_rebuild_weight_texture();
+	if (displacement_bound != previous_bound && terrain_data.is_valid() && occluder_enabled && micro_detail_distance > 0.0f) {
+		_rebuild_all_occluders();
+	}
+	lod_dirty = true;
 	update_configuration_warnings();
 }
 
@@ -2698,7 +2832,7 @@ uint32_t Landscape3D::get_collision_mask() const {
 
 void Landscape3D::set_layer_texture_size_limit(int p_size) {
 	layer_texture_size_limit = CLAMP(p_size, 16, 8192);
-	_rebuild_layer_textures();
+	_rebuild_layer_textures((1u << LAYER_TEXTURE_MAX) - 1);
 }
 
 int Landscape3D::get_layer_texture_size_limit() const {

@@ -1204,6 +1204,10 @@ uniform vec3 uv2_offset;
 		code += "uniform float fov_override : hint_range(1.0, 179.0, 0.1);\n";
 	}
 
+	if (mk.extension_flags) {
+		code += _get_shader_extension_uniforms(mk.extension_flags);
+	}
+
 	// Generate vertex shader.
 	code += R"(
 void vertex() {)";
@@ -2082,6 +2086,10 @@ void fragment() {)";
 )";
 	}
 
+	if (mk.extension_flags) {
+		code += _get_shader_extension_fragment(mk.extension_flags);
+	}
+
 	code += "}\n";
 
 	// We must create the shader outside the shader_map_mutex to avoid potential deadlocks with
@@ -2165,6 +2173,14 @@ void BaseMaterial3D::_queue_shader_change() {
 	if (!element.in_list()) {
 		dirty_materials.add(&element);
 	}
+}
+
+void BaseMaterial3D::_shader_extension_changed() {
+	_queue_shader_change();
+}
+
+void BaseMaterial3D::_set_shader_parameter(const StringName &p_name, const Variant &p_value) {
+	_material_set_param(p_name, p_value);
 }
 
 void BaseMaterial3D::_material_set_param(const StringName &p_name, const Variant &p_value) {

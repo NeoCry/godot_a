@@ -333,6 +333,8 @@ layout(set = 0, binding = 23, std430) buffer restrict VirtualTextureFeedback {
 	uint slots[];
 }
 vt_feedback;
+layout(set = 0, binding = 24) uniform texture2DArray vt_cache_height;
+
 /* Set 1: Render Pass (changes per render pass) */
 
 layout(set = 1, binding = 0, std140) uniform SceneDataBlock {
