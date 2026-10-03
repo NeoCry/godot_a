@@ -1463,10 +1463,11 @@
 			<param index="0" name="env" type="RID" />
 			<param index="1" name="enable" type="bool" />
 			<param index="2" name="intensity" type="float" />
-			<param index="3" name="max_radius" type="float" />
-			<param index="4" name="camera_rotation_scale" type="float" />
-			<param index="5" name="camera_movement_scale" type="float" />
-			<param index="6" name="object_scale" type="float" />
+			<param index="3" name="reference_fps" type="float" />
+			<param index="4" name="max_radius" type="float" />
+			<param index="5" name="camera_rotation_scale" type="float" />
+			<param index="6" name="camera_movement_scale" type="float" />
+			<param index="7" name="object_scale" type="float" />
 			<description>
 				Sets the variables to be used with the motion blur post-process effect. See [Environment] for more details.
 			</description>

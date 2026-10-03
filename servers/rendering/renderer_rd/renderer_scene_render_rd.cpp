@@ -1207,6 +1207,7 @@ bool RendererSceneRenderRD::_motion_blur_is_active(const RenderDataRD *p_render_
 
 	RendererRD::MotionBlur::Settings settings;
 	settings.intensity = environment_get_motion_blur_intensity(environment);
+	settings.reference_fps = environment_get_motion_blur_reference_fps(environment);
 	settings.max_radius = environment_get_motion_blur_max_radius(environment);
 	settings.camera_rotation_scale = environment_get_motion_blur_camera_rotation_scale(environment);
 	settings.camera_movement_scale = environment_get_motion_blur_camera_movement_scale(environment);

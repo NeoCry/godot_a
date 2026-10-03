@@ -181,6 +181,16 @@ void MotionBlur::process(Ref<RenderSceneBuffersRD> p_render_buffers, const Rende
 
 	_allocate_buffers(p_render_buffers, size, tile_count);
 
+	// The motion vectors span one frame. With a reference frame rate, the shutter stays open for a fraction of
+	// one of its frames rather than of the actual one, so the blur keeps its length at any frame rate: at a
+	// high frame rate objects move little from one frame to the next, and blurring over a fraction of that
+	// alone would all but hide the effect. The frame time is the engine's, in game time, which is also what
+	// the motion was simulated over (and what a fixed frame rate, as in Movie Maker mode, sets).
+	float shutter_scale = 1.0f;
+	if (p_settings.reference_fps > 0.0f && p_scene_data->time_step > 0.0f) {
+		shutter_scale = float((1.0 / double(p_settings.reference_fps)) / MAX(double(p_scene_data->time_step), 1e-4));
+	}
+
 	// Maps each pixel back to where it was in the previous frame, from its depth and the two frames' cameras.
 	// The motion vectors already hold the full motion; this splits the camera's out of it. The depth correction
 	// is the one the motion vectors debug view and FSR 2 use, so the NDC are those of the [0, 1] reverse Z depth
@@ -228,7 +238,7 @@ void MotionBlur::process(Ref<RenderSceneBuffersRD> p_render_buffers, const Rende
 			prepare.push_constant.source_size[0] = source_size.x;
 			prepare.push_constant.source_size[1] = source_size.y;
 			// Half the motion over the time the shutter is open.
-			prepare.push_constant.velocity_scale = p_settings.intensity * 0.5f;
+			prepare.push_constant.velocity_scale = p_settings.intensity * 0.5f * shutter_scale;
 			prepare.push_constant.max_radius = float(tile_size);
 			prepare.push_constant.camera_rotation_scale = p_settings.camera_rotation_scale;
 			prepare.push_constant.camera_movement_scale = p_settings.camera_movement_scale;

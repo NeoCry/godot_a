@@ -189,6 +189,7 @@ private:
 		// Motion blur
 		bool motion_blur_enabled = false;
 		float motion_blur_intensity = 0.5;
+		float motion_blur_reference_fps = 30.0;
 		float motion_blur_max_radius = 0.05;
 		float motion_blur_camera_rotation_scale = 1.0;
 		float motion_blur_camera_movement_scale = 1.0;
@@ -353,9 +354,10 @@ public:
 	float environment_get_xegtao_ao_channel_affect(RID p_env) const;
 
 	// Motion blur
-	void environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale);
+	void environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_reference_fps, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale);
 	bool environment_get_motion_blur_enabled(RID p_env) const;
 	float environment_get_motion_blur_intensity(RID p_env) const;
+	float environment_get_motion_blur_reference_fps(RID p_env) const;
 	float environment_get_motion_blur_max_radius(RID p_env) const;
 	float environment_get_motion_blur_camera_rotation_scale(RID p_env) const;
 	float environment_get_motion_blur_camera_movement_scale(RID p_env) const;

@@ -151,6 +151,7 @@ private:
 	// Motion blur
 	bool motion_blur_enabled = false;
 	float motion_blur_intensity = 0.5;
+	float motion_blur_reference_fps = 30.0;
 	float motion_blur_max_radius = 0.05;
 	float motion_blur_camera_rotation_scale = 1.0;
 	float motion_blur_camera_movement_scale = 1.0;
@@ -366,6 +367,8 @@ public:
 	bool is_motion_blur_enabled() const;
 	void set_motion_blur_intensity(float p_intensity);
 	float get_motion_blur_intensity() const;
+	void set_motion_blur_reference_fps(float p_fps);
+	float get_motion_blur_reference_fps() const;
 	void set_motion_blur_max_radius(float p_max_radius);
 	float get_motion_blur_max_radius() const;
 	void set_motion_blur_camera_rotation_scale(float p_scale);

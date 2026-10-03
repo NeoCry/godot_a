@@ -282,13 +282,18 @@
 			[b]Note:[/b] Only supported in the Forward+ rendering method. It needs motion vectors, which Forward+ renders whenever motion blur is enabled, even without TAA or a temporal upscaler.
 		</member>
 		<member name="motion_blur_intensity" type="float" setter="set_motion_blur_intensity" getter="get_motion_blur_intensity" default="0.5">
-			The fraction of the time between two frames during which the virtual camera's shutter is open. Whatever moves is blurred over this fraction of the distance it moved since the previous frame: [code]0.5[/code] matches the 180° shutter of film cameras, [code]1.0[/code] blurs over the whole distance, and higher values exaggerate the effect. As with a real camera, the blur is longer at lower frame rates, where things move further from one frame to the next.
+			The fraction of a frame during which the virtual camera's shutter is open. Whatever moves is blurred over the distance it covers in that time: [code]0.5[/code] matches the 180° shutter of film cameras, [code]1.0[/code] blurs over the whole distance covered in a frame, and higher values exaggerate the effect. The frame is one at [member motion_blur_reference_fps], so with the defaults the shutter stays open for 1/60 of a second whatever the actual frame rate is.
 		</member>
 		<member name="motion_blur_max_radius" type="float" setter="set_motion_blur_max_radius" getter="get_motion_blur_max_radius" default="0.05">
 			How far, at most, the blur extends to either side of a pixel, as a fraction of the viewport's height. Faster motion is blurred as if it were this fast. It is also the size of the tiles the effect works on, so raising it doesn't make the effect slower in itself, but the same number of samples is then spread over longer blurs, which can make them look grainy (see [member ProjectSettings.rendering/environment/motion_blur/quality]).
 		</member>
 		<member name="motion_blur_object_scale" type="float" setter="set_motion_blur_object_scale" getter="get_motion_blur_object_scale" default="1.0">
 			Multiplier for the blur caused by objects moving on their own (including skinned and particle motion), as opposed to the camera's motion. Set it to [code]0.0[/code] to only blur the camera's motion.
+		</member>
+		<member name="motion_blur_reference_fps" type="float" setter="set_motion_blur_reference_fps" getter="get_motion_blur_reference_fps" default="30.0">
+			The frame rate [member motion_blur_intensity] refers to, which makes the length of the blur independent of the actual frame rate: the blur is as long as it would be at this frame rate. Lower values give longer blurs.
+			At [code]0.0[/code], the actual frame rate is used instead, as a real camera would: the blur is then longer at low frame rates, and gets very short at high ones (at 144 FPS, it is a fifth as long as at 30 FPS), where it can become hard to notice.
+			The frame rate is measured in game time, so [member Engine.time_scale] and a fixed frame rate (such as Movie Maker mode's) are taken into account.
 		</member>
 		<member name="reflected_light_source" type="int" setter="set_reflection_source" getter="get_reflection_source" enum="Environment.ReflectionSource" default="0">
 			The reflected (specular) light source.

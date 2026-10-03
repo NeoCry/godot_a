@@ -778,7 +778,7 @@ float RendererEnvironmentStorage::environment_get_xegtao_ao_channel_affect(RID p
 
 // Motion blur
 
-void RendererEnvironmentStorage::environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) {
+void RendererEnvironmentStorage::environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_reference_fps, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 #ifdef DEBUG_ENABLED
@@ -788,6 +788,7 @@ void RendererEnvironmentStorage::environment_set_motion_blur(RID p_env, bool p_e
 #endif
 	env->motion_blur_enabled = p_enable;
 	env->motion_blur_intensity = MAX(p_intensity, 0.0f);
+	env->motion_blur_reference_fps = MAX(p_reference_fps, 0.0f);
 	env->motion_blur_max_radius = CLAMP(p_max_radius, 0.0f, 1.0f);
 	env->motion_blur_camera_rotation_scale = p_camera_rotation_scale;
 	env->motion_blur_camera_movement_scale = p_camera_movement_scale;
@@ -804,6 +805,12 @@ float RendererEnvironmentStorage::environment_get_motion_blur_intensity(RID p_en
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 0.5);
 	return env->motion_blur_intensity;
+}
+
+float RendererEnvironmentStorage::environment_get_motion_blur_reference_fps(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 30.0);
+	return env->motion_blur_reference_fps;
 }
 
 float RendererEnvironmentStorage::environment_get_motion_blur_max_radius(RID p_env) const {

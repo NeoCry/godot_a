@@ -81,8 +81,11 @@ public:
 	void set_quality(RSE::EnvironmentMotionBlurQuality p_quality);
 
 	struct Settings {
-		// The fraction of the time between two frames the shutter stays open.
+		// The fraction of a frame the shutter stays open.
 		float intensity = 0.5;
+		// The frame rate the frame above is one of, so the blur is as long whatever the actual frame rate is;
+		// 0 uses the actual frame rate, like a real camera.
+		float reference_fps = 30.0;
 		// The maximum blur radius, as a fraction of the height of the image.
 		float max_radius = 0.05;
 		float camera_rotation_scale = 1.0;

@@ -692,7 +692,7 @@ public:
 
 	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
-	virtual void environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) = 0;
+	virtual void environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_reference_fps, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) = 0;
 
 	virtual void environment_set_motion_blur_quality(RSE::EnvironmentMotionBlurQuality p_quality) = 0;
 

@@ -878,7 +878,7 @@ public:
 
 	FUNC11(environment_set_xegtao, RID, bool, float, float, float, float, float, float, bool, float, float)
 	FUNC5(environment_set_xegtao_quality, RSE::EnvironmentXeGTAOQuality, int, bool, float, float)
-	FUNC7(environment_set_motion_blur, RID, bool, float, float, float, float, float)
+	FUNC8(environment_set_motion_blur, RID, bool, float, float, float, float, float, float)
 	FUNC1(environment_set_motion_blur_quality, RSE::EnvironmentMotionBlurQuality)
 	FUNC10(environment_set_atmosphere, RID, bool, float, float, const Color &, float, const Color &, float, float, bool)
 	FUNC4(environment_set_atmosphere_rayleigh, RID, const Color &, float, float)
