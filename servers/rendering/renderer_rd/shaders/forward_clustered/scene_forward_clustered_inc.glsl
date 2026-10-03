@@ -323,11 +323,9 @@ layout(set = 0, binding = 20) uniform texture2D area_light_atlas;
 // Virtual texturing's page caches (streamed, runtime) and feedback buffer, see virtual_texture_inc.glsl.
 layout(set = 0, binding = 21) uniform texture2DArray vt_cache[2];
 layout(set = 0, binding = 22) uniform texture2DArray vt_cache_srgb[2];
-#ifdef VT_FEEDBACK
+// Writable in every stage and variant, as they all share this set: only fragment shaders that sample
+// virtual textures write to it (see VT_FEEDBACK).
 layout(set = 0, binding = 23, std430) buffer restrict VirtualTextureFeedback {
-#else
-layout(set = 0, binding = 23, std430) buffer restrict readonly VirtualTextureFeedback {
-#endif
 	uint frame;
 	uint pad0;
 	uint pad1;

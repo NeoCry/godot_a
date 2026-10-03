@@ -288,7 +288,8 @@ public:
 	FUNC2(texture_virtual_invalidate, RID, const Rect2 &)
 
 	virtual bool is_virtual_texturing_supported() const override {
-		return RSG::texture_storage->texture_virtual_is_supported();
+		// Shaders compiled while the renderer is being set up ask too.
+		return RSG::texture_storage && RSG::texture_storage->texture_virtual_is_supported();
 	}
 
 	/* SHADER API */

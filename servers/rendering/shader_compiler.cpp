@@ -1252,7 +1252,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					bool texture_func_returns_data = false;
 					bool texture_func_simple = false;
 
-					if (is_internal_func && onode->arguments.size() >= 3 && texture_functions.has(vnode->name) && _uses_virtual_texturing()) {
+					if (is_internal_func && onode->arguments.size() >= 3 && texture_functions.has(vnode->name)) {
 						// Virtual textures are sampled through their page table (see virtual_texture_inc.glsl),
 						// which is what their uniforms are bound to.
 						bool is_virtual = false;
@@ -1277,7 +1277,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 								}
 							}
 						}
-						if (is_virtual) {
+						if (is_virtual && _uses_virtual_texturing()) {
 							code += _dump_virtual_texture_call(onode, vnode->name, virtual_srgb, virtual_repeat, p_level, r_gen_code, p_actions, p_default_actions);
 							break;
 						}

@@ -868,6 +868,7 @@ void fragment() {
 void Landscape3D::finish_shaders() {
 	shader.unref();
 	patch_mesh.unref();
+	writer_mesh.unref();
 }
 
 void Landscape3D::_bind_methods() {
