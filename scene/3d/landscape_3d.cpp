@@ -738,12 +738,19 @@ void fragment() {
 	// How much of the runtime virtual texture shows here, against blending the layers here: all of
 	// it, but for what is closer than rvt_near_distance, and wherever parallax (which depends on
 	// where the camera is, so it cannot be drawn into a texture ahead of time) has not faded out.
+	// Under whatever else was drawn into the texture (a road, a decal), which only the texture has, it
+	// shows all the same.
 	float rvt_amount = 0.0;
+	vec3 rvt_uv = vec3(position.xz / (float(terrain_quads) * vertex_spacing), 0.0);
+	vec4 rvt_orm = vec4(1.0);
 	if (rvt_mode == 1) {
 		rvt_amount = rvt_near_distance > 0.0 ? smoothstep(rvt_near_distance * 0.75, rvt_near_distance, view_distance) : 1.0;
 		if (pom_enabled) {
 			rvt_amount = min(rvt_amount, smoothstep(pom_fade_start, pom_fade_end, view_distance));
 		}
+		rvt_orm = texture(rvt_data, vec3(rvt_uv.xy, 2.0));
+		// The ORM layer's alpha is how much of it is bare ground.
+		rvt_amount = 1.0 - (1.0 - rvt_amount) * rvt_orm.a;
 	}
 
 	vec3 albedo = vec3(0.6);
@@ -818,10 +825,8 @@ void fragment() {
 	}
 
 	if (rvt_amount > 0.0) {
-		vec3 rvt_uv = vec3(position.xz / (float(terrain_quads) * vertex_spacing), 0.0);
 		vec4 rvt_color = texture(rvt_albedo, rvt_uv);
 		vec4 rvt_normal = texture(rvt_data, vec3(rvt_uv.xy, 1.0));
-		vec4 rvt_orm = texture(rvt_data, vec3(rvt_uv.xy, 2.0));
 		// Pages are drawn looking down the terrain's Y axis with X to the right and Z down the page:
 		// their view space normal (x, y, z) is the terrain's (x, z, -y).
 		vec3 page_normal = normalize(rvt_normal.rgb * 2.0 - 1.0);
@@ -843,9 +848,13 @@ void fragment() {
 
 #ifdef LANDSCAPE_RVT_WRITER
 	// The height of the ground in the virtual texture is read back from the depth its pages are drawn
-	// with (see BlendLandscape3D), and the ground's own keeps what lies under it hidden.
+	// with, and the ground's own keeps what lies under it hidden.
 	vec4 ground_clip = PROJECTION_MATRIX * (VIEW_MATRIX * (MODEL_MATRIX * vec4(position, 1.0)));
 	DEPTH = ground_clip.z / ground_clip.w;
+	// Marks the texels that show the bare ground, where the layers can be blended here instead close
+	// to the camera: what is drawn over it (a road, a decal) covers the mark as much as it covers the
+	// ground (see VirtualTextureStorage::get_material_pass_blend_state()).
+	SSS_STRENGTH = 1.0;
 #endif
 
 	if (rvt_mode == 2) {
@@ -1089,12 +1098,14 @@ void Landscape3D::_notification(int p_what) {
 
 		case NOTIFICATION_EXIT_TREE: {
 			_disconnect_frame_hook();
+			BlendLandscape3D::remove_landscape_source(get_instance_id());
 		} break;
 
 		case NOTIFICATION_ENTER_WORLD: {
 			_update_draw_instances();
 			_update_writer_instance();
 			_update_virtual_texture_volume();
+			_publish_blend_source();
 			const RID scenario = get_world_3d().is_valid() ? get_world_3d()->get_scenario() : RID();
 			const bool visible = is_visible_in_tree();
 			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
@@ -1127,6 +1138,7 @@ void Landscape3D::_notification(int p_what) {
 			_update_occluder_transforms();
 			_update_writer_instance();
 			_update_virtual_texture_volume();
+			_publish_blend_source();
 			lod_dirty = true;
 			// Whatever sits on the surface (see LandscapeSpline3D) has to follow
 			// it wherever it moved.
@@ -1274,16 +1286,17 @@ void Landscape3D::_update_virtual_texture() {
 
 void Landscape3D::_free_virtual_texture() {
 	RenderingServer *rs = RS::get_singleton();
-	if (virtual_texture.is_valid()) {
-		BlendLandscape3D::remove_landscape_source(get_instance_id());
-	}
 	if (writer_instance.is_valid()) {
 		rs->free_rid(writer_instance);
 		writer_instance = RID();
 	}
 	if (virtual_texture.is_valid()) {
-		rs->free_rid(virtual_texture);
+		const RID texture = virtual_texture;
 		virtual_texture = RID();
+		virtual_texture_size = 0;
+		// The materials blending into the ground stop reading it before it goes.
+		_publish_blend_source();
+		rs->free_rid(texture);
 	}
 	virtual_texture_size = 0;
 	if (material.is_valid()) {
@@ -1357,21 +1370,53 @@ void Landscape3D::_update_virtual_texture_volume() {
 	const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
 	const Transform3D volume = _get_safe_global_transform() * local;
 	RS::get_singleton()->texture_virtual_set_runtime_volume(virtual_texture, scenario, volume, virtual_texture_layers);
-	// For the materials that blend into the ground (see BlendLandscape3D).
-	if (scenario.is_valid()) {
-		BlendLandscape3D::LandscapeSource source;
-		source.texture = virtual_texture;
-		source.volume = volume;
-		source.layers = virtual_texture_layers;
-		BlendLandscape3D::set_landscape_source(get_instance_id(), source);
-	} else {
-		BlendLandscape3D::remove_landscape_source(get_instance_id());
-	}
+	_publish_blend_source();
 	// The writer lies at the bottom of the volume, under everything else drawn into it.
 	writer_material->set_shader_parameter(SNAME("rvt_writer_height"), local.origin.y + local.basis.get_column(1).y * 0.001f);
 	if (writer_instance.is_valid()) {
 		RS::get_singleton()->instance_set_custom_aabb(writer_instance, get_aabb());
 	}
+}
+
+void Landscape3D::_publish_blend_source() {
+	// The materials blending into the ground (see BlendLandscape3D) find it the way this terrain's own
+	// shader does: they are handed the same textures and settings, under their own uniforms' names.
+	const ObjectID id = get_instance_id();
+	if (!is_inside_tree() || terrain_data.is_null() || !height_texture.is_valid() || !gradient_texture.is_valid() || !weight_texture.is_valid() || material.is_null()) {
+		BlendLandscape3D::remove_landscape_source(id);
+		return;
+	}
+
+	BlendLandscape3D::LandscapeSource source;
+	source.layers = virtual_texture_layers;
+	HashMap<StringName, Variant> &parameters = source.parameters;
+
+	const Transform3D global = _get_safe_global_transform();
+	parameters[SNAME("landscape_world_to_local")] = global.affine_inverse();
+	parameters[SNAME("landscape_normal_to_world")] = global.basis.inverse().transposed();
+	parameters[SNAME("landscape_height_scale")] = global.basis.get_column(1).length();
+	parameters[SNAME("landscape_terrain_quads")] = terrain_data->get_resolution() - 1;
+	parameters[SNAME("landscape_vertex_spacing")] = terrain_data->get_vertex_spacing();
+	parameters[SNAME("landscape_heightmap")] = height_texture.get_rid();
+	parameters[SNAME("landscape_gradient_map")] = gradient_texture.get_rid();
+	parameters[SNAME("landscape_weight_array")] = weight_texture.get_rid();
+	parameters[SNAME("landscape_albedo_array")] = albedo_array.is_valid() ? albedo_array->get_rid() : RID();
+	parameters[SNAME("landscape_normal_array")] = normal_array.is_valid() ? normal_array->get_rid() : RID();
+	parameters[SNAME("landscape_orm_array")] = orm_array.is_valid() ? orm_array->get_rid() : RID();
+	static const char *layer_parameters[] = { "layer_uv_scales", "layer_albedo_colors", "layer_roughness", "layer_specular", "layer_ao_strength", "layer_normal_strength", "layer_triplanar", "layer_triplanar_sharpness", "layer_count" };
+	for (const char *name : layer_parameters) {
+		parameters[StringName(String("landscape_") + name)] = material->get_shader_parameter(name);
+	}
+
+	const bool rvt = virtual_texture.is_valid();
+	parameters[SNAME("landscape_rvt_active")] = rvt;
+	parameters[SNAME("landscape_rvt_albedo")] = virtual_texture;
+	parameters[SNAME("landscape_rvt_data")] = virtual_texture;
+	parameters[SNAME("landscape_ground_near")] = virtual_texture_near_distance;
+	parameters[SNAME("landscape_ground_pom")] = pom_enabled;
+	parameters[SNAME("landscape_ground_pom_fade")] = Vector2(pom_fade_start, pom_fade_end);
+
+	BlendLandscape3D::set_landscape_source(id, source);
 }
 
 void Landscape3D::_invalidate_virtual_texture(const Rect2i &p_samples) {
@@ -1683,6 +1728,7 @@ void Landscape3D::_clear_terrain() {
 	gradient_image.unref();
 	_free_draw_instances();
 	_clear_occluders();
+	_publish_blend_source();
 }
 
 void Landscape3D::_rebuild_terrain() {
@@ -1874,6 +1920,7 @@ void Landscape3D::_rebuild_weight_texture() {
 	}
 	weight_texture.create(images, true);
 	_set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
+	_publish_blend_source();
 }
 
 void Landscape3D::_upload_weight_region(const Rect2i &p_region, int p_first_layer, int p_layer_count) {
@@ -1899,6 +1946,7 @@ void Landscape3D::_update_material_params() {
 	_set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
 	_set_shader_parameter(SNAME("terrain_quads"), terrain_data->get_resolution() - 1);
 	_set_shader_parameter(SNAME("vertex_spacing"), terrain_data->get_vertex_spacing());
+	_publish_blend_source();
 }
 
 void Landscape3D::_update_micro_detail_params() {
@@ -1925,6 +1973,7 @@ void Landscape3D::_update_pom_params() {
 	material->set_shader_parameter(SNAME("pom_shadow_light_direction"), pom_shadow_light_direction);
 	material->set_shader_parameter(SNAME("pom_fade_start"), pom_fade_start);
 	material->set_shader_parameter(SNAME("pom_fade_end"), pom_fade_end);
+	_publish_blend_source();
 }
 
 void Landscape3D::_update_layer_params() {
@@ -2007,6 +2056,7 @@ void Landscape3D::_update_layer_params() {
 	_update_micro_detail_params();
 	_update_draw_aabb();
 	_invalidate_virtual_texture_all();
+	_publish_blend_source();
 }
 
 Ref<Texture2D> Landscape3D::_get_layer_texture(int p_layer, LayerTexture p_which) const {
@@ -2160,6 +2210,7 @@ void Landscape3D::_rebuild_layer_textures(uint32_t p_which) {
 		_set_shader_parameter(SNAME("height_texture_size"), float(MAX(height_array->get_width(), 1)));
 	}
 	_invalidate_virtual_texture_all();
+	_publish_blend_source();
 }
 
 Vector2i Landscape3D::_get_block_grid_size() const {
@@ -2721,6 +2772,7 @@ void Landscape3D::set_virtual_texture_near_distance(float p_distance) {
 	if (material.is_valid() && virtual_texture.is_valid()) {
 		material->set_shader_parameter(SNAME("rvt_near_distance"), virtual_texture_near_distance);
 	}
+	_publish_blend_source();
 }
 
 float Landscape3D::get_virtual_texture_near_distance() const {
@@ -2736,6 +2788,7 @@ void Landscape3D::set_virtual_texture_layers(uint32_t p_layers) {
 	virtual_texture_layers = p_layers;
 	_update_writer_instance();
 	_update_virtual_texture_volume();
+	_publish_blend_source();
 }
 
 uint32_t Landscape3D::get_virtual_texture_layers() const {
@@ -3349,6 +3402,7 @@ Landscape3D::Landscape3D() {
 }
 
 Landscape3D::~Landscape3D() {
+	BlendLandscape3D::remove_landscape_source(get_instance_id());
 	_disconnect_frame_hook();
 	_clear_occluders();
 	_free_draw_instances();

@@ -180,8 +180,9 @@ bool VirtualTextureStorage::_ensure_cache(Cache p_cache) {
 	} else {
 		// What a page that is not there yet reads as: mid gray (sRGB encoded, as the albedo layer is
 		// read back through the sRGB view), a normal straight up the volume with default specular, and
-		// no occlusion, full roughness, no metal.
-		const Color loading[RUNTIME_LAYERS] = { Color(0.73, 0.73, 0.73, 1), Color(0.5, 0.5, 1, 0.5), Color(1, 1, 0, 0) };
+		// no occlusion, full roughness, no metal, and bare ground (whoever draws the ground can show
+		// it its own way meanwhile).
+		const Color loading[RUNTIME_LAYERS] = { Color(0.73, 0.73, 0.73, 1), Color(0.5, 0.5, 1, 0.5), Color(1, 1, 0, 1) };
 		_fill_tile(p_cache, 0, loading);
 	}
 
@@ -897,6 +898,11 @@ RD::PipelineColorBlendState VirtualTextureStorage::get_material_pass_blend_state
 		attachment.dst_color_blend_factor = RD::BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 		if (i == 0) {
 			attachment.src_alpha_blend_factor = RD::BLEND_FACTOR_ONE;
+			attachment.dst_alpha_blend_factor = RD::BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		} else if (i == 2) {
+			// ORM's alpha tells how much of the texel is still the ground drawn under it (see
+			// RUNTIME_LAYERS): as much less as this covers of it.
+			attachment.src_alpha_blend_factor = RD::BLEND_FACTOR_ZERO;
 			attachment.dst_alpha_blend_factor = RD::BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 		} else {
 			attachment.src_alpha_blend_factor = RD::BLEND_FACTOR_ZERO;

@@ -77,6 +77,9 @@ public:
 	static constexpr uint32_t ENTRY_EMPTY_MIP = 15;
 	static constexpr uint32_t FEEDBACK_SLOTS = 8192;
 	static constexpr uint32_t FEEDBACK_HEADER_SIZE = 16;
+	// Runtime virtual textures: albedo; normal with specular in alpha; ORM, with in alpha the subsurface
+	// scattering strength of the opaque surface drawn there (which Landscape3D sets to 1 to mark its own
+	// ground), faded by whatever is blended over it.
 	static constexpr int RUNTIME_LAYERS = 3;
 	// Sampling a runtime virtual texture's layer 3 reads the height of the ground there instead, from 0
 	// at the bottom of its volume to 1 at its top (0 too where there is none).

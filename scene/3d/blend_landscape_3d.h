@@ -32,14 +32,17 @@
 
 #include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/local_vector.h"
 #include "core/templates/self_list.h"
 #include "scene/resources/material.h"
 
 // A StandardMaterial3D that blends into the ground of a Landscape3D where it meets it: near the ground,
-// the surface takes on the landscape's own albedo, normal, roughness, metallic and occlusion, read
-// from the landscape's runtime virtual texture, along with the height of the ground under every pixel.
-// So a rock, a wall or a tree's roots seem to grow out of the terrain whatever their pivot, rotation
-// or scale, wherever they stand on it, and however the terrain is painted under them.
+// the surface takes on the landscape's own albedo, normal, roughness, metallic and occlusion, found
+// the way the landscape finds them itself: its layers blended right there close to the camera, read
+// back from its runtime virtual texture further away. The height of the ground under every pixel
+// comes from the landscape's heightmap. So a rock, a wall or a tree's roots seem to grow out of the
+// terrain whatever their pivot, rotation or scale, wherever they stand on it, and however the
+// terrain is painted under them.
 //
 // Every BlendLandscape3D binds itself to a landscape: the first whose virtual texture layers share a
 // bit with its blend_landscape_layers (see set_landscape_source(), which Landscape3D calls).
@@ -47,13 +50,14 @@ class BlendLandscape3D : public StandardMaterial3D {
 	GDCLASS(BlendLandscape3D, StandardMaterial3D);
 
 public:
-	// Where a landscape's runtime virtual texture is drawn from.
+	// What a landscape hands over to the materials that blend into it: its virtual texture layers,
+	// which pick the materials, and the uniforms of theirs that read its ground (see
+	// _get_shader_extension_uniforms()), by name.
 	struct LandscapeSource {
-		RID texture;
-		// Maps a unit cube onto the world: X along U, Z along V, Y up through the volume the texture
-		// was drawn from (see RenderingServer.texture_virtual_set_runtime_volume()).
-		Transform3D volume;
 		uint32_t layers = 0;
+		HashMap<StringName, Variant> parameters;
+
+		bool operator==(const LandscapeSource &p_other) const;
 	};
 
 private:
@@ -75,6 +79,8 @@ private:
 
 	SelfList<BlendLandscape3D> landscape_element;
 	ObjectID bound_landscape;
+	// The texture uniforms a landscape set, cleared when it goes away.
+	LocalVector<StringName> bound_textures;
 
 	static Mutex landscapes_mutex;
 	// By landscape, in the order they appeared.

@@ -33,6 +33,10 @@
 TEST_FORCE_LINK(test_blend_landscape_3d)
 
 #include "scene/3d/blend_landscape_3d.h"
+#include "scene/3d/landscape_3d.h"
+#include "scene/3d/terrain_data.h"
+#include "scene/main/scene_tree.h"
+#include "scene/main/window.h"
 #include "scene/resources/image_texture.h"
 #include "tests/test_tools.h"
 
@@ -82,8 +86,7 @@ TEST_CASE("[SceneTree][BlendLandscape3D] Materials blend into the landscape draw
 	const ObjectID first = ObjectID(uint64_t(0x7fff0001));
 	const ObjectID second = ObjectID(uint64_t(0x7fff0002));
 	BlendLandscape3D::LandscapeSource source;
-	source.texture = RID::from_uint64(0x7fff0001);
-	source.volume = Transform3D(Basis::from_scale(Vector3(100, 20, 100)), Vector3(0, -10, 0));
+	source.parameters[SNAME("landscape_vertex_spacing")] = 2.0;
 	source.layers = 2;
 
 	Ref<BlendLandscape3D> material;
@@ -98,7 +101,7 @@ TEST_CASE("[SceneTree][BlendLandscape3D] Materials blend into the landscape draw
 
 	// The first landscape to appear stays the one blended into.
 	source.layers = 1;
-	source.texture = RID::from_uint64(0x7fff0002);
+	source.parameters[SNAME("landscape_vertex_spacing")] = 4.0;
 	BlendLandscape3D::set_landscape_source(second, source);
 	CHECK(material->get_bound_landscape() == first);
 
@@ -112,6 +115,31 @@ TEST_CASE("[SceneTree][BlendLandscape3D] Materials blend into the landscape draw
 	BlendLandscape3D::remove_landscape_source(second);
 	CHECK(material->get_bound_landscape().is_null());
 	CHECK(later->get_bound_landscape().is_null());
+}
+
+TEST_CASE("[SceneTree][BlendLandscape3D] A landscape in the tree is blended into, virtual texture or not") {
+	Ref<TerrainData> data;
+	data.instantiate();
+	data->set_resolution(33);
+	Ref<BlendLandscape3D> material;
+	material.instantiate();
+
+	Landscape3D *landscape = memnew(Landscape3D);
+	landscape->set_terrain_data(data);
+	CHECK_MESSAGE(material->get_bound_landscape().is_null(), "Not in the tree yet.");
+
+	// The dummy renderer has no virtual texturing: the material blends the landscape's layers itself.
+	SceneTree::get_singleton()->get_root()->add_child(landscape);
+	CHECK(material->get_bound_landscape() == landscape->get_instance_id());
+
+	landscape->set_virtual_texture_layers(2);
+	CHECK(material->get_bound_landscape().is_null());
+	material->set_blend_landscape_layers(2);
+	CHECK(material->get_bound_landscape() == landscape->get_instance_id());
+
+	SceneTree::get_singleton()->get_root()->remove_child(landscape);
+	CHECK(material->get_bound_landscape().is_null());
+	memdelete(landscape);
 }
 
 TEST_CASE("[SceneTree][BlendLandscape3D] Settings are kept in range") {

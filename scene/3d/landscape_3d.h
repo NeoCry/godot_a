@@ -210,7 +210,7 @@ private:
 	// with it.
 	bool virtual_texture_enabled = true;
 	float virtual_texture_texel_size = 0.02;
-	float virtual_texture_near_distance = 0.0;
+	float virtual_texture_near_distance = 32.0;
 	uint32_t virtual_texture_layers = 1;
 	RID virtual_texture;
 	int virtual_texture_size = 0;
@@ -282,6 +282,7 @@ private:
 	void _update_virtual_texture();
 	void _free_virtual_texture();
 	Transform3D _get_virtual_texture_local_volume() const;
+	void _publish_blend_source();
 	void _update_virtual_texture_volume();
 	void _update_writer_instance();
 	// Draws the pages of the virtual texture over these samples again.
