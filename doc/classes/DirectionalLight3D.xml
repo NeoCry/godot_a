@@ -15,6 +15,20 @@
 		<member name="directional_shadow_blend_splits" type="bool" setter="set_blend_splits" getter="is_blend_splits_enabled" default="false">
 			If [code]true[/code], shadow detail is sacrificed in exchange for smoother transitions between splits. Enabling shadow blend splitting also has a moderate performance cost. This is ignored when [member directional_shadow_mode] is [constant SHADOW_ORTHOGONAL].
 		</member>
+		<member name="directional_shadow_cache_enabled" type="bool" setter="set_shadow_cache_enabled" getter="is_shadow_cache_enabled" default="false">
+			If [code]true[/code], shadows extend past [member directional_shadow_max_distance] out to [member directional_shadow_cache_max_distance], through an extra far cascade whose shadow map is kept from frame to frame instead of being drawn again every frame. Its resolution is set by [member ProjectSettings.rendering/lights_and_shadows/directional_shadow/cache_size].
+			The shadow map follows the camera by scrolling: when the camera has moved far enough (see [member directional_shadow_cache_margin]), what the shadow map holds is shifted, and only the strips that came into view are drawn. It is only drawn whole the first time, when the light turns by more than about a degree, when the camera jumps far away, and when the camera's projection or the light's shadow settings change enough to call for it.
+			[b]Note:[/b] Only supported by the Forward+ renderer.
+		</member>
+		<member name="directional_shadow_cache_margin" type="float" setter="set_param" getter="get_param" default="1.25">
+			How much larger than the area it has to cover the cached cascade's shadow map is made, which sets how far the camera can move before it scrolls. Higher values make it scroll less often, by larger steps, at the cost of a lower resolution. At [code]1.0[/code], it scrolls whenever the camera moves by a texel.
+		</member>
+		<member name="directional_shadow_cache_max_distance" type="float" setter="set_param" getter="get_param" default="500.0">
+			The distance up to which the cached cascade extends shadows. Only used when greater than [member directional_shadow_max_distance].
+		</member>
+		<member name="directional_shadow_cache_update_interval" type="float" setter="set_param" getter="get_param" default="4.0">
+			The cached cascade's shadow map is drawn again a band of rows at a time, one band every frame, so that objects that move show up in it. This is the number of frames a full sweep of it takes: lower values make moving objects' shadows follow sooner, higher values cost less per frame. At [code]0[/code], it is never drawn again on its own, which suits scenes where nothing moves that far away.
+		</member>
 		<member name="directional_shadow_fade_start" type="float" setter="set_param" getter="get_param" default="0.8">
 			Proportion of [member directional_shadow_max_distance] at which point the shadow starts to fade. At [member directional_shadow_max_distance], the shadow will disappear. The default value is a balance between smooth fading and distant shadow visibility. If the camera moves fast and the [member directional_shadow_max_distance] is low, consider lowering [member directional_shadow_fade_start] below [code]0.8[/code] to make shadow transitions less noticeable. On the other hand, if you tuned [member directional_shadow_max_distance] to cover the entire scene, you can set [member directional_shadow_fade_start] to [code]1.0[/code] to prevent the shadow from fading in the distance (it will suddenly cut off instead).
 		</member>

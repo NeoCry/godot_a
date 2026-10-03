@@ -236,8 +236,10 @@ public:
 	virtual void set_directional_shadow_count(int p_count) override {}
 
 	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) override {}
-	virtual int get_directional_light_shadow_cache_size(RID p_light_instance) override { return 0; }
 	virtual void set_directional_shadow_cache_count(int p_count) override {}
+	virtual Size2i get_directional_shadow_cache_tile_size() override { return Size2i(); }
+	virtual uint64_t get_directional_shadow_cache_generation() override { return 0; }
+	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) override {}
 };
 
 } // namespace RendererDummy

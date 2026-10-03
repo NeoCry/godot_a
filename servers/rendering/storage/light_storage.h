@@ -221,6 +221,21 @@ public:
 
 	// Second, independent atlas for the cached far cascade (see MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES).
 	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) = 0;
-	virtual int get_directional_light_shadow_cache_size(RID p_light_instance) = 0;
 	virtual void set_directional_shadow_cache_count(int p_count) = 0;
+	// Every light with a cached cascade gets a tile of this size in the cache atlas.
+	virtual Size2i get_directional_shadow_cache_tile_size() = 0;
+	// Changes whenever the cache atlas is resized or recreated, losing what its tiles held.
+	virtual uint64_t get_directional_shadow_cache_generation() = 0;
+
+	// A rectangle of a cached cascade's tile to draw this frame.
+	struct DirectionalShadowCacheRegion {
+		Rect2i rect; // In texels of the tile.
+		Projection projection; // The part of the cascade's projection that covers rect.
+		bool clear = true; // When false, drawn over what the tile holds there instead.
+	};
+
+	// What the renderer has to do to a light's cached cascade this frame: before drawing p_regions,
+	// shift what tile p_tile holds so that each texel takes what the texel p_scroll away from it
+	// held, and lower every depth it holds by p_depth_scroll.
+	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) = 0;
 };

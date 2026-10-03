@@ -159,6 +159,22 @@ CopyEffects::CopyEffects(BitField<RasterEffects> p_raster_effects) {
 	}
 
 	{
+		// Initialize shadow cache scroller.
+		Vector<String> scroll_modes;
+		scroll_modes.push_back("\n");
+
+		shadow_cache_scroll.shader.initialize(scroll_modes);
+
+		shadow_cache_scroll.shader_version = shadow_cache_scroll.shader.version_create();
+		RID shader = shadow_cache_scroll.shader.version_get_shader(shadow_cache_scroll.shader_version, 0);
+		RD::PipelineDepthStencilState dss;
+		dss.enable_depth_test = true;
+		dss.depth_compare_operator = RD::COMPARE_OP_ALWAYS;
+		dss.enable_depth_write = true;
+		shadow_cache_scroll.pipeline.setup(shader, RD::RENDER_PRIMITIVE_TRIANGLES, RD::PipelineRasterizationState(), RD::PipelineMultisampleState(), dss, RD::PipelineColorBlendState(), 0);
+	}
+
+	{
 		// Initialize cubemap to octmap copier.
 		cube_to_octmap.shader.initialize({ "" });
 		cube_to_octmap.shader_version = cube_to_octmap.shader.version_create();
@@ -392,6 +408,7 @@ CopyEffects::~CopyEffects() {
 
 	copy_to_fb.shader.version_free(copy_to_fb.shader_version);
 	cube_to_dp.shader.version_free(cube_to_dp.shader_version);
+	shadow_cache_scroll.shader.version_free(shadow_cache_scroll.shader_version);
 	cube_to_octmap.shader.version_free(cube_to_octmap.shader_version);
 
 	singleton = nullptr;
@@ -1112,6 +1129,34 @@ void CopyEffects::copy_cubemap_to_dp(RID p_source_rd_texture, RID p_dst_framebuf
 	RD::get_singleton()->draw_list_bind_index_array(draw_list, material_storage->get_quad_index_array());
 
 	RD::get_singleton()->draw_list_set_push_constant(draw_list, &push_constant, sizeof(CopyToDPPushConstant));
+	RD::get_singleton()->draw_list_draw(draw_list, true);
+	RD::get_singleton()->draw_list_end();
+}
+
+void CopyEffects::copy_shadow_cache_scroll(RID p_source_texture, RID p_dst_framebuffer, const Rect2i &p_dst_rect, const Vector2i &p_source_offset, float p_depth_offset) {
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+	ERR_FAIL_NULL(uniform_set_cache);
+	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	ERR_FAIL_NULL(material_storage);
+
+	ShadowCacheScrollPushConstant push_constant;
+	push_constant.source_offset[0] = p_source_offset.x;
+	push_constant.source_offset[1] = p_source_offset.y;
+	push_constant.depth_offset = p_depth_offset;
+	push_constant.pad = 0.0;
+
+	RID default_sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	RD::Uniform u_source_texture(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, p_source_texture }));
+
+	RID shader = shadow_cache_scroll.shader.version_get_shader(shadow_cache_scroll.shader_version, 0);
+	ERR_FAIL_COND(shader.is_null());
+
+	RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin(p_dst_framebuffer, RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0, p_dst_rect);
+	RD::get_singleton()->draw_list_bind_render_pipeline(draw_list, shadow_cache_scroll.pipeline.get_render_pipeline(RD::INVALID_ID, RD::get_singleton()->framebuffer_get_format(p_dst_framebuffer)));
+	RD::get_singleton()->draw_list_bind_uniform_set(draw_list, uniform_set_cache->get_cache(shader, 0, u_source_texture), 0);
+	RD::get_singleton()->draw_list_bind_index_array(draw_list, material_storage->get_quad_index_array());
+
+	RD::get_singleton()->draw_list_set_push_constant(draw_list, &push_constant, sizeof(ShadowCacheScrollPushConstant));
 	RD::get_singleton()->draw_list_draw(draw_list, true);
 	RD::get_singleton()->draw_list_end();
 }

@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/templates/local_vector.h"
 #include "core/templates/paged_array.h"
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
@@ -127,7 +128,14 @@ private:
 		uint32_t light_directional_index = 0;
 
 		Rect2 directional_rect;
-		Rect2 directional_cache_rect;
+
+		// Cached far cascade: what RendererSceneCull last asked the renderer to do to it (see
+		// light_instance_set_directional_shadow_cache_update()).
+		int directional_cache_tile = 0;
+		Vector2i directional_cache_scroll;
+		float directional_cache_depth_scroll = 0.0;
+		bool directional_cache_scroll_pending = false;
+		LocalVector<DirectionalShadowCacheRegion> directional_cache_regions;
 
 		HashSet<RID> shadow_atlases; //shadow atlases where this light is registered
 
@@ -471,8 +479,17 @@ private:
 
 	// Second, independent atlas holding the cached far cascade of lights that have shadow caching
 	// enabled. Kept separate from `directional_shadow` above so its clear/redraw scheduling can
-	// never interact with (or corrupt) the main, every-frame cascades.
-	DirectionalShadow directional_shadow_cache;
+	// never interact with (or corrupt) the main, every-frame cascades. Each light keeps its tile
+	// (its index among the lights with a cached cascade) for as long as the set of those lights
+	// stays the same, since what the tile holds is carried over from frame to frame.
+	struct DirectionalShadowCache : public DirectionalShadow {
+		uint64_t generation = 0;
+		// A band of rows that scrolling a tile goes through, since a pass can't read the texture it
+		// draws into. Only as wide as a tile, and only a few hundred rows tall.
+		RID scroll_depth;
+		RID scroll_fb;
+		Size2i scroll_size;
+	} directional_shadow_cache;
 
 	/* SHADOW CUBEMAPS */
 
@@ -853,14 +870,29 @@ public:
 		return li->directional_rect;
 	}
 
-	_FORCE_INLINE_ void light_instance_set_directional_cache_rect(RID p_light_instance, const Rect2 &p_rect) {
+	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) override;
+
+	_FORCE_INLINE_ int light_instance_get_directional_cache_tile(RID p_light_instance) {
 		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
-		li->directional_cache_rect = p_rect;
+		return li->directional_cache_tile;
 	}
 
-	_FORCE_INLINE_ Rect2 light_instance_get_directional_cache_rect(RID p_light_instance) {
+	_FORCE_INLINE_ const DirectionalShadowCacheRegion *light_instance_get_directional_cache_region(RID p_light_instance, int p_region) {
 		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
-		return li->directional_cache_rect;
+		ERR_FAIL_INDEX_V(p_region, (int)li->directional_cache_regions.size(), nullptr);
+		return &li->directional_cache_regions[p_region];
+	}
+
+	// Hands over the scroll the cached cascade still has to go through, once.
+	_FORCE_INLINE_ bool light_instance_take_directional_cache_scroll(RID p_light_instance, Vector2i &r_scroll, float &r_depth_scroll) {
+		LightInstance *li = light_instance_owner.get_or_null(p_light_instance);
+		if (!li->directional_cache_scroll_pending) {
+			return false;
+		}
+		li->directional_cache_scroll_pending = false;
+		r_scroll = li->directional_cache_scroll;
+		r_depth_scroll = li->directional_cache_depth_scroll;
+		return true;
 	}
 
 	_FORCE_INLINE_ void light_instance_set_shadow_cache_pass(RID p_light_instance, uint64_t p_pass) {
@@ -1243,11 +1275,14 @@ public:
 
 	// Cache atlas (see DirectionalShadow above): same shape, entirely separate storage.
 	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) override;
-	virtual int get_directional_light_shadow_cache_size(RID p_light_instance) override;
 	virtual void set_directional_shadow_cache_count(int p_count) override;
+	virtual Size2i get_directional_shadow_cache_tile_size() override;
+	virtual uint64_t get_directional_shadow_cache_generation() override;
 
-	Rect2i get_directional_shadow_cache_rect();
+	Rect2i get_directional_shadow_cache_tile_rect(int p_tile);
 	void update_directional_shadow_cache_atlas();
+	// The scroll band's framebuffer, (re)created to be p_size.
+	RID directional_shadow_cache_get_scroll_fb(const Size2i &p_size);
 
 	_FORCE_INLINE_ RID directional_shadow_cache_get_texture() {
 		return directional_shadow_cache.depth;
@@ -1261,8 +1296,8 @@ public:
 		return directional_shadow_cache.fb;
 	}
 
-	_FORCE_INLINE_ void directional_shadow_cache_increase_current_light() {
-		directional_shadow_cache.current_light++;
+	_FORCE_INLINE_ RID directional_shadow_cache_get_scroll_texture() {
+		return directional_shadow_cache.scroll_depth;
 	}
 
 	/* SHADOW CUBEMAPS */

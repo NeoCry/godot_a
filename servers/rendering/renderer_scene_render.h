@@ -48,11 +48,14 @@ public:
 	enum {
 		MAX_DIRECTIONAL_LIGHTS = 8,
 		MAX_DIRECTIONAL_LIGHT_CASCADES = 4,
-		// Extra far cascade(s) that are only redrawn every N frames instead of every frame (see
-		// DirectionalLight3D's shadow_cache_enabled). Kept at 1 for now: each additional cached slot
-		// needs its own struct fields, atlas rect and shader branch, and none of that can be verified
-		// against a GPU in this environment, so the surface is deliberately minimal.
+		// Extra far cascade(s) whose shadow map is kept from frame to frame instead of being drawn
+		// again every frame (see DirectionalLight3D's shadow_cache_enabled). Kept at 1 for now: each
+		// additional cached slot needs its own struct fields, atlas rect and shader branch.
 		MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES = 1,
+		// How many regions of a cached cascade's tile can be drawn in a frame: the two strips that
+		// scrolled into view, a pass for what came into its depth range, and a band of rows drawn
+		// again to pick up what moved. Each takes a shadow pass slot past the live cascades.
+		MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS = 4,
 		MAX_RENDER_VIEWS = 2
 	};
 

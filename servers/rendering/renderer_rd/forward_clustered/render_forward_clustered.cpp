@@ -1770,9 +1770,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		}
 
 		if (p_render_data->directional_shadows_cached.size()) {
-			// The cache atlas has no equivalent blanket clear: cached cascades that aren't being
-			// redrawn this frame must keep their previous contents, so each redraw clears only its
-			// own rect (p_clear_region = true below), the same way positional shadows already do.
+			// The cache atlas has no equivalent blanket clear: what cached cascades hold is carried
+			// over from frame to frame, so each region drawn this frame clears only its own rect
+			// (if it clears at all, see DirectionalShadowCacheRegion::clear).
 			light_storage->update_directional_shadow_cache_atlas();
 		}
 	}
@@ -2903,35 +2903,55 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	Projection light_projection;
 	Transform3D light_transform;
 
+	bool clear_region = p_clear_region;
+	bool open_pass = p_open_pass;
+
 	if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL && p_pass >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES) {
-		// Cached far cascade: own atlas, own tile-assignment bookkeeping (independent from the live
-		// cascades' below, since a light may need a cache tile on a frame where none of its live
-		// cascades happen to be dispatched, or vice-versa), and no quadrant split (each light gets
-		// the whole tile, since MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES is 1).
+		// Cached far cascade: own atlas, and its own tile, which the light keeps from frame to
+		// frame since what it holds is carried over. Each pass draws one region of that tile (see
+		// RendererSceneCull::_update_directional_shadow_cache()); the cascade itself, which is what
+		// gets sampled, is in the first cached slot.
+		const int cache_pass = RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES;
+		const RendererLightStorage::DirectionalShadowCacheRegion *region = light_storage->light_instance_get_directional_cache_region(p_light, p_pass - cache_pass);
+		ERR_FAIL_NULL(region);
+
+		Rect2i tile_rect = light_storage->get_directional_shadow_cache_tile_rect(light_storage->light_instance_get_directional_cache_tile(p_light));
+
 		uint64_t last_scene_cache_shadow_pass = light_storage->light_instance_get_shadow_cache_pass(p_light);
 		if (last_scene_cache_shadow_pass != get_scene_pass()) {
-			light_storage->light_instance_set_directional_cache_rect(p_light, light_storage->get_directional_shadow_cache_rect());
-			light_storage->directional_shadow_cache_increase_current_light();
 			light_storage->light_instance_set_shadow_cache_pass(p_light, get_scene_pass());
+
+			float directional_shadow_cache_size = light_storage->directional_shadow_cache_get_size();
+			Rect2 atlas_rect_norm = tile_rect;
+			atlas_rect_norm.position /= directional_shadow_cache_size;
+			atlas_rect_norm.size /= directional_shadow_cache_size;
+			light_storage->light_instance_set_directional_shadow_atlas_rect(p_light, cache_pass, atlas_rect_norm);
+
+			// Before any region is drawn, move what the tile holds to where the cascade's frustum
+			// has moved since the last frame it was drawn in.
+			Vector2i scroll;
+			float depth_scroll = 0.0;
+			if (light_storage->light_instance_take_directional_cache_scroll(p_light, scroll, depth_scroll)) {
+				_scroll_directional_shadow_cache(tile_rect, scroll, depth_scroll);
+			}
 		}
 
 		use_pancake = light_storage->light_get_param(base, RSE::LIGHT_PARAM_SHADOW_PANCAKE_SIZE) > 0;
-		light_projection = light_storage->light_instance_get_shadow_camera(p_light, p_pass);
-		light_transform = light_storage->light_instance_get_shadow_transform(p_light, p_pass);
+		light_projection = region->projection;
+		light_transform = light_storage->light_instance_get_shadow_transform(p_light, cache_pass);
 
-		atlas_rect = light_storage->light_instance_get_directional_cache_rect(p_light);
-
-		float directional_shadow_cache_size = light_storage->directional_shadow_cache_get_size();
-		Rect2 atlas_rect_norm = atlas_rect;
-		atlas_rect_norm.position /= directional_shadow_cache_size;
-		atlas_rect_norm.size /= directional_shadow_cache_size;
-		light_storage->light_instance_set_directional_shadow_atlas_rect(p_light, p_pass, atlas_rect_norm);
+		atlas_rect = Rect2i(tile_rect.position + region->rect.position, region->rect.size);
 
 		zfar = RSG::light_storage->light_get_param(base, RSE::LIGHT_PARAM_RANGE);
 
 		render_fb = light_storage->direction_shadow_cache_get_fb();
 		render_texture = RID();
 		flip_y = true;
+
+		// Regions that draw over what the tile already holds must not be cleared, not even when
+		// they happen to open the pass.
+		clear_region = region->clear;
+		open_pass = false;
 
 	} else if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
 		//set pssm stuff
@@ -3092,8 +3112,43 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 
 	} else {
 		//render shadow
-		_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, p_clear_region, p_open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
+		_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, clear_region, open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
 	}
+}
+
+void RenderForwardClustered::_scroll_directional_shadow_cache(const Rect2i &p_tile_rect, const Vector2i &p_scroll, float p_depth_scroll) {
+	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
+
+	// The texels of the tile that take what another texel of the tile held.
+	Rect2i dst(MAX(0, -p_scroll.x), MAX(0, -p_scroll.y), p_tile_rect.size.width - Math::abs(p_scroll.x), p_tile_rect.size.height - Math::abs(p_scroll.y));
+	if (dst.size.width <= 0 || dst.size.height <= 0) {
+		return; // Nothing is kept; RendererSceneCull draws the whole tile again in that case.
+	}
+
+	RD::get_singleton()->draw_command_begin_label("Scroll Directional Shadow Cache");
+
+	// A pass can't read the texture it draws into, so the rows go through a scratch band, a band at
+	// a time. Bands are taken in the order that never overwrites a row a later band still has to
+	// read: from the top when rows move up (each row takes one further down), from the bottom
+	// otherwise.
+	const int band_height = MIN(p_tile_rect.size.height, 512);
+	RID scroll_fb = light_storage->directional_shadow_cache_get_scroll_fb(Size2i(p_tile_rect.size.width, band_height));
+	RID scroll_texture = light_storage->directional_shadow_cache_get_scroll_texture();
+	RID cache_texture = light_storage->directional_shadow_cache_get_texture();
+	RID cache_fb = light_storage->direction_shadow_cache_get_fb();
+
+	const int band_count = (dst.size.height + band_height - 1) / band_height;
+	for (int i = 0; i < band_count; i++) {
+		int band = p_scroll.y >= 0 ? i : band_count - 1 - i;
+		int row = dst.position.y + band * band_height;
+		int rows = MIN(band_height, dst.position.y + dst.size.height - row);
+
+		Vector2i dst_position = p_tile_rect.position + Vector2i(dst.position.x, row);
+		copy_effects->copy_shadow_cache_scroll(cache_texture, scroll_fb, Rect2i(0, 0, dst.size.width, rows), dst_position + p_scroll, p_depth_scroll);
+		copy_effects->copy_shadow_cache_scroll(scroll_texture, cache_fb, Rect2i(dst_position, Vector2i(dst.size.width, rows)), -dst_position, 0.0);
+	}
+
+	RD::get_singleton()->draw_command_end_label();
 }
 
 void RenderForwardClustered::_render_shadow_begin() {

@@ -43,6 +43,7 @@
 #include "servers/rendering/renderer_rd/shaders/effects/octmap_filter_raster.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/octmap_roughness.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/octmap_roughness_raster.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/effects/shadow_cache_scroll.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/specular_merge.glsl.gen.h"
 
 namespace RendererRD {
@@ -230,6 +231,20 @@ private:
 		PipelineCacheRD pipeline;
 	} cube_to_dp;
 
+	// Shadow cache scroll
+
+	struct ShadowCacheScrollPushConstant {
+		int32_t source_offset[2];
+		float depth_offset;
+		float pad;
+	};
+
+	struct ShadowCacheScroll {
+		ShadowCacheScrollShaderRD shader;
+		RID shader_version;
+		PipelineCacheRD pipeline;
+	} shadow_cache_scroll;
+
 	// Copy to Octmap
 
 	struct CopyToOctmapPushConstant {
@@ -387,6 +402,9 @@ public:
 	void set_color_raster(RID p_dest_texture, const Color &p_color, const Rect2i &p_region);
 
 	void copy_cubemap_to_dp(RID p_source_rd_texture, RID p_dst_framebuffer, const Rect2 &p_rect, const Vector2 &p_dst_size, float p_z_near, float p_z_far, bool p_dp_flip);
+	// Fills p_dst_rect of a depth framebuffer with the depths p_source_offset texels away in
+	// p_source_texture (which must not be the framebuffer's), minus p_depth_offset.
+	void copy_shadow_cache_scroll(RID p_source_texture, RID p_dst_framebuffer, const Rect2i &p_dst_rect, const Vector2i &p_source_offset, float p_depth_offset);
 	void copy_cubemap_to_octmap(RID p_source_rd_texture, RID p_dst_framebuffer, float p_border_size);
 	void octmap_downsample(RID p_source_octmap, RID p_dest_octmap, const Size2i &p_size, float p_border_size);
 	void octmap_downsample_raster(RID p_source_octmap, RID p_dest_framebuffer, const Size2i &p_size, float p_border_size);

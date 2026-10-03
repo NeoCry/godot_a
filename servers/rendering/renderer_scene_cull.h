@@ -702,9 +702,8 @@ public:
 	SelfList<InstanceVisibilityNotifierData>::List visible_notifier_list;
 
 	// A single directional shadow cascade's light-space fit, computed by
-	// _light_instance_setup_directional_shadow(). Used both for the live cascades (transient,
-	// rebuilt every frame in Cull::Shadow) and for the cached far cascade (persisted across frames
-	// on InstanceLightData, since it is only rebuilt every few frames).
+	// _light_instance_setup_directional_shadow() for the live cascades and by
+	// _update_directional_shadow_cache() for the cached far cascade.
 	struct DirectionalShadowCascadeData {
 		Frustum frustum;
 		Projection projection;
@@ -733,12 +732,32 @@ public:
 		uint32_t max_sdfgi_cascade = 2;
 		uint32_t cull_mask = 0xFFFFFFFF;
 
-		// Cached far cascade state. Persists across frames (unlike Cull::Shadow, which is rebuilt
-		// every frame) since it is only recomputed every shadow_cache_update_interval frames.
-		DirectionalShadowCascadeData cached_shadow_cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES];
-		bool cached_shadow_valid[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES] = {};
-		uint64_t cached_shadow_next_refresh_frame[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES] = {};
-		Vector3 cached_shadow_light_direction;
+		// Cached far cascade: where its tile sits in light space, which is what lets what the tile
+		// holds be kept from frame to frame (see _update_directional_shadow_cache()).
+		struct ShadowCache {
+			bool valid = false;
+			uint64_t last_update_frame = UINT64_MAX;
+			uint64_t atlas_generation = 0;
+			int tile = -1;
+			Size2i tile_size;
+			// The light's basis when the tile was drawn whole: the axes of its texel grid.
+			Basis basis;
+			real_t margin = 0.0;
+			real_t pancake_size = 0.0;
+			real_t soft_shadow_tan = 0.0;
+			// Receivers are covered up to `extent` from the center of the tile, in every direction.
+			// Soft shadows look for blockers up to `soft_shadow_expand` further out, so the tile is
+			// `extent + soft_shadow_expand` wide from its center in X and Y.
+			real_t extent = 0.0;
+			real_t soft_shadow_expand = 0.0;
+			// The tile's first texel and its far plane, on grids of texels in X and Y and of depth
+			// steps (SHADOW_CACHE_DEPTH_STEPS of them over its depth range) in Z.
+			int64_t grid_x = 0;
+			int64_t grid_y = 0;
+			int64_t grid_z = 0;
+			// First row of the band of rows to draw again next.
+			int refresh_row = 0;
+		} shadow_cache;
 
 	private:
 		// Instead of a single dirty flag, we maintain a count
@@ -931,7 +950,7 @@ public:
 
 		struct DirectionalShadow {
 			PagedArray<RenderGeometryInstance *> cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
-			PagedArray<RenderGeometryInstance *> cached_cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES];
+			PagedArray<RenderGeometryInstance *> cached_cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
 		} directional_shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
 
 		PagedArray<RenderGeometryInstance *> sdfgi_region_geometry_instances[SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE];
@@ -951,7 +970,7 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].clear();
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].clear();
 				}
 			}
@@ -979,7 +998,7 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].reset();
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].reset();
 				}
 			}
@@ -1008,7 +1027,7 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].merge_unordered(p_cull_result.directional_shadows[i].cascade_geometry_instances[j]);
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].merge_unordered(p_cull_result.directional_shadows[i].cached_cascade_geometry_instances[j]);
 				}
 			}
@@ -1036,7 +1055,7 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
 				}
 			}
@@ -1140,7 +1159,8 @@ public:
 	// Records a box that SDFGI has to voxelize again, because a dynamic GI object was or now is there.
 	void _sdfgi_mark_dirty(Scenario *p_scenario, const AABB &p_aabb) const;
 
-	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh);
+	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh, int p_shadow_cache_tile);
+	void _update_directional_shadow_cache(int p_shadow_index, Instance *p_instance, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, real_t p_near, real_t p_far, int p_tile, bool p_allow_update);
 
 	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF);
 
@@ -1166,14 +1186,14 @@ public:
 			} cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES]; //max 4 cascades
 			uint32_t cascade_count;
 
-			// Per-frame scratch copy of the light's cached far cascade(s), refreshed from
-			// InstanceLightData::cached_shadow_cascades in _light_instance_setup_directional_shadow().
-			// `cached_cascade_refresh_mask` bit k is set only on the frames where cached_cascades[k] is
-			// actually being redrawn (culling/GPU work); it is skipped on every other frame, which is
-			// the entire point of the cache.
+			// The light's cached far cascade, as sampled this frame, and the regions of its tile
+			// that are drawn this frame (most frames, only a band of rows), each culled on its own
+			// against cached_region_frustums. See _update_directional_shadow_cache().
 			DirectionalShadowCascadeData cached_cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES];
 			uint32_t cached_cascade_count;
-			uint32_t cached_cascade_refresh_mask;
+			Frustum cached_region_frustums[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
+			uint32_t cached_region_count;
+			InstanceLightData *light_data;
 
 		} shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
 

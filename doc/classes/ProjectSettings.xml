@@ -3270,6 +3270,13 @@
 		<member name="rendering/lights_and_shadows/directional_shadow/16_bits" type="bool" setter="" getter="" default="true">
 			Use 16 bits for the directional shadow depth map. Enabling this results in shadows having less precision and may result in shadow acne, but can lead to performance improvements on some devices.
 		</member>
+		<member name="rendering/lights_and_shadows/directional_shadow/cache_size" type="int" setter="" getter="" default="2048">
+			The size in pixels of the shadow atlas that holds the far cascade of [DirectionalLight3D]s with [member DirectionalLight3D.directional_shadow_cache_enabled] set to [code]true[/code]. Each of those lights gets an equal share of it. Higher values give sharper distant shadows, at the cost of memory and of the time it takes to draw the parts of it that are drawn every frame.
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
+		<member name="rendering/lights_and_shadows/directional_shadow/cache_size.mobile" type="int" setter="" getter="" default="1024">
+			Lower-end override for [member rendering/lights_and_shadows/directional_shadow/cache_size] on mobile devices, due to performance concerns or driver support.
+		</member>
 		<member name="rendering/lights_and_shadows/directional_shadow/size" type="int" setter="" getter="" default="4096">
 			The directional shadow's size in pixels. Higher values will result in sharper shadows, at the cost of performance. The value is rounded up to the nearest power of 2.
 		</member>

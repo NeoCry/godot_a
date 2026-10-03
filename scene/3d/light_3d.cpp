@@ -647,7 +647,7 @@ void DirectionalLight3D::_bind_methods() {
 	ADD_GROUP("Directional Shadow Cache", "directional_shadow_cache_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "directional_shadow_cache_enabled"), "set_shadow_cache_enabled", "is_shadow_cache_enabled");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_max_distance", PROPERTY_HINT_RANGE, "0,8192,0.1,or_greater,exp"), "set_param", "get_param", PARAM_SHADOW_CACHE_MAX_DISTANCE);
-	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_update_interval", PROPERTY_HINT_RANGE, "1,120,1,or_greater"), "set_param", "get_param", PARAM_SHADOW_CACHE_UPDATE_INTERVAL);
+	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_update_interval", PROPERTY_HINT_RANGE, "0,120,1,or_greater"), "set_param", "get_param", PARAM_SHADOW_CACHE_UPDATE_INTERVAL);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_margin", PROPERTY_HINT_RANGE, "1,4,0.05,or_greater"), "set_param", "get_param", PARAM_SHADOW_CACHE_MARGIN);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sky_mode", PROPERTY_HINT_ENUM, "Light and Sky,Light Only,Sky Only"), "set_sky_mode", "get_sky_mode");
