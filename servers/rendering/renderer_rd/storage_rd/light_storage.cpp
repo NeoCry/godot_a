@@ -1667,6 +1667,17 @@ void LightStorage::_reflection_atlas_clear(ReflectionAtlas *p_reflection_atlas) 
 	RD::get_singleton()->free_rid(p_reflection_atlas->depth_buffer);
 	p_reflection_atlas->depth_buffer = RID();
 
+	// The cubemap the probe's faces are drawn into. Freeing it also frees the views of its faces,
+	// whose framebuffers went with the depth buffer above.
+	if (p_reflection_atlas->color_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(p_reflection_atlas->color_buffer);
+		p_reflection_atlas->color_buffer = RID();
+	}
+	for (int i = 0; i < 6; i++) {
+		p_reflection_atlas->color_views[i] = RID();
+		p_reflection_atlas->color_fbs[i] = RID();
+	}
+
 	for (int i = 0; i < p_reflection_atlas->reflections.size(); i++) {
 		p_reflection_atlas->reflections.write[i].data.clear_reflection_data();
 		if (p_reflection_atlas->reflections[i].owner.is_null()) {
