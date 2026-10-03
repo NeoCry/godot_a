@@ -286,6 +286,18 @@ public:
 
 	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
+	// Motion blur
+	virtual void environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) = 0;
+
+	virtual bool environment_get_motion_blur_enabled(RID p_env) const = 0;
+	virtual float environment_get_motion_blur_intensity(RID p_env) const = 0;
+	virtual float environment_get_motion_blur_max_radius(RID p_env) const = 0;
+	virtual float environment_get_motion_blur_camera_rotation_scale(RID p_env) const = 0;
+	virtual float environment_get_motion_blur_camera_movement_scale(RID p_env) const = 0;
+	virtual float environment_get_motion_blur_object_scale(RID p_env) const = 0;
+
+	virtual void environment_set_motion_blur_quality(RSE::EnvironmentMotionBlurQuality p_quality) = 0;
+
 	// Atmosphere
 	virtual void environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights) = 0;
 	virtual void environment_set_atmosphere_rayleigh(RID p_env, const Color &p_scattering, float p_scattering_scale, float p_exponential_distribution) = 0;

@@ -148,6 +148,15 @@ private:
 	float xegtao_ao_channel_affect = 0.0;
 	void _update_xegtao();
 
+	// Motion blur
+	bool motion_blur_enabled = false;
+	float motion_blur_intensity = 0.5;
+	float motion_blur_max_radius = 0.05;
+	float motion_blur_camera_rotation_scale = 1.0;
+	float motion_blur_camera_movement_scale = 1.0;
+	float motion_blur_object_scale = 1.0;
+	void _update_motion_blur();
+
 	// Atmosphere
 	bool atmosphere_enabled = false;
 	float atmosphere_planet_radius = 6360.0;
@@ -351,6 +360,20 @@ public:
 	float get_xegtao_direct_light_affect() const;
 	void set_xegtao_ao_channel_affect(float p_ao_channel_affect);
 	float get_xegtao_ao_channel_affect() const;
+
+	// Motion blur
+	void set_motion_blur_enabled(bool p_enabled);
+	bool is_motion_blur_enabled() const;
+	void set_motion_blur_intensity(float p_intensity);
+	float get_motion_blur_intensity() const;
+	void set_motion_blur_max_radius(float p_max_radius);
+	float get_motion_blur_max_radius() const;
+	void set_motion_blur_camera_rotation_scale(float p_scale);
+	float get_motion_blur_camera_rotation_scale() const;
+	void set_motion_blur_camera_movement_scale(float p_scale);
+	float get_motion_blur_camera_movement_scale() const;
+	void set_motion_blur_object_scale(float p_scale);
+	float get_motion_blur_object_scale() const;
 
 	// Atmosphere
 	void set_atmosphere_enabled(bool p_enabled);

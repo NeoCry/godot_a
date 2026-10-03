@@ -2981,6 +2981,9 @@
 		<member name="rendering/environment/glow/upscale_mode.mobile" type="int" setter="" getter="" default="0">
 			Lower-end override for [member rendering/environment/glow/upscale_mode] on mobile devices, due to performance concerns or driver support.
 		</member>
+		<member name="rendering/environment/motion_blur/quality" type="int" setter="" getter="" default="2">
+			Sets the quality of the motion blur effect (see [member Environment.motion_blur_enabled]), as the number of samples each moving pixel gathers along its motion: [code]0[/code] (Low) takes 9 samples, [code]1[/code] (Medium) 15, [code]2[/code] (High) 25 and [code]3[/code] (Ultra) 35. Short blurs take fewer, about one for every pixel they span. Higher values make long blurs smoother and less grainy, at the cost of performance.
+		</member>
 		<member name="rendering/environment/screen_space_reflection/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
 			If [code]true[/code], screen-space reflections will be rendered at half size and then upscaled before being added to the scene. This is faster but may look pixelated or cause flickering. If [code]false[/code], screen-space reflections will be rendered at full size.
 		</member>

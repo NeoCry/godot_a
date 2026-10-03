@@ -559,6 +559,21 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 		RD::get_singleton()->draw_command_end_label();
 	}
 
+	// Motion blur, after depth of field, as a camera would blur the out of focus image, and before glow and
+	// tonemapping, on the linear HDR color.
+	RendererRD::MotionBlur::Settings motion_blur_settings;
+	if (can_use_effects && can_use_storage && p_render_data->scene_data->calculate_motion_vectors && rb->has_velocity_buffer(false) && _motion_blur_is_active(p_render_data, color_size, &motion_blur_settings)) {
+		RENDER_TIMESTAMP("Motion Blur");
+
+		motion_blur->process(rb, p_render_data->scene_data, use_upscaled_texture, motion_blur_settings);
+
+		// When nothing requests continuous redraws (as in the editor), the frame drawn as the camera stops would
+		// otherwise stay blurred until something else changes.
+		if (p_render_data->scene_data->cam_transform != p_render_data->scene_data->prev_cam_transform || p_render_data->scene_data->cam_projection != p_render_data->scene_data->prev_cam_projection) {
+			RenderingServerDefault::redraw_request();
+		}
+	}
+
 	float auto_exposure_scale = 1.0;
 
 	if (can_use_effects && RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
@@ -1178,6 +1193,35 @@ RD::DataFormat RendererSceneRenderRD::_render_buffers_get_preferred_color_format
 
 bool RendererSceneRenderRD::_render_buffers_can_be_storage() {
 	return true;
+}
+
+bool RendererSceneRenderRD::_motion_blur_is_active(const RenderDataRD *p_render_data, const Size2i &p_size, RendererRD::MotionBlur::Settings *r_settings) const {
+	if (motion_blur == nullptr || p_render_data->reflection_probe.is_valid() || p_render_data->environment.is_null()) {
+		return false;
+	}
+
+	RID environment = p_render_data->environment;
+	if (!environment_get_motion_blur_enabled(environment)) {
+		return false;
+	}
+
+	RendererRD::MotionBlur::Settings settings;
+	settings.intensity = environment_get_motion_blur_intensity(environment);
+	settings.max_radius = environment_get_motion_blur_max_radius(environment);
+	settings.camera_rotation_scale = environment_get_motion_blur_camera_rotation_scale(environment);
+	settings.camera_movement_scale = environment_get_motion_blur_camera_movement_scale(environment);
+	settings.object_scale = environment_get_motion_blur_object_scale(environment);
+	if (r_settings) {
+		*r_settings = settings;
+	}
+
+	return RendererRD::MotionBlur::is_active(settings, p_size);
+}
+
+void RendererSceneRenderRD::environment_set_motion_blur_quality(RSE::EnvironmentMotionBlurQuality p_quality) {
+	if (motion_blur) {
+		motion_blur->set_quality(p_quality);
+	}
 }
 
 void RendererSceneRenderRD::gi_set_use_half_resolution(bool p_enable) {

@@ -776,6 +776,60 @@ float RendererEnvironmentStorage::environment_get_xegtao_ao_channel_affect(RID p
 	return env->xegtao_ao_channel_affect;
 }
 
+// Motion blur
+
+void RendererEnvironmentStorage::environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+#ifdef DEBUG_ENABLED
+	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
+		WARN_PRINT_ONCE_ED("Motion blur is only available when using the Forward+ renderer.");
+	}
+#endif
+	env->motion_blur_enabled = p_enable;
+	env->motion_blur_intensity = MAX(p_intensity, 0.0f);
+	env->motion_blur_max_radius = CLAMP(p_max_radius, 0.0f, 1.0f);
+	env->motion_blur_camera_rotation_scale = p_camera_rotation_scale;
+	env->motion_blur_camera_movement_scale = p_camera_movement_scale;
+	env->motion_blur_object_scale = p_object_scale;
+}
+
+bool RendererEnvironmentStorage::environment_get_motion_blur_enabled(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, false);
+	return env->motion_blur_enabled;
+}
+
+float RendererEnvironmentStorage::environment_get_motion_blur_intensity(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.5);
+	return env->motion_blur_intensity;
+}
+
+float RendererEnvironmentStorage::environment_get_motion_blur_max_radius(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.05);
+	return env->motion_blur_max_radius;
+}
+
+float RendererEnvironmentStorage::environment_get_motion_blur_camera_rotation_scale(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 1.0);
+	return env->motion_blur_camera_rotation_scale;
+}
+
+float RendererEnvironmentStorage::environment_get_motion_blur_camera_movement_scale(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 1.0);
+	return env->motion_blur_camera_movement_scale;
+}
+
+float RendererEnvironmentStorage::environment_get_motion_blur_object_scale(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 1.0);
+	return env->motion_blur_object_scale;
+}
+
 // Atmosphere
 
 void RendererEnvironmentStorage::environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights) {

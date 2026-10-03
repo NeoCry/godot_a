@@ -3098,6 +3098,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_adjustment", "env", "enable", "brightness", "contrast", "saturation", "use_1d_color_correction", "color_correction"), &RenderingServer::environment_set_adjustment);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr", "env", "enable", "max_steps", "fade_in", "fade_out", "depth_tolerance"), &RenderingServer::environment_set_ssr);
 	ClassDB::bind_method(D_METHOD("environment_set_xegtao", "env", "enable", "radius", "intensity", "power", "falloff_range", "sample_distribution_power", "thin_occluder_compensation", "bent_normals", "light_affect", "ao_channel_affect"), &RenderingServer::environment_set_xegtao);
+	ClassDB::bind_method(D_METHOD("environment_set_motion_blur", "env", "enable", "intensity", "max_radius", "camera_rotation_scale", "camera_movement_scale", "object_scale"), &RenderingServer::environment_set_motion_blur);
 	ClassDB::bind_method(D_METHOD("environment_set_sscs", "env", "enable", "length", "surface_thickness"), &RenderingServer::environment_set_sscs);
 	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RSE::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_fog_depth", "env", "curve", "begin", "end"), &RenderingServer::environment_set_fog_depth);
@@ -3108,6 +3109,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_ssr_half_size", "half_size"), &RenderingServer::environment_set_ssr_half_size);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr_roughness_quality", "quality"), &RenderingServer::environment_set_ssr_roughness_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_xegtao_quality", "quality", "denoise_passes", "half_size", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_xegtao_quality);
+	ClassDB::bind_method(D_METHOD("environment_set_motion_blur_quality", "quality"), &RenderingServer::environment_set_motion_blur_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere", "env", "enable", "planet_radius", "height", "ground_albedo", "multiscattering_factor", "sky_luminance_factor", "aerial_perspective_distance_scale", "aerial_perspective_start_depth", "affect_directional_lights"), &RenderingServer::environment_set_atmosphere);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_rayleigh", "env", "scattering", "scattering_scale", "exponential_distribution"), &RenderingServer::environment_set_atmosphere_rayleigh);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_mie", "env", "scattering", "scattering_scale", "absorption", "absorption_scale", "anisotropy", "exponential_distribution"), &RenderingServer::environment_set_atmosphere_mie);
@@ -3168,6 +3170,12 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_HIGH);
 	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_ULTRA);
 	BIND_ENUM_CONSTANT(RSE::ENV_XEGTAO_QUALITY_MAX);
+
+	BIND_ENUM_CONSTANT(RSE::ENV_MOTION_BLUR_QUALITY_LOW);
+	BIND_ENUM_CONSTANT(RSE::ENV_MOTION_BLUR_QUALITY_MEDIUM);
+	BIND_ENUM_CONSTANT(RSE::ENV_MOTION_BLUR_QUALITY_HIGH);
+	BIND_ENUM_CONSTANT(RSE::ENV_MOTION_BLUR_QUALITY_ULTRA);
+	BIND_ENUM_CONSTANT(RSE::ENV_MOTION_BLUR_QUALITY_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT);
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM);
@@ -3795,6 +3803,8 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/environment/xegtao/half_size", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/xegtao/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/xegtao/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
+
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/motion_blur/quality", PROPERTY_HINT_ENUM, "Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 2);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);
