@@ -51,6 +51,9 @@ constexpr uint64_t TILE_PROTECTED_FRAMES = 4;
 // is asked for again, whenever it is wanted.
 constexpr uint64_t REQUEST_TIMEOUT_FRAMES = 600;
 constexpr uint32_t MAX_FEEDBACK_READS_IN_FLIGHT = 3;
+// Frames drawn for virtual textures alone (see needs_redraw()) stop coming after this many brought no
+// page: longer than what is sampled takes to be read back and turned into pages.
+constexpr uint32_t STALLED_FRAMES = 8;
 // Pages drawn again because something changed under them come before missing ones: they are on
 // screen, and wrong.
 constexpr int STALE_PAGE_SCORE = 1000;
@@ -561,6 +564,7 @@ void VirtualTextureStorage::_process_feedback() {
 	}
 
 	candidates.sort();
+	quiet_feedback_reads = candidates.is_empty() ? quiet_feedback_reads + 1 : 0;
 
 	streamed_queue.clear();
 	for (VirtualTexture *texture : textures) {
@@ -671,6 +675,7 @@ void VirtualTextureStorage::_process_uploads() {
 		}
 		processed++;
 	}
+	uploads_this_frame = processed;
 
 	if (i >= uploads.size()) {
 		uploads.clear();
@@ -1123,8 +1128,15 @@ void VirtualTextureStorage::invalidate_world_aabb(RID p_scenario, uint32_t p_lay
 void VirtualTextureStorage::update() {
 	frame++;
 	runtime_pages_this_frame = 0;
+	uploads_this_frame = 0;
 	if (!enabled) {
 		return;
+	}
+	if (settled) {
+		// Drawn although nothing here asked for it: something changed, which may want other pages.
+		settled = false;
+		quiet_feedback_reads = 0;
+		frames_without_pages = 0;
 	}
 	_process_feedback();
 	_read_feedback();
@@ -1291,6 +1303,35 @@ void VirtualTextureStorage::flush() {
 	}
 	_downsample_tiles();
 	_upload_page_tables();
+}
+
+bool VirtualTextureStorage::needs_redraw() {
+	if (!enabled || textures.is_empty()) {
+		return false;
+	}
+	// Pages drawn or uploaded this frame only show in the next.
+	if (runtime_pages_this_frame > 0 || uploads_this_frame > 0) {
+		frames_without_pages = 0;
+		quiet_feedback_reads = 0;
+		settled = false;
+		return true;
+	}
+	frames_without_pages++;
+
+	// What a frame samples is read back a few frames after it: once a few read backs in a row have
+	// wanted nothing that was missing, and no page is waiting for its turn, the view has every page it
+	// needs. Streamed pages still being read from disk are not waited for: handing them over asks for
+	// a frame by itself.
+	bool waiting = !uploads.is_empty() || !streamed_queue.is_empty();
+	for (const VirtualTexture *texture : textures) {
+		waiting = waiting || !texture->queue.is_empty();
+	}
+	const bool complete = !waiting && quiet_feedback_reads >= MAX_FEEDBACK_READS_IN_FLIGHT;
+	// Nor are pages that cannot be had for now (the cache is full of pages on screen): frames that
+	// bring no page don't keep coming.
+	const bool stalled = frames_without_pages >= STALLED_FRAMES;
+	settled = complete || stalled;
+	return !settled;
 }
 
 RID VirtualTextureStorage::get_cache_texture(Cache p_cache, bool p_srgb) const {

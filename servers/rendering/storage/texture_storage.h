@@ -262,4 +262,9 @@ public:
 	virtual void virtual_textures_invalidate_world_aabb(RID p_scenario, uint32_t p_layers, const AABB &p_aabb) {}
 	// Last thing of virtual_textures_update()'s frame: mipmaps for the new pages, page table uploads.
 	virtual void virtual_textures_flush() {}
+	// Whether virtual textures need more frames drawn to catch up with what is on screen: what was
+	// sampled is only read back a few frames later, and the pages it asks for take a few more frames
+	// still. Where frames are only drawn as something changes (the editor), it keeps them coming
+	// until everything on screen has the pages it wants.
+	virtual bool virtual_textures_need_redraw() { return false; }
 };

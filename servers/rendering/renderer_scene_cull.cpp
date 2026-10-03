@@ -4232,6 +4232,12 @@ void RendererSceneCull::update_virtual_textures() {
 	virtual_texture_page_instances.clear();
 
 	RSG::texture_storage->virtual_textures_flush();
+
+	// Where frames are only drawn as something changes (the editor), virtual textures would otherwise
+	// stop at whatever pages they had when the last change was drawn.
+	if (RSG::texture_storage->virtual_textures_need_redraw()) {
+		RenderingServerDefault::redraw_request();
+	}
 }
 
 void RendererSceneCull::render_probes() {

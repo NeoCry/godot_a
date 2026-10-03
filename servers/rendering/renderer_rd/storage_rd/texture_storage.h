@@ -959,6 +959,7 @@ public:
 	virtual void virtual_texture_runtime_end(RID p_texture) override;
 	virtual void virtual_textures_invalidate_world_aabb(RID p_scenario, uint32_t p_layers, const AABB &p_aabb) override;
 	virtual void virtual_textures_flush() override;
+	virtual bool virtual_textures_need_redraw() override;
 
 	// The page table a hint_virtual_texture uniform binds for p_texture, or an invalid RID if it is not
 	// a virtual texture.

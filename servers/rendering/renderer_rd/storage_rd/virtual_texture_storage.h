@@ -255,6 +255,14 @@ private:
 
 	uint64_t frame = 0;
 	uint32_t runtime_pages_this_frame = 0;
+	uint32_t uploads_this_frame = 0;
+
+	// See needs_redraw(): how many feedback read backs in a row wanted no page that was missing, how
+	// many frames in a row neither drew nor uploaded a page, and whether the last frame asked for no
+	// other frame to follow.
+	uint32_t quiet_feedback_reads = 0;
+	uint32_t frames_without_pages = 0;
+	bool settled = false;
 
 	LocalVector<Upload> uploads;
 	LocalVector<DownsampleTile> downsample_tiles;
@@ -343,6 +351,7 @@ public:
 	void runtime_end(RID p_virtual_texture);
 	void invalidate_world_aabb(RID p_scenario, uint32_t p_layers, const AABB &p_aabb);
 	void flush();
+	bool needs_redraw();
 
 	// For the scene shaders' global uniform sets.
 	uint64_t get_bindings_version() const { return bindings_version; }

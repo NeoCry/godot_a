@@ -5541,6 +5541,10 @@ void TextureStorage::virtual_textures_flush() {
 	}
 }
 
+bool TextureStorage::virtual_textures_need_redraw() {
+	return VirtualTextureStorage::get_singleton() && VirtualTextureStorage::get_singleton()->needs_redraw();
+}
+
 RID TextureStorage::texture_get_virtual_page_table(RID p_texture) const {
 	const Texture *tex = texture_owner.get_or_null(p_texture);
 	if (!tex || tex->virtual_texture.is_null()) {
