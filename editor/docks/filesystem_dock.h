@@ -139,6 +139,8 @@ private:
 		FILE_MENU_NEW_SCENE,
 		FILE_MENU_RUN_SCRIPT,
 		FILE_MENU_RUN_SCENE,
+		FILE_MENU_CONVERT_TO_VIRTUAL_TEXTURE,
+		FILE_MENU_CONVERT_TO_REGULAR_TEXTURE,
 		FILE_MENU_MAX,
 		// Extra shortcuts that don't exist in the menu.
 		EXTRA_FOCUS_PATH,
@@ -363,6 +365,7 @@ private:
 	void _folder_color_index_pressed(int p_index, PopupMenu *p_menu);
 	void _file_and_folders_fill_popup(PopupMenu *p_popup, const Vector<String> &p_paths, bool p_display_path_dependent_options = true);
 	void _add_create_options(PopupMenu *p_popup, const String &p_base_folder);
+	String _get_file_importer(const String &p_path) const;
 	void _tree_rmb_select(const Vector2 &p_pos, MouseButton p_button);
 	void _file_list_item_clicked(int p_item, const Vector2 &p_pos, MouseButton p_mouse_button_index);
 	void _file_list_empty_clicked(const Vector2 &p_pos, MouseButton p_mouse_button_index);

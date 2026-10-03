@@ -54,6 +54,7 @@
 #include "editor/gui/directory_create_dialog.h"
 #include "editor/gui/editor_dir_dialog.h"
 #include "editor/import/3d/scene_import_settings.h"
+#include "editor/import/resource_importer_virtual_texture.h"
 #include "editor/inspector/editor_context_menu_plugin.h"
 #include "editor/inspector/editor_resource_preview.h"
 #include "editor/inspector/editor_resource_tooltip_plugins.h"
@@ -2665,6 +2666,14 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 			ImportDock::get_singleton()->reimport_resources(p_selected);
 		} break;
 
+		case FILE_MENU_CONVERT_TO_VIRTUAL_TEXTURE: {
+			ImportDock::get_singleton()->reimport_resources_as(p_selected, ResourceImporterVirtualTexture::IMPORTER_NAME);
+		} break;
+
+		case FILE_MENU_CONVERT_TO_REGULAR_TEXTURE: {
+			ImportDock::get_singleton()->reimport_resources_as(p_selected, "texture");
+		} break;
+
 		case FILE_MENU_NEW_FOLDER: {
 			String directory = current_path;
 			if (!directory.ends_with("/")) {
@@ -3638,6 +3647,22 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
 				p_popup->add_icon_item(get_editor_theme_icon(SNAME("Load")), TTRC("Reimport"), FILE_MENU_REIMPORT);
 			}
 		}
+
+		// Turning textures into virtual textures (and back) is only ever done on request, from here.
+		if (all_files && !filenames.is_empty()) {
+			bool all_textures = true;
+			bool all_virtual_textures = true;
+			for (const String &path : filenames) {
+				const String importer = _get_file_importer(path);
+				all_textures = all_textures && (importer == "texture" || importer == "streamed_texture_2d");
+				all_virtual_textures = all_virtual_textures && importer == ResourceImporterVirtualTexture::IMPORTER_NAME;
+			}
+			if (all_textures) {
+				p_popup->add_icon_item(get_editor_theme_icon(SNAME("ImageTexture")), TTRC("Convert to Virtual Texture"), FILE_MENU_CONVERT_TO_VIRTUAL_TEXTURE);
+			} else if (all_virtual_textures) {
+				p_popup->add_icon_item(get_editor_theme_icon(SNAME("ImageTexture")), TTRC("Convert to Regular Texture"), FILE_MENU_CONVERT_TO_REGULAR_TEXTURE);
+			}
+		}
 	}
 
 	if (single_path) {
@@ -3707,6 +3732,18 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
 		EditorContextMenuPluginManager::get_singleton()->add_options_from_plugins(p_popup, EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, p_paths, p_paths, 1000);
 #endif
 	}
+}
+
+String FileSystemDock::_get_file_importer(const String &p_path) const {
+	if (!FileAccess::exists(p_path + ".import")) {
+		return String();
+	}
+	Ref<ConfigFile> config;
+	config.instantiate();
+	if (config->load(p_path + ".import") != OK) {
+		return String();
+	}
+	return config->get_value("remap", "importer", String());
 }
 
 void FileSystemDock::_add_create_options(PopupMenu *p_popup, const String &p_base_folder) {

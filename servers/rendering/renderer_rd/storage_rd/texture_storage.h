@@ -204,6 +204,10 @@ private:
 
 		RID streaming_state;
 
+		// Virtual texturing state (see VirtualTextureStorage), when this is a virtual texture: rd_texture
+		// then holds its fallback image, which is what it reads as outside hint_virtual_texture uniforms.
+		RID virtual_texture;
+
 		void cleanup();
 	};
 
@@ -939,6 +943,27 @@ public:
 	static uint32_t render_target_get_color_usage_bits(bool p_msaa);
 
 	virtual void texture_2d_attach_streaming_state(RID p_texture, RID p_streaming_state) override;
+
+	/* VIRTUAL TEXTURE API */
+
+	virtual void texture_virtual_initialize(RID p_texture, int p_width, int p_height, RSE::VirtualTextureType p_type, const Ref<Image> &p_fallback) override;
+	virtual void texture_virtual_set_page_request_callback(RID p_texture, const Callable &p_callback) override;
+	virtual void texture_virtual_update_page(RID p_texture, int p_mipmap, int p_x, int p_y, const Ref<Image> &p_image) override;
+	virtual void texture_virtual_set_runtime_volume(RID p_texture, RID p_scenario, const Transform3D &p_volume, uint32_t p_layers) override;
+	virtual void texture_virtual_invalidate(RID p_texture, const Rect2 &p_uv_rect) override;
+	virtual bool texture_virtual_is_supported() const override;
+
+	virtual void virtual_textures_update() override;
+	virtual void virtual_textures_get_runtime_pending(LocalVector<RID> &r_textures) override;
+	virtual RID virtual_texture_runtime_begin(RID p_texture, LocalVector<VirtualTextureRenderPage> &r_pages, RID &r_scenario, uint32_t &r_layers) override;
+	virtual void virtual_texture_runtime_end(RID p_texture) override;
+	virtual void virtual_textures_invalidate_world_aabb(RID p_scenario, uint32_t p_layers, const AABB &p_aabb) override;
+	virtual void virtual_textures_flush() override;
+	virtual bool virtual_textures_need_redraw() override;
+
+	// The page table a hint_virtual_texture uniform binds for p_texture, or an invalid RID if it is not
+	// a virtual texture.
+	RID texture_get_virtual_page_table(RID p_texture) const;
 };
 
 } // namespace RendererRD

@@ -180,6 +180,7 @@ void RendererCompositorRD::finalize() {
 	memdelete(light_storage);
 	memdelete(mesh_storage);
 	memdelete(material_storage);
+	memdelete(virtual_texture_storage);
 	memdelete(texture_storage);
 	memdelete(utilities);
 
@@ -363,6 +364,7 @@ RendererCompositorRD::RendererCompositorRD() {
 
 	utilities = memnew(RendererRD::Utilities);
 	texture_storage = memnew(RendererRD::TextureStorage);
+	virtual_texture_storage = memnew(RendererRD::VirtualTextureStorage);
 	material_storage = memnew(RendererRD::MaterialStorage);
 	mesh_storage = memnew(RendererRD::MeshStorage);
 	light_storage = memnew(RendererRD::LightStorage);

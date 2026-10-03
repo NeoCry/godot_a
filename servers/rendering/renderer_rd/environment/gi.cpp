@@ -4067,7 +4067,7 @@ void GI::VoxelGIInstance::update(bool p_update_light_instances, const Vector<RID
 					exposure_normalization = gi->voxel_gi_get_baked_exposure_normalization(probe);
 				}
 
-				RendererSceneRenderRD::get_singleton()->_render_material(to_world_xform * xform, cm, true, RendererSceneRenderRD::get_singleton()->cull_argument, dynamic_maps[0].fb, Rect2i(Vector2i(), rect.size), exposure_normalization);
+				RendererSceneRenderRD::get_singleton()->_render_material(to_world_xform * xform, cm, true, RendererSceneRenderRD::get_singleton()->cull_argument, dynamic_maps[0].fb, Rect2i(Vector2i(), rect.size), exposure_normalization, false);
 
 				Vector3 ps = octree_size / gi->voxel_gi_get_bounds(probe).size;
 				float cell_size = (1.0 / MAX(MAX(ps.x, ps.y), ps.z)); // probe size relative to 1 unit in world space
@@ -4942,8 +4942,8 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 			p_render_buffers->create_texture(RB_SCOPE_GI, RB_TEX_SCREEN_PROBE_SH_FILTERED, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1, probes * 3);
 			const StringName adaptive_index_names[SCREEN_PROBE_ADAPTIVE_LEVELS] = { RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_1, RB_TEX_SCREEN_PROBE_ADAPTIVE_INDEX_2 };
 			for (int i = 0; i < SCREEN_PROBE_ADAPTIVE_LEVELS; i++) {
-				const int size = SCREEN_PROBE_TILE >> (i + 1);
-				const Size2i tiles = use_screen_probe_buffers ? Size2i(Math::division_round_up(internal_size.x, size), Math::division_round_up(internal_size.y, size)) : Size2i(1, 1);
+				const int tile_size = SCREEN_PROBE_TILE >> (i + 1);
+				const Size2i tiles = use_screen_probe_buffers ? Size2i(Math::division_round_up(internal_size.x, tile_size), Math::division_round_up(internal_size.y, tile_size)) : Size2i(1, 1);
 				p_render_buffers->create_texture(RB_SCOPE_GI, adaptive_index_names[i], RD::DATA_FORMAT_R32_SINT, RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, tiles);
 			}
 			rbgi->screen_probe_grid = use_screen_probe_buffers ? grid : Size2i();

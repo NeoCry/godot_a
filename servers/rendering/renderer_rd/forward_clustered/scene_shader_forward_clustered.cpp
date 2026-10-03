@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/virtual_texture_storage.h"
 
 using namespace RendererSceneRenderImplementation;
 
@@ -487,8 +488,8 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 				blend_state = blend_state_depth_normal_roughness_giprobe;
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL:
-				// Writes to normal and roughness in opaque way.
-				blend_state = RD::PipelineColorBlendState::create_disabled(5);
+				// Draws pages of runtime virtual textures.
+				blend_state = RendererRD::VirtualTextureStorage::get_material_pass_blend_state(uses_alpha);
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS:
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MOTION_VECTORS_MULTIVIEW:
@@ -881,6 +882,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.usage_defines["ALPHA_HASH_SCALE"] = "#define ALPHA_HASH_USED\n";
 		actions.usage_defines["ALPHA_ANTIALIASING_EDGE"] = "#define ALPHA_ANTIALIASING_EDGE_USED\n";
 		actions.usage_defines["ALPHA_TEXTURE_COORDINATE"] = "@ALPHA_ANTIALIASING_EDGE";
+		actions.usage_defines["ALPHA"] = "#define ALPHA_USED\n";
 		actions.usage_defines["PREMUL_ALPHA_FACTOR"] = "#define PREMUL_ALPHA_USED\n";
 
 		actions.usage_defines["SSS_STRENGTH"] = "#define ENABLE_SSS\n";

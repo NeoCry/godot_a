@@ -514,6 +514,24 @@ bool GeometryInstance3D::is_ignoring_occlusion_culling() {
 	return ignore_occlusion_culling;
 }
 
+void GeometryInstance3D::set_virtual_texture_draw_layers(uint32_t p_layers) {
+	virtual_texture_draw_layers = p_layers;
+	RS::get_singleton()->instance_geometry_set_virtual_texture_layers(get_instance(), virtual_texture_draw_layers, virtual_texture_draw_in_main_pass);
+}
+
+uint32_t GeometryInstance3D::get_virtual_texture_draw_layers() const {
+	return virtual_texture_draw_layers;
+}
+
+void GeometryInstance3D::set_virtual_texture_draw_in_main_pass(bool p_enabled) {
+	virtual_texture_draw_in_main_pass = p_enabled;
+	RS::get_singleton()->instance_geometry_set_virtual_texture_layers(get_instance(), virtual_texture_draw_layers, virtual_texture_draw_in_main_pass);
+}
+
+bool GeometryInstance3D::is_virtual_texture_draw_in_main_pass_enabled() const {
+	return virtual_texture_draw_in_main_pass;
+}
+
 void GeometryInstance3D::set_ignore_screen_space_shadows(bool p_enabled) {
 	ignore_screen_space_shadows = p_enabled;
 	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RSE::INSTANCE_FLAG_IGNORE_SCREEN_SPACE_SHADOWS, ignore_screen_space_shadows);
@@ -616,6 +634,12 @@ void GeometryInstance3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_custom_aabb", "aabb"), &GeometryInstance3D::set_custom_aabb);
 	ClassDB::bind_method(D_METHOD("get_custom_aabb"), &GeometryInstance3D::get_custom_aabb);
 
+	ClassDB::bind_method(D_METHOD("set_virtual_texture_draw_layers", "layers"), &GeometryInstance3D::set_virtual_texture_draw_layers);
+	ClassDB::bind_method(D_METHOD("get_virtual_texture_draw_layers"), &GeometryInstance3D::get_virtual_texture_draw_layers);
+
+	ClassDB::bind_method(D_METHOD("set_virtual_texture_draw_in_main_pass", "enabled"), &GeometryInstance3D::set_virtual_texture_draw_in_main_pass);
+	ClassDB::bind_method(D_METHOD("is_virtual_texture_draw_in_main_pass_enabled"), &GeometryInstance3D::is_virtual_texture_draw_in_main_pass_enabled);
+
 	ADD_GROUP("Geometry", "");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_override", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial", PROPERTY_USAGE_DEFAULT), "set_material_override", "get_material_override");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "material_overlay", PROPERTY_HINT_RESOURCE_TYPE, "BaseMaterial3D,ShaderMaterial", PROPERTY_USAGE_DEFAULT), "set_material_overlay", "get_material_overlay");
@@ -633,6 +657,10 @@ void GeometryInstance3D::_bind_methods() {
 #ifndef DISABLE_DEPRECATED
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_lightmap_scale", PROPERTY_HINT_ENUM, String::utf8("1×,2×,4×,8×"), PROPERTY_USAGE_NONE), "set_lightmap_scale", "get_lightmap_scale");
 #endif // DISABLE_DEPRECATED
+
+	ADD_GROUP("Virtual Texture", "virtual_texture_");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "virtual_texture_draw_layers", PROPERTY_HINT_LAYERS_3D_RENDER), "set_virtual_texture_draw_layers", "get_virtual_texture_draw_layers");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "virtual_texture_draw_in_main_pass"), "set_virtual_texture_draw_in_main_pass", "is_virtual_texture_draw_in_main_pass_enabled");
 
 	ADD_GROUP("Visibility Range", "visibility_range_");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_begin", PROPERTY_HINT_RANGE, "0.0,4096.0,0.01,or_greater,suffix:m"), "set_visibility_range_begin", "get_visibility_range_begin");

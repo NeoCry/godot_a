@@ -71,6 +71,7 @@
 #include "editor/import/resource_importer_svg.h"
 #include "editor/import/resource_importer_texture.h"
 #include "editor/import/resource_importer_texture_atlas.h"
+#include "editor/import/resource_importer_virtual_texture.h"
 #include "editor/import/resource_importer_wav.h"
 #include "editor/inspector/editor_context_menu_plugin.h"
 #include "editor/inspector/editor_resource_picker.h"
@@ -228,6 +229,7 @@ void register_editor_types() {
 	GDREGISTER_CLASS(ResourceImporterTextureAtlas);
 	GDREGISTER_CLASS(ResourceImporterWAV);
 	GDREGISTER_CLASS(ResourceImporterStreamedTexture);
+	GDREGISTER_CLASS(ResourceImporterVirtualTexture);
 
 	// This list is alphabetized, and plugins that depend on Node2D or Node3D are in their own section below.
 	EditorPlugins::add_by_type<AnimationTreeEditorPlugin>();

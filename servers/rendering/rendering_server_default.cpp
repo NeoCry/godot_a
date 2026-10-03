@@ -105,6 +105,9 @@ void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
 	GodotProfileZoneGrouped(_profile_zone, "scene->render_probes");
 	RSG::scene->render_probes();
 
+	GodotProfileZoneGrouped(_profile_zone, "scene->update_virtual_textures");
+	RSG::scene->update_virtual_textures();
+
 	GodotProfileZoneGrouped(_profile_zone, "viewport->draw_viewports");
 	RSG::viewport->draw_viewports(p_swap_buffers);
 

@@ -391,6 +391,11 @@ private:
 		// flag bitfield
 		uint32_t feature_mask;
 		uint32_t flags;
+		// The textures (by TextureParam) that are virtual textures, sampled with hint_virtual_texture.
+		uint32_t virtual_textures;
+		// What a subclass adds to the shader (see _get_shader_extension_flags()). Also keeps the key
+		// free of padding, which hash() and operator==() would read.
+		uint32_t extension_flags;
 
 		MaterialKey() {
 			memset(this, 0, sizeof(MaterialKey));
@@ -459,8 +464,13 @@ private:
 			}
 		}
 
+		mk.virtual_textures = _get_virtual_texture_mask();
+		mk.extension_flags = _get_shader_extension_flags();
+
 		return mk;
 	}
+
+	uint32_t _get_virtual_texture_mask() const;
 
 	struct ShaderNames {
 		StringName albedo;
@@ -641,6 +651,16 @@ protected:
 	void _validate_property(PropertyInfo &p_property) const;
 	virtual bool _can_do_next_pass() const override { return true; }
 	virtual bool _can_use_render_priority() const override { return true; }
+
+	// For materials that add to the shader this one generates (see BlendLandscape3D): flags for what
+	// they add, which tell the shaders they need apart (0 adds nothing); the uniforms they declare, and
+	// code run at the end of fragment(), once every built-in is written, for those flags.
+	virtual uint32_t _get_shader_extension_flags() const { return 0; }
+	virtual String _get_shader_extension_uniforms(uint32_t p_flags) const { return String(); }
+	virtual String _get_shader_extension_fragment(uint32_t p_flags) const { return String(); }
+	// What _get_shader_extension_flags() returns changed.
+	void _shader_extension_changed();
+	void _set_shader_parameter(const StringName &p_name, const Variant &p_value);
 
 public:
 	void set_albedo(const Color &p_albedo);

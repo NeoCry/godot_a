@@ -170,6 +170,7 @@
 #include "scene/resources/texture_rd.h"
 #include "scene/resources/theme.h"
 #include "scene/resources/video_stream.h"
+#include "scene/resources/virtual_texture_2d.h"
 #include "scene/resources/world_2d.h"
 #include "scene/theme/theme_db.h"
 #include "servers/display/display_server.h"
@@ -230,6 +231,7 @@
 #include "scene/3d/ambient_probe_volume_3d.h"
 #include "scene/3d/audio_listener_3d.h"
 #include "scene/3d/audio_stream_player_3d.h"
+#include "scene/3d/blend_landscape_3d.h"
 #include "scene/3d/bone_attachment_3d.h"
 #include "scene/3d/bone_constraint_3d.h"
 #include "scene/3d/bone_space_adjuster_3d.h"
@@ -396,6 +398,7 @@ static Ref<ResourceFormatLoaderText> resource_loader_text;
 
 static Ref<ResourceFormatLoaderCompressedTexture2D> resource_loader_compressed_texture;
 static Ref<ResourceFormatLoaderStreamedTexture2D> resource_loader_streamed_texture;
+static Ref<ResourceFormatLoaderVirtualTexture2D> resource_loader_virtual_texture;
 static Ref<ResourceFormatLoaderCompressedTextureLayered> resource_loader_texture_layered;
 static Ref<ResourceFormatLoaderCompressedTexture3D> resource_loader_texture_3d;
 
@@ -422,6 +425,11 @@ void register_scene_types() {
 	if constexpr (GD_IS_CLASS_ENABLED(StreamedTexture2D)) {
 		resource_loader_streamed_texture.instantiate();
 		ResourceLoader::add_resource_format_loader(resource_loader_streamed_texture);
+	}
+
+	if constexpr (GD_IS_CLASS_ENABLED(VirtualTexture2D)) {
+		resource_loader_virtual_texture.instantiate();
+		ResourceLoader::add_resource_format_loader(resource_loader_virtual_texture);
 	}
 
 	if constexpr (GD_IS_CLASS_ENABLED(TextureLayered)) {
@@ -784,6 +792,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(TerrainLayer);
 	GDREGISTER_CLASS(TerrainData);
 	GDREGISTER_CLASS(Landscape3D);
+	GDREGISTER_CLASS(BlendLandscape3D);
 
 	GDREGISTER_CLASS(Curve3D);
 	GDREGISTER_CLASS(Path3D);
@@ -984,6 +993,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(Sky);
 	GDREGISTER_CLASS(CompressedTexture2D);
 	GDREGISTER_CLASS(StreamedTexture2D);
+	GDREGISTER_CLASS(VirtualTexture2D);
 	GDREGISTER_CLASS(PortableCompressedTexture2D);
 	GDREGISTER_CLASS(ImageTexture);
 	GDREGISTER_CLASS(AtlasTexture);
@@ -1394,6 +1404,12 @@ void unregister_scene_types() {
 	if constexpr (GD_IS_CLASS_ENABLED(StreamedTexture2D)) {
 		ResourceLoader::remove_resource_format_loader(resource_loader_streamed_texture);
 		resource_loader_streamed_texture.unref();
+	}
+
+	if constexpr (GD_IS_CLASS_ENABLED(VirtualTexture2D)) {
+		ResourceLoader::remove_resource_format_loader(resource_loader_virtual_texture);
+		resource_loader_virtual_texture.unref();
+		VirtualTexture2D::finish();
 	}
 
 	ResourceSaver::remove_resource_format_saver(resource_saver_text);

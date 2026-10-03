@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="VirtualTexture2D" inherits="Texture2D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A texture streamed into video memory a page at a time, as the camera needs it.
+	</brief_description>
+	<description>
+		A [VirtualTexture2D] is a texture far larger than what fits in video memory - 16384×16384 texels or more - of which only the parts the camera actually sees, at the resolution it sees them at, are ever loaded. It is cut into pages of [constant RenderingServer.VIRTUAL_TEXTURE_PAGE_SIZE]×[constant RenderingServer.VIRTUAL_TEXTURE_PAGE_SIZE] texels at every mipmap. While rendering, the GPU writes down which pages it sampled; those not in video memory yet are read from disk and decoded on a thread of their own and copied into a shared cache, a few every frame, while the closest coarser page already there stands in for them. Pages no longer seen are evicted to make room for new ones. A texture of any size therefore costs the same fixed cache (see [member ProjectSettings.rendering/virtual_texturing/streamed_cache_size]) and one small page table.
+		A texture becomes virtual by converting it in the FileSystem dock: right-click an image and choose [b]Convert to Virtual Texture[/b] (it is reimported with [ResourceImporterVirtualTexture]; [b]Convert to Regular Texture[/b] turns it back). Nothing else needs to change: every scene, material and script referencing the file keeps referencing it.
+		[StandardMaterial3D] and [ORMMaterial3D] stream every texture assigned to them that is virtual (except with triplanar mapping). A [ShaderMaterial] streams the ones it samples through a uniform with the [code]hint_virtual_texture[/code] hint:
+		[codeblock lang=text]
+		shader_type spatial;
+
+		uniform sampler2D albedo_texture : source_color, hint_virtual_texture;
+
+		void fragment() {
+			ALBEDO = texture(albedo_texture, UV).rgb;
+		}
+		[/codeblock]
+		Such a uniform can be sampled with [code]texture()[/code], [code]textureLod()[/code] and [code]textureGrad()[/code], and measured with [code]textureSize()[/code]. Anywhere else - a uniform without the hint, a 2D node, the Compatibility renderer, or a GPU that cannot do virtual texturing (see [method RenderingServer.is_virtual_texturing_supported]) - the texture is a small copy of itself, at most 256 texels a side (see [method get_fallback_image]).
+		[b]Note:[/b] Whatever a material's filter setting, virtual textures are always sampled with linear filtering between linearly interpolated mipmaps, and with anisotropic filtering as set by [member ProjectSettings.rendering/textures/default_filters/anisotropic_filtering_level], up to 4×.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_fallback_image" qualifiers="const">
+			<return type="Image" />
+			<description>
+				Returns the small copy of the whole texture, at most 256 texels a side, that stands in for it wherever it is not sampled as a virtual texture, and while its pages load.
+			</description>
+		</method>
+		<method name="get_page_count" qualifiers="const">
+			<return type="Vector2i" />
+			<param index="0" name="mipmap" type="int" />
+			<description>
+				Returns how many pages across and down the texture's mipmap [param mipmap] is cut into. Every mipmap is half the size of the one before it, down to a single page across its narrower side.
+			</description>
+		</method>
+		<method name="get_page_format" qualifiers="const">
+			<return type="int" enum="VirtualTexture2D.PageFormat" />
+			<description>
+				Returns how the texture's pages are compressed on disk.
+			</description>
+		</method>
+		<method name="get_page_image" qualifiers="const">
+			<return type="Image" />
+			<param index="0" name="mipmap" type="int" />
+			<param index="1" name="x" type="int" />
+			<param index="2" name="y" type="int" />
+			<description>
+				Reads and returns the page at [param x], [param y] of mipmap [param mipmap], as the renderer receives it: an [constant Image.FORMAT_RGBA8] image of [constant RenderingServer.VIRTUAL_TEXTURE_PAGE_SIZE] texels a side, surrounded by a border of [constant RenderingServer.VIRTUAL_TEXTURE_PAGE_BORDER] texels from its neighbors.
+			</description>
+		</method>
+		<method name="get_page_mipmap_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns how many mipmaps the texture's pages are kept at; see [method get_page_count].
+			</description>
+		</method>
+		<method name="load">
+			<return type="int" enum="Error" />
+			<param index="0" name="path" type="String" />
+			<description>
+				Loads the texture from a [code].vtex[/code] file, as [ResourceImporterVirtualTexture] writes them, and starts streaming from it.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="load_path" type="String" setter="load" getter="get_load_path" default="&quot;&quot;">
+			The path of the [code].vtex[/code] file this texture streams from.
+		</member>
+		<member name="resource_local_to_scene" type="bool" setter="set_local_to_scene" getter="is_local_to_scene" overrides="Resource" default="false" />
+	</members>
+	<constants>
+		<constant name="PAGE_FORMAT_LOSSLESS" value="0" enum="PageFormat">
+			Pages are compressed losslessly, as WebP.
+		</constant>
+		<constant name="PAGE_FORMAT_LOSSY" value="1" enum="PageFormat">
+			Pages are compressed lossily, as WebP: much smaller on disk, at some cost in quality.
+		</constant>
+		<constant name="PAGE_FORMAT_UNCOMPRESSED" value="2" enum="PageFormat">
+			Pages are stored as raw texels, compressed with Zstandard. The fastest to read, and the largest on disk.
+		</constant>
+	</constants>
+</class>

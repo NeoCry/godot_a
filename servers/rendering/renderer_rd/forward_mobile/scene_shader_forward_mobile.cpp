@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/virtual_texture_storage.h"
 
 using namespace RendererSceneRenderImplementation;
 
@@ -405,8 +406,8 @@ void SceneShaderForwardMobile::ShaderData::_create_pipeline(PipelineKey p_pipeli
 		} else if (p_pipeline_key.version == SHADER_VERSION_SHADOW_PASS || p_pipeline_key.version == SHADER_VERSION_SHADOW_PASS_MULTIVIEW || p_pipeline_key.version == SHADER_VERSION_SHADOW_PASS_DP) {
 			// Contains nothing.
 		} else if (p_pipeline_key.version == SHADER_VERSION_DEPTH_PASS_WITH_MATERIAL) {
-			// Writes to normal and roughness in opaque way.
-			blend_state = RD::PipelineColorBlendState::create_disabled(5);
+			// Draws pages of runtime virtual textures.
+			blend_state = RendererRD::VirtualTextureStorage::get_material_pass_blend_state(uses_alpha);
 		} else {
 			// Do not use this version (error case).
 		}
@@ -416,8 +417,8 @@ void SceneShaderForwardMobile::ShaderData::_create_pipeline(PipelineKey p_pipeli
 		} else if (p_pipeline_key.version == SHADER_VERSION_SHADOW_PASS || p_pipeline_key.version == SHADER_VERSION_SHADOW_PASS_MULTIVIEW || p_pipeline_key.version == SHADER_VERSION_SHADOW_PASS_DP) {
 			// Contains nothing.
 		} else if (p_pipeline_key.version == SHADER_VERSION_DEPTH_PASS_WITH_MATERIAL) {
-			// Writes to normal and roughness in opaque way.
-			blend_state = RD::PipelineColorBlendState::create_disabled(5);
+			// Draws pages of runtime virtual textures.
+			blend_state = RendererRD::VirtualTextureStorage::get_material_pass_blend_state(uses_alpha);
 		} else {
 			// Unknown pipeline version.
 		}
@@ -785,6 +786,7 @@ void SceneShaderForwardMobile::init(const String p_defines) {
 		actions.usage_defines["ALPHA_HASH_SCALE"] = "#define ALPHA_HASH_USED\n";
 		actions.usage_defines["ALPHA_ANTIALIASING_EDGE"] = "#define ALPHA_ANTIALIASING_EDGE_USED\n";
 		actions.usage_defines["ALPHA_TEXTURE_COORDINATE"] = "@ALPHA_ANTIALIASING_EDGE";
+		actions.usage_defines["ALPHA"] = "#define ALPHA_USED\n";
 		actions.usage_defines["PREMUL_ALPHA_FACTOR"] = "#define PREMUL_ALPHA_USED";
 
 		actions.usage_defines["SSS_STRENGTH"] = "#define ENABLE_SSS\n";

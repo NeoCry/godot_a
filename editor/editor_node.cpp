@@ -109,6 +109,7 @@
 #include "editor/import/resource_importer_svg.h"
 #include "editor/import/resource_importer_texture.h"
 #include "editor/import/resource_importer_texture_atlas.h"
+#include "editor/import/resource_importer_virtual_texture.h"
 #include "editor/import/resource_importer_wav.h"
 #include "editor/inspector/editor_context_menu_plugin.h"
 #include "editor/inspector/editor_inspector.h"
@@ -8636,6 +8637,10 @@ EditorNode::EditorNode() {
 		Ref<ResourceImporterStreamedTexture> import_streamed_texture;
 		import_streamed_texture.instantiate(true);
 		ResourceFormatImporter::get_singleton()->add_importer(import_streamed_texture);
+
+		Ref<ResourceImporterVirtualTexture> import_virtual_texture;
+		import_virtual_texture.instantiate();
+		ResourceFormatImporter::get_singleton()->add_importer(import_virtual_texture);
 
 		Ref<ResourceImporterLayeredTexture> import_cubemap;
 		import_cubemap.instantiate();

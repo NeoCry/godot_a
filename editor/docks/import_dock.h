@@ -99,6 +99,9 @@ public:
 	void set_edit_path(const String &p_path);
 	void set_edit_multiple_paths(const Vector<String> &p_paths);
 	void reimport_resources(const Vector<String> &p_paths);
+	// Reimports with another importer, as picking it under Import As and pressing Reimport would,
+	// type change cleanup included.
+	void reimport_resources_as(const Vector<String> &p_paths, const String &p_importer);
 	void initialize_import_options() const;
 	void clear();
 

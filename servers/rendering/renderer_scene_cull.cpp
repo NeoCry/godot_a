@@ -854,6 +854,10 @@ void RendererSceneCull::instance_set_scenario(RID p_instance, RID p_scenario) {
 	if (instance->scenario) {
 		instance->scenario->instances.remove(&instance->scenario_item);
 
+		if (instance->scenario->virtual_texture_writers.erase(instance) && instance->visible) {
+			_invalidate_virtual_textures(instance, instance->transformed_aabb);
+		}
+
 		if (instance->indexer_id.is_valid()) {
 			_unpair_instance(instance);
 		}
@@ -920,6 +924,9 @@ void RendererSceneCull::instance_set_scenario(RID p_instance, RID p_scenario) {
 		instance->scenario = scenario;
 
 		scenario->instances.add(&instance->scenario_item);
+		if (instance->virtual_texture_layers) {
+			scenario->virtual_texture_writers.insert(instance);
+		}
 
 		switch (instance->base_type) {
 			case RSE::INSTANCE_LIGHT: {
@@ -963,7 +970,7 @@ void RendererSceneCull::instance_set_layer_mask(RID p_instance, uint32_t p_mask)
 
 	instance->layer_mask = p_mask;
 	if (instance->scenario && instance->array_index >= 0) {
-		instance->scenario->instance_data[instance->array_index].layer_mask = p_mask;
+		instance->scenario->instance_data[instance->array_index].layer_mask = _get_cull_layer_mask(instance);
 	}
 
 	if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK && instance->base_data) {
@@ -1007,6 +1014,50 @@ void RendererSceneCull::instance_geometry_set_transparency(RID p_instance, float
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 		ERR_FAIL_NULL(geom->geometry_instance);
 		geom->geometry_instance->set_transparency(p_transparency);
+	}
+}
+
+void RendererSceneCull::instance_geometry_set_virtual_texture_layers(RID p_instance, uint32_t p_layers, bool p_draw_in_main_pass) {
+	Instance *instance = instance_owner.get_or_null(p_instance);
+	ERR_FAIL_NULL(instance);
+
+	if (instance->virtual_texture_layers == p_layers && instance->virtual_texture_main_pass == p_draw_in_main_pass) {
+		return;
+	}
+
+	// Whatever it drew into, or now draws into, is drawn again.
+	if (instance->scenario && instance->visible) {
+		RSG::texture_storage->virtual_textures_invalidate_world_aabb(instance->scenario->self, instance->virtual_texture_layers | p_layers, instance->transformed_aabb);
+	}
+
+	const bool was_drawn_in_main_pass = _is_drawn_in_main_pass(instance);
+	instance->virtual_texture_layers = p_layers;
+	instance->virtual_texture_main_pass = p_draw_in_main_pass;
+	const bool main_pass_changed = _is_drawn_in_main_pass(instance) != was_drawn_in_main_pass;
+
+	if (instance->scenario) {
+		if (p_layers) {
+			instance->scenario->virtual_texture_writers.insert(instance);
+		} else {
+			instance->scenario->virtual_texture_writers.erase(instance);
+		}
+	}
+
+	if (main_pass_changed) {
+		// Lights and probes pair by layer too.
+		if (instance->indexer_id.is_valid() && ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
+			_unpair_instance(instance);
+			_instance_queue_update(instance, false, false);
+		}
+		if (instance->scenario && instance->array_index >= 0) {
+			instance->scenario->instance_data[instance->array_index].layer_mask = _get_cull_layer_mask(instance);
+		}
+	}
+}
+
+void RendererSceneCull::_invalidate_virtual_textures(const Instance *p_instance, const AABB &p_aabb) const {
+	if (p_instance->scenario && p_instance->virtual_texture_layers && p_aabb.has_volume()) {
+		RSG::texture_storage->virtual_textures_invalidate_world_aabb(p_instance->scenario->self, p_instance->virtual_texture_layers, p_aabb);
 	}
 }
 
@@ -1084,6 +1135,11 @@ void RendererSceneCull::instance_set_visible(RID p_instance, bool p_visible) {
 		}
 	} else if (instance->indexer_id.is_valid()) {
 		_unpair_instance(instance);
+	}
+
+	if (!p_visible) {
+		// Showing it again draws it in when the instance updates.
+		_invalidate_virtual_textures(instance, instance->transformed_aabb);
 	}
 
 	if (instance->base_type == RSE::INSTANCE_LIGHT) {
@@ -1782,6 +1838,15 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		}
 	}
 
+	if (p_instance->virtual_texture_layers) {
+		// Runtime virtual textures it draws into are drawn again wherever it now is, and if it moved,
+		// wherever it was.
+		_invalidate_virtual_textures(p_instance, p_instance->transformed_aabb);
+		if (p_instance->indexer_id.is_valid() && p_instance->prev_transformed_aabb != p_instance->transformed_aabb) {
+			_invalidate_virtual_textures(p_instance, p_instance->prev_transformed_aabb);
+		}
+	}
+
 	//quantize to improve moving object performance
 	AABB bvh_aabb = p_instance->transformed_aabb;
 
@@ -1808,7 +1873,7 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 		p_instance->array_index = p_instance->scenario->instance_data.size();
 		InstanceData idata;
 		idata.instance = p_instance;
-		idata.layer_mask = p_instance->layer_mask;
+		idata.layer_mask = _get_cull_layer_mask(p_instance);
 		idata.flags = p_instance->base_type; //changing it means de-indexing, so this never needs to be changed later
 		idata.base_rid = p_instance->base;
 		idata.parent_array_index = p_instance->visibility_parent ? p_instance->visibility_parent->array_index : -1;
@@ -2663,7 +2728,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 					for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 						Instance *instance = instance_shadow_cull_result[j];
 						const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 							continue;
 						} else {
 							if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2747,7 +2812,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 					for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 						Instance *instance = instance_shadow_cull_result[j];
 						const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 							continue;
 						} else {
 							if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2816,7 +2881,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
 				const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2883,7 +2948,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
 				const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -4127,6 +4192,54 @@ bool RendererSceneCull::_render_reflection_probe_step(Instance *p_instance, int 
 	return false;
 }
 
+void RendererSceneCull::update_virtual_textures() {
+	RSG::texture_storage->virtual_textures_update();
+
+	// Pages of runtime virtual textures are drawn from straight above, out of the geometry in the
+	// texture's scenario that draws into it and lies over the page.
+	LocalVector<RID> textures;
+	RSG::texture_storage->virtual_textures_get_runtime_pending(textures);
+	LocalVector<RendererTextureStorage::VirtualTextureRenderPage> pages;
+	for (const RID &texture : textures) {
+		RID scenario_rid;
+		uint32_t layers = 0;
+		const RID framebuffer = RSG::texture_storage->virtual_texture_runtime_begin(texture, pages, scenario_rid, layers);
+		if (framebuffer.is_null()) {
+			continue;
+		}
+		const Scenario *scenario = scenario_owner.get_or_null(scenario_rid);
+		for (const RendererTextureStorage::VirtualTextureRenderPage &page : pages) {
+			virtual_texture_page_instances.clear();
+			if (scenario) {
+				for (const Instance *instance : scenario->virtual_texture_writers) {
+					if (!instance->visible || !(instance->virtual_texture_layers & layers) || !instance->base_data || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
+						continue;
+					}
+					if (!instance->transformed_aabb.intersects(page.world_aabb)) {
+						continue;
+					}
+					const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+					if (geom->geometry_instance) {
+						virtual_texture_page_instances.push_back(geom->geometry_instance);
+					}
+				}
+			}
+			// Drawn even with nothing over it: that clears the page.
+			scene_render->render_material(page.cam_transform, page.cam_projection, true, virtual_texture_page_instances, framebuffer, page.region, true);
+		}
+		RSG::texture_storage->virtual_texture_runtime_end(texture);
+	}
+	virtual_texture_page_instances.clear();
+
+	RSG::texture_storage->virtual_textures_flush();
+
+	// Where frames are only drawn as something changes (the editor), virtual textures would otherwise
+	// stop at whatever pages they had when the last change was drawn.
+	if (RSG::texture_storage->virtual_textures_need_redraw()) {
+		RenderingServerDefault::redraw_request();
+	}
+}
+
 void RendererSceneCull::render_probes() {
 	/* REFLECTION PROBES */
 
@@ -4406,7 +4519,7 @@ void RendererSceneCull::render_particle_colliders() {
 				uint32_t heightfield_mask;
 				_FORCE_INLINE_ bool operator()(void *p_data) {
 					Instance *p_instance = (Instance *)p_data;
-					if (p_instance->layer_mask & heightfield_mask) {
+					if (_get_cull_layer_mask(p_instance) & heightfield_mask) {
 						result->push_back(p_instance);
 					}
 					return false;
@@ -4790,6 +4903,7 @@ RendererSceneCull::RendererSceneCull() {
 	for (uint32_t i = 0; i < SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE; i++) {
 		render_sdfgi_data[i].instances.set_page_pool(&geometry_instance_cull_page_pool);
 	}
+	virtual_texture_page_instances.set_page_pool(&geometry_instance_cull_page_pool);
 
 	scene_cull_result.init(&rid_cull_page_pool, &geometry_instance_cull_page_pool, &instance_cull_page_pool);
 	scene_cull_result_threads.resize(WorkerThreadPool::get_singleton()->get_thread_count());
@@ -4827,6 +4941,7 @@ RendererSceneCull::~RendererSceneCull() {
 	for (uint32_t i = 0; i < SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE; i++) {
 		render_sdfgi_data[i].instances.reset();
 	}
+	virtual_texture_page_instances.reset();
 
 	scene_cull_result.reset();
 	for (InstanceCullResult &thread : scene_cull_result_threads) {

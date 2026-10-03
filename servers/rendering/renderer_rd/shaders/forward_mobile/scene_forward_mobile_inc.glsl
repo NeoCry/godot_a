@@ -341,6 +341,21 @@ layout(set = 0, binding = 16) uniform texture2D ltc_lut2;
 
 layout(set = 0, binding = 17) uniform texture2D area_light_atlas;
 
+// Virtual texturing's page caches (streamed, runtime) and feedback buffer, see virtual_texture_inc.glsl.
+layout(set = 0, binding = 18) uniform texture2DArray vt_cache[2];
+layout(set = 0, binding = 19) uniform texture2DArray vt_cache_srgb[2];
+// Writable in every stage and variant, as they all share this set: only fragment shaders that sample
+// virtual textures write to it (see VT_FEEDBACK).
+layout(set = 0, binding = 20, std430) buffer restrict VirtualTextureFeedback {
+	uint frame;
+	uint pad0;
+	uint pad1;
+	uint pad2;
+	uint slots[];
+}
+vt_feedback;
+layout(set = 0, binding = 21) uniform texture2DArray vt_cache_height;
+
 /* Set 1: Render Pass (changes per render pass) */
 
 layout(set = 1, binding = 0, std140) uniform SceneDataBlock {
@@ -432,6 +447,8 @@ layout(set = 1, binding = 25, std430) buffer restrict MaterialFeedbackBuffer {
 }
 material_feedback;
 #endif
+
+#include "../virtual_texture_inc.glsl"
 
 /* Set 2 Skeleton & Instancing (can change per item) */
 

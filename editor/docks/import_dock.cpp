@@ -375,6 +375,50 @@ void ImportDock::reimport_resources(const Vector<String> &p_paths) {
 	_reimport_attempt();
 }
 
+void ImportDock::reimport_resources_as(const Vector<String> &p_paths, const String &p_importer) {
+	ERR_FAIL_COND_MSG(p_paths.is_empty(), "You need to select files to reimport them.");
+	Ref<ResourceImporter> importer = ResourceFormatImporter::get_singleton()->get_importer_by_name(p_importer);
+	ERR_FAIL_COND(importer.is_null());
+
+	// The type the files had: a texture's normal map setting carries over to a virtual texture.
+	bool normal_map = false;
+	{
+		Ref<ConfigFile> config;
+		config.instantiate();
+		if (config->load(p_paths[0] + ".import") == OK) {
+			normal_map = int(config->get_value("params", "compress/normal_map", 0)) == 1 || bool(config->get_value("params", "process/normal_map", false));
+		}
+	}
+
+	if (p_paths.size() == 1) {
+		set_edit_path(p_paths[0]);
+	} else {
+		set_edit_multiple_paths(p_paths);
+	}
+
+	for (int i = 0; i < import_as->get_item_count(); i++) {
+		if (String(import_as->get_item_metadata(i)) == p_importer) {
+			import_as->select(i);
+			_importer_selected(i);
+			break;
+		}
+	}
+	ERR_FAIL_COND_MSG(params->importer != importer, vformat("'%s' can't import these files.", importer->get_visible_name()));
+
+	static const char *normal_map_options[] = { "process/normal_map", "compress/normal_map" };
+	for (const char *option_name : normal_map_options) {
+		const StringName option = option_name;
+		if (params->values.has(option)) {
+			// The texture importer's setting is Detect, Enable or Disable.
+			params->values[option] = params->values[option].get_type() == Variant::BOOL ? Variant(normal_map) : Variant(normal_map ? 1 : 0);
+			params->checked.insert(option);
+		}
+	}
+	params->update();
+
+	_reimport_attempt();
+}
+
 void ImportDock::_update_preset_menu() {
 	preset->get_popup()->clear();
 

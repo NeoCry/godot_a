@@ -45,6 +45,10 @@ enum {
 	MAX_CURSORS = 8,
 	MAX_2D_DIRECTIONAL_LIGHTS = 8,
 	MAX_MESH_SURFACES = 256,
+	// A virtual texture is cut into square pages of this many texels a side, each stored with this many
+	// texels of its neighbors around it, so that filtering across the edge of a page stays seamless.
+	VIRTUAL_TEXTURE_PAGE_SIZE = 128,
+	VIRTUAL_TEXTURE_PAGE_BORDER = 4,
 };
 
 /* TEXTURE API */
@@ -75,6 +79,14 @@ enum TextureDrawableFormat {
 	TEXTURE_DRAWABLE_FORMAT_RGBA8_SRGB, // Use this if you want to read the result from both 2D (non-hdr) and 3D.
 	TEXTURE_DRAWABLE_FORMAT_RGBAH,
 	TEXTURE_DRAWABLE_FORMAT_RGBAF,
+};
+
+enum VirtualTextureType {
+	// One RGBA8 layer, whose pages are handed to the renderer as it asks for them (from disk, usually).
+	VIRTUAL_TEXTURE_STREAMED,
+	// Albedo, normal and ORM layers, whose pages the renderer draws itself from the instances that draw
+	// into the texture's volume.
+	VIRTUAL_TEXTURE_RUNTIME,
 };
 
 enum TextureDetectRoughnessChannel {

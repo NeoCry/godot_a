@@ -30,6 +30,9 @@
 
 #pragma once
 
+#include "core/io/image.h"
+#include "core/math/projection.h"
+#include "core/templates/local_vector.h"
 #include "servers/rendering/rendering_server_enums.h"
 #include "servers/rendering/rendering_server_types.h"
 
@@ -215,4 +218,53 @@ public:
 
 	// Texture Streaming
 	virtual void texture_2d_attach_streaming_state(RID p_texture, RID p_streaming_state) = 0;
+
+	/* VIRTUAL TEXTURE API */
+
+	// A page of a runtime virtual texture to draw, as RendererSceneCull sees it: the instances whose
+	// bounds touch world_aabb are drawn from above with this camera, into this region of the
+	// framebuffer virtual_texture_runtime_begin() returned.
+	struct VirtualTextureRenderPage {
+		Transform3D cam_transform;
+		Projection cam_projection;
+		AABB world_aabb;
+		Rect2i region;
+	};
+
+	// Renderers without virtual texturing keep a virtual texture as an ordinary texture of its fallback
+	// image, which is also all a virtual texture shows outside of hint_virtual_texture uniforms.
+	virtual void texture_virtual_initialize(RID p_texture, int p_width, int p_height, RSE::VirtualTextureType p_type, const Ref<Image> &p_fallback) {
+		Ref<Image> image = p_fallback;
+		if (image.is_null() || image->is_empty()) {
+			image = Image::create_empty(4, 4, false, Image::FORMAT_RGBA8);
+			image->fill(Color(0.5, 0.5, 0.5, 1.0));
+		}
+		texture_2d_initialize(p_texture, image);
+	}
+	virtual void texture_virtual_set_page_request_callback(RID p_texture, const Callable &p_callback) {}
+	virtual void texture_virtual_update_page(RID p_texture, int p_mipmap, int p_x, int p_y, const Ref<Image> &p_image) {}
+	virtual void texture_virtual_set_runtime_volume(RID p_texture, RID p_scenario, const Transform3D &p_volume, uint32_t p_layers) {}
+	virtual void texture_virtual_invalidate(RID p_texture, const Rect2 &p_uv_rect) {}
+	virtual bool texture_virtual_is_supported() const { return false; }
+
+	// Once a frame, before any viewport is drawn: reads back what the last frames sampled, asks for and
+	// uploads the pages that were missing, and works out which runtime pages to draw.
+	virtual void virtual_textures_update() {}
+	// The runtime virtual textures with pages waiting to be drawn this frame.
+	virtual void virtual_textures_get_runtime_pending(LocalVector<RID> &r_textures) {}
+	// Hands out the pages of p_texture to draw this frame and the framebuffer to draw them into (a
+	// RenderSceneRender::render_material() target), or an invalid RID if there is nothing to draw.
+	virtual RID virtual_texture_runtime_begin(RID p_texture, LocalVector<VirtualTextureRenderPage> &r_pages, RID &r_scenario, uint32_t &r_layers) { return RID(); }
+	// Moves what was drawn into the page cache, and maps it.
+	virtual void virtual_texture_runtime_end(RID p_texture) {}
+	// Marks the pages of every runtime virtual texture in p_scenario drawn by p_layers that p_aabb
+	// touches as needing to be drawn again (an instance drawing into them moved, appeared or went away).
+	virtual void virtual_textures_invalidate_world_aabb(RID p_scenario, uint32_t p_layers, const AABB &p_aabb) {}
+	// Last thing of virtual_textures_update()'s frame: mipmaps for the new pages, page table uploads.
+	virtual void virtual_textures_flush() {}
+	// Whether virtual textures need more frames drawn to catch up with what is on screen: what was
+	// sampled is only read back a few frames later, and the pages it asks for take a few more frames
+	// still. Where frames are only drawn as something changes (the editor), it keeps them coming
+	// until everything on screen has the pages it wants.
+	virtual bool virtual_textures_need_redraw() { return false; }
 };

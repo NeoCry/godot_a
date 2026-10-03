@@ -36,6 +36,7 @@
 #include "core/math/math_funcs_binary.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "scene/3d/blend_landscape_3d.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/foliage_gpu_culler.h"
 #include "scene/3d/physics/collision_shape_3d.h"
@@ -224,8 +225,7 @@ bool lod_params_equal(const LandscapeQuadtree::SelectParams &p_a, const Landscap
 // its weight maps, so the two hard caps have to agree.
 
 void Landscape3D::init_shaders() {
-	shader.instantiate();
-	shader->set_code(R"(
+	const String code = R"(
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
@@ -321,6 +321,19 @@ uniform float pom_fade_end = 60.0;
 
 // Landscape3D.DebugView.
 uniform int debug_view = 0;
+
+// Runtime virtual texturing (see Landscape3D.virtual_texture_enabled). 0: the layers are blended here,
+// on every pixel. 1: they are read back from the virtual texture they were drawn into. 2: this is what
+// draws them into it, a page at a time, from straight above.
+uniform int rvt_mode = 0;
+// The same virtual texture twice: its albedo layer is read through the sRGB view.
+uniform sampler2DArray rvt_albedo : source_color, hint_virtual_texture, repeat_disable;
+uniform sampler2DArray rvt_data : hint_virtual_texture, repeat_disable;
+// Closer than this, the layers are blended here after all, at their own resolution.
+uniform float rvt_near_distance = 0.0;
+// Where the writer draws the terrain: the bottom of the virtual texture's volume, under anything else
+// that draws into it.
+uniform float rvt_writer_height = 0.0;
 
 // Terrain space, displacement included.
 varying vec3 terrain_position;
@@ -431,86 +444,98 @@ float surface_height(vec2 p_sample) {
 }
 
 void vertex() {
-	// The patch this instance draws (see LandscapeQuadtree::write_instance()).
-	// COLOR is the instance color here: the patch mesh's own is white.
-	vec2 origin = vec2(COLOR.x * 1024.0 + COLOR.y, COLOR.z * 1024.0 + COLOR.w);
-	int level = int(INSTANCE_CUSTOM.x + 0.5) - LEVEL_BIAS;
-	int edges = int(INSTANCE_CUSTOM.y + 0.5) | (int(INSTANCE_CUSTOM.z + 0.5) << 8);
-	float stride = level >= 0 ? float(1 << level) : 1.0 / float(1 << (-level));
-	ivec2 grid = ivec2(round(VERTEX.xz));
-	float quads = float(terrain_quads);
-	// Past the terrain's last sample, vertices collapse onto it.
-	vec2 sample_position = min(origin + vec2(grid) * stride, vec2(quads));
-
-	// A vertex on an edge shared with a coarser patch is moved onto that
-	// patch's edge. Normally straight onto one of its vertices: the two patches
-	// then meet at exactly the same points, computed the same way, so the seam
-	// is watertight down to the pixel, and the triangles squeezed out along it
-	// have no area left to draw. A patch so much coarser that its vertices lie
-	// beyond this edge's own ends (more than PATCH_QUADS apart) cannot be met
-	// that way, and this edge is laid along the straight line between the two
-	// of its vertices instead. On a corner shared by two such edges, the
-	// coarser neighbor wins.
-	int snap = 0;
-	bool along_z = false;
-	if (grid.x == 0 && (edges & 15) > snap) {
-		snap = edges & 15;
-		along_z = true;
-	}
-	if (grid.x == PATCH_QUADS && ((edges >> 4) & 15) > snap) {
-		snap = (edges >> 4) & 15;
-		along_z = true;
-	}
-	if (grid.y == 0 && ((edges >> 8) & 15) > snap) {
-		snap = (edges >> 8) & 15;
-		along_z = false;
-	}
-	if (grid.y == PATCH_QUADS && ((edges >> 12) & 15) > snap) {
-		snap = (edges >> 12) & 15;
-		along_z = false;
-	}
-
-	float height;
-	if (snap > 0 && (1 << snap) <= PATCH_QUADS) {
-		int step = 1 << snap;
-		if (along_z) {
-			grid.y = (grid.y / step) * step;
-		} else {
-			grid.x = (grid.x / step) * step;
-		}
-		sample_position = min(origin + vec2(grid) * stride, vec2(quads));
-		height = surface_height(sample_position);
-	} else if (snap > 0) {
-		float coarse = stride * float(1 << snap);
-		float along = along_z ? sample_position.y : sample_position.x;
-		float start = floor(along / coarse) * coarse;
-		float end = min(start + coarse, quads);
-		vec2 from = along_z ? vec2(sample_position.x, start) : vec2(start, sample_position.y);
-		vec2 to = along_z ? vec2(sample_position.x, end) : vec2(end, sample_position.y);
-		float from_height = surface_height(from);
-		float to_height = surface_height(to);
-		height = end > start ? from_height + (to_height - from_height) * ((along - start) / (end - start)) : from_height;
+	if (rvt_mode == 2) {
+		// The whole terrain as one quad, flat at the bottom of the virtual texture's volume: seen from
+		// straight above, only where it lies matters, and lying under everything else lets whatever
+		// else draws into the texture (a road, a decal) cover it.
+		float extent = float(terrain_quads) * vertex_spacing;
+		VERTEX = vec3(VERTEX.x * extent, rvt_writer_height, VERTEX.z * extent);
+		NORMAL = vec3(0.0, 1.0, 0.0);
+		terrain_position = VERTEX;
+		patch_level = 0.0;
+		patch_grid = vec2(0.0);
 	} else {
-		height = surface_height(sample_position);
-	}
+		// The patch this instance draws (see LandscapeQuadtree::write_instance()).
+		// COLOR is the instance color here: the patch mesh's own is white.
+		vec2 origin = vec2(COLOR.x * 1024.0 + COLOR.y, COLOR.z * 1024.0 + COLOR.w);
+		int level = int(INSTANCE_CUSTOM.x + 0.5) - LEVEL_BIAS;
+		int edges = int(INSTANCE_CUSTOM.y + 0.5) | (int(INSTANCE_CUSTOM.z + 0.5) << 8);
+		float stride = level >= 0 ? float(1 << level) : 1.0 / float(1 << (-level));
+		ivec2 grid = ivec2(round(VERTEX.xz));
+		float quads = float(terrain_quads);
+		// Past the terrain's last sample, vertices collapse onto it.
+		vec2 sample_position = min(origin + vec2(grid) * stride, vec2(quads));
 
-	VERTEX = vec3(sample_position.x * vertex_spacing, height, sample_position.y * vertex_spacing);
-	// Only what lighting from the vertex needs, like shadow normal bias:
-	// fragment() replaces it with the per-pixel normal.
-	vec2 slope = textureLod(gradient_map, (sample_position + 0.5) / (quads + 1.0), 0.0).rg;
-	NORMAL = normalize(vec3(-slope.x, 1.0, -slope.y));
+		// A vertex on an edge shared with a coarser patch is moved onto that
+		// patch's edge. Normally straight onto one of its vertices: the two patches
+		// then meet at exactly the same points, computed the same way, so the seam
+		// is watertight down to the pixel, and the triangles squeezed out along it
+		// have no area left to draw. A patch so much coarser that its vertices lie
+		// beyond this edge's own ends (more than PATCH_QUADS apart) cannot be met
+		// that way, and this edge is laid along the straight line between the two
+		// of its vertices instead. On a corner shared by two such edges, the
+		// coarser neighbor wins.
+		int snap = 0;
+		bool along_z = false;
+		if (grid.x == 0 && (edges & 15) > snap) {
+			snap = edges & 15;
+			along_z = true;
+		}
+		if (grid.x == PATCH_QUADS && ((edges >> 4) & 15) > snap) {
+			snap = (edges >> 4) & 15;
+			along_z = true;
+		}
+		if (grid.y == 0 && ((edges >> 8) & 15) > snap) {
+			snap = (edges >> 8) & 15;
+			along_z = false;
+		}
+		if (grid.y == PATCH_QUADS && ((edges >> 12) & 15) > snap) {
+			snap = (edges >> 12) & 15;
+			along_z = false;
+		}
 
-	terrain_position = VERTEX;
-	patch_level = float(level);
-	patch_grid = vec2(grid);
+		float height;
+		if (snap > 0 && (1 << snap) <= PATCH_QUADS) {
+			int step = 1 << snap;
+			if (along_z) {
+				grid.y = (grid.y / step) * step;
+			} else {
+				grid.x = (grid.x / step) * step;
+			}
+			sample_position = min(origin + vec2(grid) * stride, vec2(quads));
+			height = surface_height(sample_position);
+		} else if (snap > 0) {
+			float coarse = stride * float(1 << snap);
+			float along = along_z ? sample_position.y : sample_position.x;
+			float start = floor(along / coarse) * coarse;
+			float end = min(start + coarse, quads);
+			vec2 from = along_z ? vec2(sample_position.x, start) : vec2(start, sample_position.y);
+			vec2 to = along_z ? vec2(sample_position.x, end) : vec2(end, sample_position.y);
+			float from_height = surface_height(from);
+			float to_height = surface_height(to);
+			height = end > start ? from_height + (to_height - from_height) * ((along - start) / (end - start)) : from_height;
+		} else {
+			height = surface_height(sample_position);
+		}
 
-	// Every triangle touching a hole sample is dropped, as level 0 drops every
-	// quad with a hole at a corner: a vertex that is not a number takes its
-	// triangles with it, in every pass.
-	ivec2 lo = ivec2(floor(sample_position));
-	ivec2 hi = ivec2(ceil(sample_position));
-	if (fetch_hole(lo) || fetch_hole(hi) || fetch_hole(ivec2(lo.x, hi.y)) || fetch_hole(ivec2(hi.x, lo.y))) {
-		VERTEX = vec3(uintBitsToFloat(0x7fc00000u));
+		VERTEX = vec3(sample_position.x * vertex_spacing, height, sample_position.y * vertex_spacing);
+		// Only what lighting from the vertex needs, like shadow normal bias:
+		// fragment() replaces it with the per-pixel normal.
+		vec2 slope = textureLod(gradient_map, (sample_position + 0.5) / (quads + 1.0), 0.0).rg;
+		NORMAL = normalize(vec3(-slope.x, 1.0, -slope.y));
+
+		terrain_position = VERTEX;
+		patch_level = float(level);
+		patch_grid = vec2(grid);
+
+		// Every triangle touching a hole sample is dropped, as level 0 drops every
+		// quad with a hole at a corner: a vertex that is not a number takes its
+		// triangles with it, in every pass.
+		ivec2 lo = ivec2(floor(sample_position));
+		ivec2 hi = ivec2(ceil(sample_position));
+		if (fetch_hole(lo) || fetch_hole(hi) || fetch_hole(ivec2(lo.x, hi.y)) || fetch_hole(ivec2(hi.x, lo.y))) {
+			VERTEX = vec3(uintBitsToFloat(0x7fc00000u));
+		}
 	}
 }
 
@@ -627,7 +652,7 @@ vec4 sample_triplanar(sampler2DArray tex_array, int layer_idx, vec3 tp_pos, vec3
 // view_dir_tangent/light_dir_tangent/normal/pom_fade are computed once in
 // fragment() and passed in: Godot's shading language only exposes the
 // built-ins they come from inside fragment() itself.
-void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_dir_tangent, vec3 normal, float pom_fade, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float normal_strength_sum, inout float weight_sum) {
+void accumulate_layer(int layer_idx, float w, vec3 position, bool pom_active, vec3 view_dir_tangent, vec3 light_dir_tangent, vec3 normal, float pom_fade, inout vec3 albedo_sum, inout vec3 normal_sum, inout vec3 orm_sum, inout float specular_sum, inout float normal_strength_sum, inout float weight_sum) {
 	if (w <= 0.001) {
 		return;
 	}
@@ -637,14 +662,14 @@ void accumulate_layer(int layer_idx, float w, vec3 view_dir_tangent, vec3 light_
 	vec3 orm;
 
 	if (layer_triplanar[layer_idx] > 0.5) {
-		vec3 tp_pos = (terrain_position * vec3(1.0, -1.0, 1.0)) / layer_uv_scales[layer_idx];
+		vec3 tp_pos = (position * vec3(1.0, -1.0, 1.0)) / layer_uv_scales[layer_idx];
 		vec3 tp_weights = triplanar_weights(normal, layer_triplanar_sharpness[layer_idx]);
 		albedo = sample_triplanar(albedo_array, layer_idx, tp_pos, tp_weights).rgb;
 		normal_tex = sample_triplanar(normal_array, layer_idx, tp_pos, tp_weights).rgb;
 		orm = sample_triplanar(orm_array, layer_idx, tp_pos, tp_weights).rgb;
 	} else {
-		vec2 uv = terrain_position.xz / layer_uv_scales[layer_idx];
-		if (pom_enabled && layer_pom_enabled[layer_idx] > 0.5) {
+		vec2 uv = position.xz / layer_uv_scales[layer_idx];
+		if (pom_active && layer_pom_enabled[layer_idx] > 0.5) {
 			// * 0.01: layer_heightmap_scale is a small
 			// BaseMaterial3D.heightmap_scale-alike, not a raw UV-space
 			// displacement.
@@ -683,7 +708,16 @@ vec3 level_color(float p_level) {
 }
 
 void fragment() {
-	vec2 sample_position = terrain_position.xz / vertex_spacing;
+	vec3 position = terrain_position;
+	vec2 sample_position = position.xz / vertex_spacing;
+	if (rvt_mode == 2) {
+		// Drawn as one flat quad: the height (which triplanar layers project from) is the
+		// heightmap's, between its samples.
+		vec2 cell = floor(sample_position);
+		vec2 f = sample_position - cell;
+		ivec2 base = ivec2(cell);
+		position.y = mix(mix(fetch_height(base), fetch_height(base + ivec2(1, 0)), f.x), mix(fetch_height(base + ivec2(0, 1)), fetch_height(base + ivec2(1, 1)), f.x), f.y);
+	}
 	vec2 map_uv = (sample_position + 0.5) / float(terrain_quads + 1);
 
 	// The surface's frame, per pixel, from the full resolution heightmap
@@ -699,70 +733,133 @@ void fragment() {
 	TANGENT = normalize(model_view * tangent_local);
 	BINORMAL = normalize(model_view * binormal_local);
 
-	// Shared per-fragment values every layer's accumulate_layer() call needs
-	// but can't compute itself: tangent-space directions for POM (with the
-	// same BINORMAL negation Godot's own heightmap shader code uses), and how
-	// much pom_fade_start/end fades this fragment's parallax depth.
-	vec3 view_dir_tangent = vec3(0.0);
-	vec3 light_dir_tangent = vec3(0.0);
-	if (pom_enabled) {
-		mat3 tbn = mat3(TANGENT * pom_flip.x, -BINORMAL * pom_flip.y, NORMAL);
-		view_dir_tangent = normalize(normalize(-VERTEX) * tbn);
-		if (pom_self_shadow_enabled) {
-			vec3 light_dir_view = normalize((VIEW_MATRIX * vec4(pom_shadow_light_direction, 0.0)).xyz);
-			light_dir_tangent = normalize(light_dir_view * tbn);
-		}
-	}
-	float pom_fade = 1.0;
-	if (pom_fade_end > pom_fade_start) {
-		pom_fade = 1.0 - smoothstep(pom_fade_start, pom_fade_end, length(VERTEX));
-	}
+	float view_distance = length(VERTEX);
 
-	vec3 albedo_sum = vec3(0.0);
-	vec3 normal_sum = vec3(0.0);
-	vec3 orm_sum = vec3(0.0);
-	float specular_sum = 0.0;
-	float normal_strength_sum = 0.0;
-	float weight_sum = 0.0;
-
-	// Every layer's weight lives in one of ceil(layer_count / 4) array
-	// layers, 4 layers (R/G/B/A) per texture fetch.
-	int group_count = (layer_count + 3) / 4;
-	for (int g = 0; g < group_count; g++) {
-		vec4 w = texture(weight_array, vec3(map_uv, float(g)));
-		int base_layer = g * 4;
-		if (base_layer < layer_count) {
-			accumulate_layer(base_layer, w.r, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+	// How much of the runtime virtual texture shows here, against blending the layers here: all of
+	// it, but for what is closer than rvt_near_distance, and wherever parallax (which depends on
+	// where the camera is, so it cannot be drawn into a texture ahead of time) has not faded out.
+	// Under whatever else was drawn into the texture (a road, a decal), which only the texture has, it
+	// shows all the same.
+	float rvt_amount = 0.0;
+	vec3 rvt_uv = vec3(position.xz / (float(terrain_quads) * vertex_spacing), 0.0);
+	vec4 rvt_orm = vec4(1.0);
+	if (rvt_mode == 1) {
+		rvt_amount = rvt_near_distance > 0.0 ? smoothstep(rvt_near_distance * 0.75, rvt_near_distance, view_distance) : 1.0;
+		if (pom_enabled) {
+			rvt_amount = min(rvt_amount, smoothstep(pom_fade_start, pom_fade_end, view_distance));
 		}
-		if (base_layer + 1 < layer_count) {
-			accumulate_layer(base_layer + 1, w.g, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
-		}
-		if (base_layer + 2 < layer_count) {
-			accumulate_layer(base_layer + 2, w.b, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
-		}
-		if (base_layer + 3 < layer_count) {
-			accumulate_layer(base_layer + 3, w.a, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
-		}
+		rvt_orm = texture(rvt_data, vec3(rvt_uv.xy, 2.0));
+		// The ORM layer's alpha is how much of it is bare ground.
+		rvt_amount = 1.0 - (1.0 - rvt_amount) * rvt_orm.a;
 	}
 
-	// Normalize so the total always adds up to 1; with no weight at all
-	// (no layers yet), plain gray ground.
-	if (weight_sum > 0.001) {
-		float inv_weight = 1.0 / weight_sum;
-		ALBEDO = albedo_sum * inv_weight;
-		NORMAL_MAP = normal_sum * inv_weight;
-		NORMAL_MAP_DEPTH = normal_strength_sum * inv_weight;
-		vec3 orm = orm_sum * inv_weight;
-		AO = orm.r;
-		ROUGHNESS = orm.g;
-		METALLIC = orm.b;
-		SPECULAR = specular_sum * inv_weight;
-	} else {
-		ALBEDO = vec3(0.6);
-		ROUGHNESS = 1.0;
+	vec3 albedo = vec3(0.6);
+	// Tangent space, with normal map strength already applied.
+	vec3 normal_tangent = vec3(0.0, 0.0, 1.0);
+	vec3 orm = vec3(1.0, 1.0, 0.0);
+	float specular = 0.5;
+
+	if (rvt_amount < 1.0) {
+		// Parallax depends on the view, which a page drawn from above does not have.
+		bool pom_active = pom_enabled && rvt_mode != 2;
+
+		// Shared per-fragment values every layer's accumulate_layer() call needs
+		// but can't compute itself: tangent-space directions for POM (with the
+		// same BINORMAL negation Godot's own heightmap shader code uses), and how
+		// much pom_fade_start/end fades this fragment's parallax depth.
+		vec3 view_dir_tangent = vec3(0.0);
+		vec3 light_dir_tangent = vec3(0.0);
+		if (pom_active) {
+			mat3 tbn = mat3(TANGENT * pom_flip.x, -BINORMAL * pom_flip.y, NORMAL);
+			view_dir_tangent = normalize(normalize(-VERTEX) * tbn);
+			if (pom_self_shadow_enabled) {
+				vec3 light_dir_view = normalize((VIEW_MATRIX * vec4(pom_shadow_light_direction, 0.0)).xyz);
+				light_dir_tangent = normalize(light_dir_view * tbn);
+			}
+		}
+		float pom_fade = 1.0;
+		if (pom_fade_end > pom_fade_start) {
+			pom_fade = 1.0 - smoothstep(pom_fade_start, pom_fade_end, view_distance);
+		}
+
+		vec3 albedo_sum = vec3(0.0);
+		vec3 normal_sum = vec3(0.0);
+		vec3 orm_sum = vec3(0.0);
+		float specular_sum = 0.0;
+		float normal_strength_sum = 0.0;
+		float weight_sum = 0.0;
+
+		// Every layer's weight lives in one of ceil(layer_count / 4) array
+		// layers, 4 layers (R/G/B/A) per texture fetch.
+		int group_count = (layer_count + 3) / 4;
+		for (int g = 0; g < group_count; g++) {
+			vec4 w = texture(weight_array, vec3(map_uv, float(g)));
+			int base_layer = g * 4;
+			if (base_layer < layer_count) {
+				accumulate_layer(base_layer, w.r, position, pom_active, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			}
+			if (base_layer + 1 < layer_count) {
+				accumulate_layer(base_layer + 1, w.g, position, pom_active, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			}
+			if (base_layer + 2 < layer_count) {
+				accumulate_layer(base_layer + 2, w.b, position, pom_active, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			}
+			if (base_layer + 3 < layer_count) {
+				accumulate_layer(base_layer + 3, w.a, position, pom_active, view_dir_tangent, light_dir_tangent, normal_local, pom_fade, albedo_sum, normal_sum, orm_sum, specular_sum, normal_strength_sum, weight_sum);
+			}
+		}
+
+		// Normalize so the total always adds up to 1; with no weight at all
+		// (no layers yet), plain gray ground.
+		if (weight_sum > 0.001) {
+			float inv_weight = 1.0 / weight_sum;
+			albedo = albedo_sum * inv_weight;
+			orm = orm_sum * inv_weight;
+			specular = specular_sum * inv_weight;
+			// The blended normal map, with its blended strength folded in: what Godot's own
+			// mix(NORMAL, TBN * normal_map, NORMAL_MAP_DEPTH) gives, as a unit normal in tangent space.
+			vec2 normal_xy = (normal_sum.xy * inv_weight) * 2.0 - 1.0;
+			vec3 normal_map = vec3(normal_xy, sqrt(max(0.0, 1.0 - dot(normal_xy, normal_xy))));
+			normal_tangent = normalize(mix(vec3(0.0, 0.0, 1.0), normal_map, normal_strength_sum * inv_weight));
+		}
 	}
 
-	if (debug_view == 1) {
+	if (rvt_amount > 0.0) {
+		vec4 rvt_color = texture(rvt_albedo, rvt_uv);
+		vec4 rvt_normal = texture(rvt_data, vec3(rvt_uv.xy, 1.0));
+		// Pages are drawn looking down the terrain's Y axis with X to the right and Z down the page:
+		// their view space normal (x, y, z) is the terrain's (x, z, -y).
+		vec3 page_normal = normalize(rvt_normal.rgb * 2.0 - 1.0);
+		vec3 normal_view = normalize(mat3(VIEW_MATRIX) * (MODEL_NORMAL_MATRIX * vec3(page_normal.x, page_normal.z, -page_normal.y)));
+		vec3 rvt_tangent = vec3(dot(normal_view, TANGENT), dot(normal_view, BINORMAL), dot(normal_view, NORMAL));
+		albedo = mix(albedo, rvt_color.rgb, rvt_amount);
+		normal_tangent = normalize(mix(normal_tangent, rvt_tangent, rvt_amount));
+		orm = mix(orm, rvt_orm.rgb, rvt_amount);
+		specular = mix(specular, rvt_normal.a, rvt_amount);
+	}
+
+	ALBEDO = albedo;
+	NORMAL_MAP = vec3(normal_tangent.xy * 0.5 + 0.5, 1.0);
+	NORMAL_MAP_DEPTH = 1.0;
+	AO = orm.r;
+	ROUGHNESS = clamp(orm.g, 0.0, 1.0);
+	METALLIC = orm.b;
+	SPECULAR = specular;
+
+#ifdef LANDSCAPE_RVT_WRITER
+	// The height of the ground in the virtual texture is read back from the depth its pages are drawn
+	// with, and the ground's own keeps what lies under it hidden.
+	vec4 ground_clip = PROJECTION_MATRIX * (VIEW_MATRIX * (MODEL_MATRIX * vec4(position, 1.0)));
+	DEPTH = ground_clip.z / ground_clip.w;
+	// Marks the texels that show the bare ground, where the layers can be blended here instead close
+	// to the camera: what is drawn over it (a road, a decal) covers the mark as much as it covers the
+	// ground (see VirtualTextureStorage::get_material_pass_blend_state()).
+	SSS_STRENGTH = 1.0;
+#endif
+
+	if (rvt_mode == 2) {
+		// Debug views are drawn over the virtual texture, not into it.
+	} else if (debug_view == 1) {
 		// LOD levels: one color per quadtree level.
 		ALBEDO = mix(ALBEDO, level_color(patch_level), 0.7);
 	} else if (debug_view == 2) {
@@ -776,14 +873,26 @@ void fragment() {
 		vec2 border_distance = min(patch_grid, vec2(float(PATCH_QUADS)) - patch_grid) / width;
 		float border = 1.0 - clamp(min(border_distance.x, border_distance.y) - 1.0, 0.0, 1.0);
 		ALBEDO = mix(ALBEDO * 0.35, level_color(patch_level), max(wire * 0.8, border));
+	} else if (debug_view == 3) {
+		// Virtual texture: tinted where the runtime virtual texture is what shows.
+		ALBEDO = mix(ALBEDO, vec3(0.2, 0.9, 0.3), 0.5 * rvt_amount);
 	}
 }
-)");
+)";
+	shader.instantiate();
+	shader->set_code(code);
+	// What draws the terrain into its runtime virtual texture: the same, but writing the depth of the
+	// ground rather than of the flat quad it draws, which the terrain's own passes have no need for
+	// (and would lose their early depth test over).
+	writer_shader.instantiate();
+	writer_shader->set_code(code.replace_first("shader_type spatial;\n", "shader_type spatial;\n#define LANDSCAPE_RVT_WRITER\n"));
 }
 
 void Landscape3D::finish_shaders() {
 	shader.unref();
+	writer_shader.unref();
 	patch_mesh.unref();
+	writer_mesh.unref();
 }
 
 void Landscape3D::_bind_methods() {
@@ -819,6 +928,22 @@ void Landscape3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_debug_view", "view"), &Landscape3D::set_debug_view);
 	ClassDB::bind_method(D_METHOD("get_debug_view"), &Landscape3D::get_debug_view);
+
+	ClassDB::bind_method(D_METHOD("set_virtual_texture_enabled", "enabled"), &Landscape3D::set_virtual_texture_enabled);
+	ClassDB::bind_method(D_METHOD("is_virtual_texture_enabled"), &Landscape3D::is_virtual_texture_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_virtual_texture_texel_size", "size"), &Landscape3D::set_virtual_texture_texel_size);
+	ClassDB::bind_method(D_METHOD("get_virtual_texture_texel_size"), &Landscape3D::get_virtual_texture_texel_size);
+
+	ClassDB::bind_method(D_METHOD("set_virtual_texture_near_distance", "distance"), &Landscape3D::set_virtual_texture_near_distance);
+	ClassDB::bind_method(D_METHOD("get_virtual_texture_near_distance"), &Landscape3D::get_virtual_texture_near_distance);
+
+	ClassDB::bind_method(D_METHOD("set_virtual_texture_layers", "layers"), &Landscape3D::set_virtual_texture_layers);
+	ClassDB::bind_method(D_METHOD("get_virtual_texture_layers"), &Landscape3D::get_virtual_texture_layers);
+
+	ClassDB::bind_method(D_METHOD("get_virtual_texture"), &Landscape3D::get_virtual_texture);
+	ClassDB::bind_method(D_METHOD("get_virtual_texture_volume"), &Landscape3D::get_virtual_texture_volume);
+	ClassDB::bind_method(D_METHOD("get_virtual_texture_size"), &Landscape3D::get_virtual_texture_size);
 
 	ClassDB::bind_method(D_METHOD("set_occluder_enabled", "enabled"), &Landscape3D::set_occluder_enabled);
 	ClassDB::bind_method(D_METHOD("is_occluder_enabled"), &Landscape3D::is_occluder_enabled);
@@ -917,7 +1042,13 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "frustum_culling"), "set_frustum_culling", "is_frustum_culling_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_lod_enabled"), "set_gpu_lod_enabled", "is_gpu_lod_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "layer_texture_size_limit", PROPERTY_HINT_RANGE, "16,8192,1"), "set_layer_texture_size_limit", "get_layer_texture_size_limit");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_view", PROPERTY_HINT_ENUM, "Disabled,LOD Levels,Wireframe"), "set_debug_view", "get_debug_view");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_view", PROPERTY_HINT_ENUM, "Disabled,LOD Levels,Wireframe,Virtual Texture"), "set_debug_view", "get_debug_view");
+
+	ADD_GROUP("Virtual Texture", "virtual_texture_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "virtual_texture_enabled"), "set_virtual_texture_enabled", "is_virtual_texture_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "virtual_texture_texel_size", PROPERTY_HINT_RANGE, "0.001,1,0.001,or_greater,suffix:m"), "set_virtual_texture_texel_size", "get_virtual_texture_texel_size");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "virtual_texture_near_distance", PROPERTY_HINT_RANGE, "0,256,0.1,or_greater,suffix:m"), "set_virtual_texture_near_distance", "get_virtual_texture_near_distance");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "virtual_texture_layers", PROPERTY_HINT_LAYERS_3D_RENDER), "set_virtual_texture_layers", "get_virtual_texture_layers");
 
 	ADD_GROUP("Occlusion Culling", "occluder_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "occluder_enabled"), "set_occluder_enabled", "is_occluder_enabled");
@@ -950,6 +1081,7 @@ void Landscape3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(DEBUG_VIEW_DISABLED);
 	BIND_ENUM_CONSTANT(DEBUG_VIEW_LOD_LEVELS);
 	BIND_ENUM_CONSTANT(DEBUG_VIEW_WIREFRAME);
+	BIND_ENUM_CONSTANT(DEBUG_VIEW_VIRTUAL_TEXTURE);
 }
 
 void Landscape3D::_notification(int p_what) {
@@ -966,10 +1098,14 @@ void Landscape3D::_notification(int p_what) {
 
 		case NOTIFICATION_EXIT_TREE: {
 			_disconnect_frame_hook();
+			BlendLandscape3D::remove_landscape_source(get_instance_id());
 		} break;
 
 		case NOTIFICATION_ENTER_WORLD: {
 			_update_draw_instances();
+			_update_writer_instance();
+			_update_virtual_texture_volume();
+			_publish_blend_source();
 			const RID scenario = get_world_3d().is_valid() ? get_world_3d()->get_scenario() : RID();
 			const bool visible = is_visible_in_tree();
 			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
@@ -987,6 +1123,9 @@ void Landscape3D::_notification(int p_what) {
 					RS::get_singleton()->instance_set_scenario(draw_instances[i], RID());
 				}
 			}
+			if (writer_instance.is_valid()) {
+				RS::get_singleton()->instance_set_scenario(writer_instance, RID());
+			}
 			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
 				if (kv.value.instance.is_valid()) {
 					RS::get_singleton()->instance_set_scenario(kv.value.instance, RID());
@@ -997,6 +1136,9 @@ void Landscape3D::_notification(int p_what) {
 		case NOTIFICATION_TRANSFORM_CHANGED: {
 			_update_draw_instances();
 			_update_occluder_transforms();
+			_update_writer_instance();
+			_update_virtual_texture_volume();
+			_publish_blend_source();
 			lod_dirty = true;
 			// Whatever sits on the surface (see LandscapeSpline3D) has to follow
 			// it wherever it moved.
@@ -1005,6 +1147,7 @@ void Landscape3D::_notification(int p_what) {
 
 		case NOTIFICATION_VISIBILITY_CHANGED: {
 			_update_draw_instances();
+			_update_writer_instance();
 			const bool visible = is_visible_in_tree();
 			for (KeyValue<Vector2i, OccluderBlock> &kv : occluder_blocks) {
 				if (kv.value.instance.is_valid()) {
@@ -1095,9 +1238,201 @@ void Landscape3D::_ensure_material() {
 	}
 	material.instantiate();
 	material->set_shader(shader);
+	writer_material.instantiate();
+	writer_material->set_shader(writer_shader);
+	writer_material->set_shader_parameter(SNAME("rvt_mode"), 2);
 	_update_pom_params();
 	_update_micro_detail_params();
 	material->set_shader_parameter(SNAME("debug_view"), int(debug_view));
+}
+
+void Landscape3D::_set_shader_parameter(const StringName &p_name, const Variant &p_value) {
+	material->set_shader_parameter(p_name, p_value);
+	writer_material->set_shader_parameter(p_name, p_value);
+}
+
+bool Landscape3D::_is_virtual_texture_active() const {
+	return virtual_texture_enabled && terrain_data.is_valid() && RS::get_singleton()->is_virtual_texturing_supported();
+}
+
+void Landscape3D::_update_virtual_texture() {
+	_ensure_material();
+	if (!_is_virtual_texture_active() || quadtree.is_empty()) {
+		_free_virtual_texture();
+		return;
+	}
+
+	// Pages are square, and the virtual texture a power of two of them a side: the finest that keeps
+	// a texel no larger than virtual_texture_texel_size, within what a page table can address.
+	const int page_size = RSE::VIRTUAL_TEXTURE_PAGE_SIZE;
+	const float extent = float(terrain_data->get_resolution() - 1) * terrain_data->get_vertex_spacing();
+	const int64_t texels = int64_t(Math::ceil(extent / MAX(virtual_texture_texel_size, 0.001f)));
+	const uint32_t pages = CLAMP(uint32_t(Math::next_power_of_2(uint32_t(MAX(int64_t(1), (texels + page_size - 1) / page_size)))), 1u, 1024u);
+	const int size = int(pages) * page_size;
+
+	RenderingServer *rs = RS::get_singleton();
+	if (virtual_texture.is_null() || size != virtual_texture_size) {
+		_free_virtual_texture();
+		virtual_texture = rs->texture_virtual_create(size, size, RSE::VIRTUAL_TEXTURE_RUNTIME, Ref<Image>());
+		virtual_texture_size = size;
+	}
+	material->set_shader_parameter(SNAME("rvt_albedo"), virtual_texture);
+	material->set_shader_parameter(SNAME("rvt_data"), virtual_texture);
+	material->set_shader_parameter(SNAME("rvt_mode"), 1);
+	material->set_shader_parameter(SNAME("rvt_near_distance"), virtual_texture_near_distance);
+	_update_writer_instance();
+	_update_virtual_texture_volume();
+}
+
+void Landscape3D::_free_virtual_texture() {
+	RenderingServer *rs = RS::get_singleton();
+	if (writer_instance.is_valid()) {
+		rs->free_rid(writer_instance);
+		writer_instance = RID();
+	}
+	if (virtual_texture.is_valid()) {
+		const RID texture = virtual_texture;
+		virtual_texture = RID();
+		virtual_texture_size = 0;
+		// The materials blending into the ground stop reading it before it goes.
+		_publish_blend_source();
+		rs->free_rid(texture);
+	}
+	virtual_texture_size = 0;
+	if (material.is_valid()) {
+		material->set_shader_parameter(SNAME("rvt_mode"), 0);
+		material->set_shader_parameter(SNAME("rvt_albedo"), Variant());
+		material->set_shader_parameter(SNAME("rvt_data"), Variant());
+	}
+}
+
+void Landscape3D::_update_writer_instance() {
+	RenderingServer *rs = RS::get_singleton();
+	if (virtual_texture.is_null()) {
+		if (writer_instance.is_valid()) {
+			rs->free_rid(writer_instance);
+			writer_instance = RID();
+		}
+		return;
+	}
+
+	{
+		MutexLock lock(patch_mesh_mutex);
+		if (writer_mesh.is_null()) {
+			// One quad over the whole terrain (the shader scales it), facing up like the patches.
+			PackedVector3Array vertices = { Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 0, 1), Vector3(1, 0, 1) };
+			PackedVector3Array normals = { Vector3(0, 1, 0), Vector3(0, 1, 0), Vector3(0, 1, 0), Vector3(0, 1, 0) };
+			PackedFloat32Array tangents = { 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1 };
+			PackedColorArray colors = { Color(1, 1, 1), Color(1, 1, 1), Color(1, 1, 1), Color(1, 1, 1) };
+			PackedInt32Array indices = { 0, 1, 2, 1, 3, 2 };
+			Array arrays;
+			arrays.resize(Mesh::ARRAY_MAX);
+			arrays[Mesh::ARRAY_VERTEX] = vertices;
+			arrays[Mesh::ARRAY_NORMAL] = normals;
+			arrays[Mesh::ARRAY_TANGENT] = tangents;
+			arrays[Mesh::ARRAY_COLOR] = colors;
+			arrays[Mesh::ARRAY_INDEX] = indices;
+			Ref<ArrayMesh> mesh;
+			mesh.instantiate();
+			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+			writer_mesh = mesh;
+		}
+	}
+
+	if (writer_instance.is_null()) {
+		writer_instance = rs->instance_create2(writer_mesh->get_rid(), RID());
+		rs->instance_geometry_set_material_override(writer_instance, writer_material->get_rid());
+		rs->instance_geometry_set_cast_shadows_setting(writer_instance, RSE::SHADOW_CASTING_SETTING_OFF);
+	}
+	// Drawn only into the virtual texture, never by a camera.
+	rs->instance_geometry_set_virtual_texture_layers(writer_instance, virtual_texture_layers, false);
+	const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
+	rs->instance_set_scenario(writer_instance, scenario);
+	rs->instance_set_transform(writer_instance, _get_safe_global_transform());
+	rs->instance_set_custom_aabb(writer_instance, get_aabb());
+	rs->instance_set_visible(writer_instance, is_inside_tree() && is_visible_in_tree());
+}
+
+Transform3D Landscape3D::_get_virtual_texture_local_volume() const {
+	// The terrain, and some room above it for whatever else draws into the texture (roads lie a
+	// little over the ground).
+	const AABB aabb = get_aabb();
+	const float extent = float(terrain_data->get_resolution() - 1) * terrain_data->get_vertex_spacing();
+	const float margin = MAX(aabb.size.y * 0.05f, 1.0f);
+	return Transform3D(Basis::from_scale(Vector3(extent, aabb.size.y + margin * 2.0f, extent)), Vector3(0, aabb.position.y - margin, 0));
+}
+
+void Landscape3D::_update_virtual_texture_volume() {
+	if (virtual_texture.is_null() || terrain_data.is_null() || quadtree.is_empty()) {
+		return;
+	}
+	const Transform3D local = _get_virtual_texture_local_volume();
+	const RID scenario = (is_inside_tree() && get_world_3d().is_valid()) ? get_world_3d()->get_scenario() : RID();
+	const Transform3D volume = _get_safe_global_transform() * local;
+	RS::get_singleton()->texture_virtual_set_runtime_volume(virtual_texture, scenario, volume, virtual_texture_layers);
+	_publish_blend_source();
+	// The writer lies at the bottom of the volume, under everything else drawn into it.
+	writer_material->set_shader_parameter(SNAME("rvt_writer_height"), local.origin.y + local.basis.get_column(1).y * 0.001f);
+	if (writer_instance.is_valid()) {
+		RS::get_singleton()->instance_set_custom_aabb(writer_instance, get_aabb());
+	}
+}
+
+void Landscape3D::_publish_blend_source() {
+	// The materials blending into the ground (see BlendLandscape3D) find it the way this terrain's own
+	// shader does: they are handed the same textures and settings, under their own uniforms' names.
+	const ObjectID id = get_instance_id();
+	if (!is_inside_tree() || terrain_data.is_null() || !height_texture.is_valid() || !gradient_texture.is_valid() || !weight_texture.is_valid() || material.is_null()) {
+		BlendLandscape3D::remove_landscape_source(id);
+		return;
+	}
+
+	BlendLandscape3D::LandscapeSource source;
+	source.layers = virtual_texture_layers;
+	HashMap<StringName, Variant> &parameters = source.parameters;
+
+	const Transform3D global = _get_safe_global_transform();
+	parameters[SNAME("landscape_world_to_local")] = global.affine_inverse();
+	parameters[SNAME("landscape_normal_to_world")] = global.basis.inverse().transposed();
+	parameters[SNAME("landscape_height_scale")] = global.basis.get_column(1).length();
+	parameters[SNAME("landscape_terrain_quads")] = terrain_data->get_resolution() - 1;
+	parameters[SNAME("landscape_vertex_spacing")] = terrain_data->get_vertex_spacing();
+	parameters[SNAME("landscape_heightmap")] = height_texture.get_rid();
+	parameters[SNAME("landscape_gradient_map")] = gradient_texture.get_rid();
+	parameters[SNAME("landscape_weight_array")] = weight_texture.get_rid();
+	parameters[SNAME("landscape_albedo_array")] = albedo_array.is_valid() ? albedo_array->get_rid() : RID();
+	parameters[SNAME("landscape_normal_array")] = normal_array.is_valid() ? normal_array->get_rid() : RID();
+	parameters[SNAME("landscape_orm_array")] = orm_array.is_valid() ? orm_array->get_rid() : RID();
+	static const char *layer_parameters[] = { "layer_uv_scales", "layer_albedo_colors", "layer_roughness", "layer_specular", "layer_ao_strength", "layer_normal_strength", "layer_triplanar", "layer_triplanar_sharpness", "layer_count" };
+	for (const char *name : layer_parameters) {
+		parameters[StringName(String("landscape_") + name)] = material->get_shader_parameter(name);
+	}
+
+	const bool rvt = virtual_texture.is_valid();
+	parameters[SNAME("landscape_rvt_active")] = rvt;
+	parameters[SNAME("landscape_rvt_albedo")] = virtual_texture;
+	parameters[SNAME("landscape_rvt_data")] = virtual_texture;
+	parameters[SNAME("landscape_ground_near")] = virtual_texture_near_distance;
+	parameters[SNAME("landscape_ground_pom")] = pom_enabled;
+	parameters[SNAME("landscape_ground_pom_fade")] = Vector2(pom_fade_start, pom_fade_end);
+
+	BlendLandscape3D::set_landscape_source(id, source);
+}
+
+void Landscape3D::_invalidate_virtual_texture(const Rect2i &p_samples) {
+	if (virtual_texture.is_null() || terrain_data.is_null()) {
+		return;
+	}
+	// A sample's normal reaches its neighbors, and filtering one more.
+	const Rect2i samples = p_samples.grow(2);
+	const float quads = float(MAX(terrain_data->get_resolution() - 1, 1));
+	RS::get_singleton()->texture_virtual_invalidate(virtual_texture, Rect2(samples.position.x / quads, samples.position.y / quads, samples.size.x / quads, samples.size.y / quads));
+}
+
+void Landscape3D::_invalidate_virtual_texture_all() {
+	if (virtual_texture.is_valid()) {
+		RS::get_singleton()->texture_virtual_invalidate(virtual_texture, Rect2(0, 0, 1, 1));
+	}
 }
 
 bool Landscape3D::_is_gpu_lod_active() {
@@ -1384,6 +1719,7 @@ void Landscape3D::_write_cpu_instances(DrawList p_list, const LocalVector<Landsc
 }
 
 void Landscape3D::_clear_terrain() {
+	_free_virtual_texture();
 	quadtree.clear();
 	height_texture.free();
 	gradient_texture.free();
@@ -1392,6 +1728,7 @@ void Landscape3D::_clear_terrain() {
 	gradient_image.unref();
 	_free_draw_instances();
 	_clear_occluders();
+	_publish_blend_source();
 }
 
 void Landscape3D::_rebuild_terrain() {
@@ -1429,6 +1766,8 @@ void Landscape3D::_rebuild_terrain() {
 	_update_micro_detail_params();
 	_update_draw_aabb();
 	_rebuild_all_occluders();
+	_update_virtual_texture();
+	_invalidate_virtual_texture_all();
 	lod_dirty = true;
 }
 
@@ -1467,6 +1806,7 @@ void Landscape3D::_refresh_regions(const Vector<Rect2i> &p_regions, bool p_heigh
 			hole_texture.update(0, hole_map, region);
 		}
 		_add_blocks_in_region(region, blocks);
+		_invalidate_virtual_texture(region);
 	}
 
 	if (multimeshes_indirect) {
@@ -1476,6 +1816,7 @@ void Landscape3D::_refresh_regions(const Vector<Rect2i> &p_regions, bool p_heigh
 		_rebuild_occluder_block(block);
 	}
 	_update_draw_aabb();
+	_update_virtual_texture_volume();
 	lod_dirty = true;
 }
 
@@ -1578,7 +1919,8 @@ void Landscape3D::_rebuild_weight_texture() {
 		images.push_back(terrain_data->get_weight_map_image(g));
 	}
 	weight_texture.create(images, true);
-	material->set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
+	_set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
+	_publish_blend_source();
 }
 
 void Landscape3D::_upload_weight_region(const Rect2i &p_region, int p_first_layer, int p_layer_count) {
@@ -1590,6 +1932,7 @@ void Landscape3D::_upload_weight_region(const Rect2i &p_region, int p_first_laye
 	for (int g = first_group; g <= last_group; g++) {
 		weight_texture.update(g, terrain_data->get_weight_map_image(g), p_region);
 	}
+	_invalidate_virtual_texture(p_region);
 }
 
 void Landscape3D::_update_material_params() {
@@ -1597,12 +1940,13 @@ void Landscape3D::_update_material_params() {
 	if (terrain_data.is_null()) {
 		return;
 	}
-	material->set_shader_parameter(SNAME("heightmap"), height_texture.get_rid());
-	material->set_shader_parameter(SNAME("gradient_map"), gradient_texture.get_rid());
-	material->set_shader_parameter(SNAME("hole_map"), hole_texture.get_rid());
-	material->set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
-	material->set_shader_parameter(SNAME("terrain_quads"), terrain_data->get_resolution() - 1);
-	material->set_shader_parameter(SNAME("vertex_spacing"), terrain_data->get_vertex_spacing());
+	_set_shader_parameter(SNAME("heightmap"), height_texture.get_rid());
+	_set_shader_parameter(SNAME("gradient_map"), gradient_texture.get_rid());
+	_set_shader_parameter(SNAME("hole_map"), hole_texture.get_rid());
+	_set_shader_parameter(SNAME("weight_array"), weight_texture.get_rid());
+	_set_shader_parameter(SNAME("terrain_quads"), terrain_data->get_resolution() - 1);
+	_set_shader_parameter(SNAME("vertex_spacing"), terrain_data->get_vertex_spacing());
+	_publish_blend_source();
 }
 
 void Landscape3D::_update_micro_detail_params() {
@@ -1629,22 +1973,13 @@ void Landscape3D::_update_pom_params() {
 	material->set_shader_parameter(SNAME("pom_shadow_light_direction"), pom_shadow_light_direction);
 	material->set_shader_parameter(SNAME("pom_fade_start"), pom_fade_start);
 	material->set_shader_parameter(SNAME("pom_fade_end"), pom_fade_end);
+	_publish_blend_source();
 }
 
-void Landscape3D::_rebuild_layer_textures() {
+void Landscape3D::_update_layer_params() {
 	_ensure_material();
 
 	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
-	const int array_layers = MAX(layer_count, 1);
-
-	Vector<Ref<Image>> albedo_images;
-	Vector<Ref<Image>> normal_images;
-	Vector<Ref<Image>> orm_images;
-	Vector<Ref<Image>> height_images;
-	albedo_images.resize(array_layers);
-	normal_images.resize(array_layers);
-	orm_images.resize(array_layers);
-	height_images.resize(array_layers);
 
 	PackedFloat32Array uv_scales;
 	uv_scales.resize(TerrainData::MAX_LAYERS);
@@ -1675,99 +2010,207 @@ void Landscape3D::_rebuild_layer_textures() {
 	triplanar_sharpness_values.resize(TerrainData::MAX_LAYERS);
 	PackedFloat32Array displacement_values;
 	displacement_values.resize(TerrainData::MAX_LAYERS);
-	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
-		uv_scales.write[i] = 1.0f;
-		albedo_colors.write[i] = Color(1, 1, 1);
-		roughness_values.write[i] = 1.0f;
-		specular_values.write[i] = 0.5f;
-		ao_strength_values.write[i] = 1.0f;
-		normal_strength_values.write[i] = 1.0f;
-		heightmap_scale_values.write[i] = 5.0f;
-		height_min_values.write[i] = 0.0f;
-		height_max_values.write[i] = 1.0f;
-		pom_enabled_values.write[i] = 0.0f;
-		triplanar_values.write[i] = 0.0f;
-		triplanar_sharpness_values.write[i] = 1.0f;
-		displacement_values.write[i] = 0.0f;
-	}
 
 	displacement_bound = 0.0f;
-
-	auto source_image = [](const Ref<Texture2D> &p_texture) -> Ref<Image> {
-		return p_texture.is_valid() ? p_texture->get_image() : Ref<Image>();
-	};
-	for (int i = 0; i < array_layers; i++) {
+	for (int i = 0; i < TerrainData::MAX_LAYERS; i++) {
 		Ref<TerrainLayer> layer;
-		if (i < layers.size()) {
+		if (i < layer_count) {
 			layer = layers[i];
 		}
-
-		Ref<Texture2D> albedo_tex = layer.is_valid() ? layer->get_albedo_texture() : Ref<Texture2D>();
-		Ref<Texture2D> normal_tex = layer.is_valid() ? layer->get_normal_texture() : Ref<Texture2D>();
-		Ref<Texture2D> orm_tex = layer.is_valid() ? layer->get_orm_texture() : Ref<Texture2D>();
-		Ref<Texture2D> height_tex = layer.is_valid() ? layer->get_height_texture() : Ref<Texture2D>();
-
-		albedo_images.write[i] = source_image(albedo_tex);
-		normal_images.write[i] = source_image(normal_tex);
-		orm_images.write[i] = source_image(orm_tex);
-		height_images.write[i] = source_image(height_tex);
-
-		if (i < TerrainData::MAX_LAYERS) {
-			uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
-			albedo_colors.write[i] = layer.is_valid() ? layer->get_albedo_color() : Color(1, 1, 1);
-			roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
-			specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
-			ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
-			normal_strength_values.write[i] = layer.is_valid() ? layer->get_normal_strength() : 1.0f;
-			heightmap_scale_values.write[i] = layer.is_valid() ? layer->get_heightmap_scale() : 5.0f;
-			height_min_values.write[i] = layer.is_valid() ? layer->get_height_min() : 0.0f;
-			height_max_values.write[i] = layer.is_valid() ? layer->get_height_max() : 1.0f;
-			pom_enabled_values.write[i] = (layer.is_valid() && layer->is_pom_enabled()) ? 1.0f : 0.0f;
-			triplanar_values.write[i] = (layer.is_valid() && layer->is_triplanar_enabled()) ? 1.0f : 0.0f;
-			triplanar_sharpness_values.write[i] = layer.is_valid() ? layer->get_triplanar_sharpness() : 1.0f;
-			// Displacement needs something to displace by: a layer without a
-			// height texture would only lift its whole area by a constant.
-			if (layer.is_valid() && height_tex.is_valid() && i < layer_count) {
-				displacement_values.write[i] = layer->get_displacement();
-				displacement_bound = MAX(displacement_bound, Math::abs(layer->get_displacement()) * 0.5f);
-			}
+		uv_scales.write[i] = layer.is_valid() ? layer->get_uv_scale() : 1.0f;
+		albedo_colors.write[i] = layer.is_valid() ? layer->get_albedo_color() : Color(1, 1, 1);
+		roughness_values.write[i] = layer.is_valid() ? layer->get_roughness() : 1.0f;
+		specular_values.write[i] = layer.is_valid() ? layer->get_specular() : 0.5f;
+		ao_strength_values.write[i] = layer.is_valid() ? layer->get_ao_strength() : 1.0f;
+		normal_strength_values.write[i] = layer.is_valid() ? layer->get_normal_strength() : 1.0f;
+		heightmap_scale_values.write[i] = layer.is_valid() ? layer->get_heightmap_scale() : 5.0f;
+		height_min_values.write[i] = layer.is_valid() ? layer->get_height_min() : 0.0f;
+		height_max_values.write[i] = layer.is_valid() ? layer->get_height_max() : 1.0f;
+		pom_enabled_values.write[i] = (layer.is_valid() && layer->is_pom_enabled()) ? 1.0f : 0.0f;
+		triplanar_values.write[i] = (layer.is_valid() && layer->is_triplanar_enabled()) ? 1.0f : 0.0f;
+		triplanar_sharpness_values.write[i] = layer.is_valid() ? layer->get_triplanar_sharpness() : 1.0f;
+		displacement_values.write[i] = 0.0f;
+		// Displacement needs something to displace by: a layer without a
+		// height texture would only lift its whole area by a constant.
+		if (layer.is_valid() && layer->get_height_texture().is_valid()) {
+			displacement_values.write[i] = layer->get_displacement();
+			displacement_bound = MAX(displacement_bound, Math::abs(layer->get_displacement()) * 0.5f);
 		}
 	}
 
-	albedo_array = build_layer_texture_array(albedo_images, Color(0.6, 0.6, 0.6, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
-	// Mipmaps are renormalized: averaging two normals shortens the result, and
-	// a normal map whose vectors are not unit length reads as a flattened,
-	// washed-out surface at distance.
-	normal_array = build_layer_texture_array(normal_images, Color(0.5, 0.5, 1.0, 1.0), Image::FORMAT_RGBA8, true, layer_texture_size_limit);
-	orm_array = build_layer_texture_array(orm_images, Color(1.0, 0.5, 0.0, 1.0), Image::FORMAT_RGBA8, false, layer_texture_size_limit);
-	// Single-channel, unlike the other three: POM and displacement only ever
-	// read one value per sample. White = a height of 1.0 = zero parallax depth
-	// (see pom_offset()), so a layer with no height_texture is unaffected by
-	// POM even while it is enabled on the node.
-	height_array = build_layer_texture_array(height_images, Color(1, 1, 1), Image::FORMAT_R8, false, layer_texture_size_limit);
-
-	material->set_shader_parameter(SNAME("albedo_array"), albedo_array);
-	material->set_shader_parameter(SNAME("normal_array"), normal_array);
-	material->set_shader_parameter(SNAME("orm_array"), orm_array);
-	material->set_shader_parameter(SNAME("height_array"), height_array);
-	material->set_shader_parameter(SNAME("height_texture_size"), float(MAX(height_array->get_width(), 1)));
-	material->set_shader_parameter(SNAME("layer_uv_scales"), uv_scales);
-	material->set_shader_parameter(SNAME("layer_albedo_colors"), albedo_colors);
-	material->set_shader_parameter(SNAME("layer_roughness"), roughness_values);
-	material->set_shader_parameter(SNAME("layer_specular"), specular_values);
-	material->set_shader_parameter(SNAME("layer_ao_strength"), ao_strength_values);
-	material->set_shader_parameter(SNAME("layer_normal_strength"), normal_strength_values);
-	material->set_shader_parameter(SNAME("layer_heightmap_scale"), heightmap_scale_values);
-	material->set_shader_parameter(SNAME("layer_height_min"), height_min_values);
-	material->set_shader_parameter(SNAME("layer_height_max"), height_max_values);
-	material->set_shader_parameter(SNAME("layer_pom_enabled"), pom_enabled_values);
-	material->set_shader_parameter(SNAME("layer_triplanar"), triplanar_values);
-	material->set_shader_parameter(SNAME("layer_triplanar_sharpness"), triplanar_sharpness_values);
-	material->set_shader_parameter(SNAME("layer_displacement"), displacement_values);
-	material->set_shader_parameter(SNAME("layer_count"), layer_count);
+	_set_shader_parameter(SNAME("layer_uv_scales"), uv_scales);
+	_set_shader_parameter(SNAME("layer_albedo_colors"), albedo_colors);
+	_set_shader_parameter(SNAME("layer_roughness"), roughness_values);
+	_set_shader_parameter(SNAME("layer_specular"), specular_values);
+	_set_shader_parameter(SNAME("layer_ao_strength"), ao_strength_values);
+	_set_shader_parameter(SNAME("layer_normal_strength"), normal_strength_values);
+	_set_shader_parameter(SNAME("layer_heightmap_scale"), heightmap_scale_values);
+	_set_shader_parameter(SNAME("layer_height_min"), height_min_values);
+	_set_shader_parameter(SNAME("layer_height_max"), height_max_values);
+	_set_shader_parameter(SNAME("layer_pom_enabled"), pom_enabled_values);
+	_set_shader_parameter(SNAME("layer_triplanar"), triplanar_values);
+	_set_shader_parameter(SNAME("layer_triplanar_sharpness"), triplanar_sharpness_values);
+	_set_shader_parameter(SNAME("layer_displacement"), displacement_values);
+	_set_shader_parameter(SNAME("layer_count"), layer_count);
 
 	_update_micro_detail_params();
 	_update_draw_aabb();
+	_invalidate_virtual_texture_all();
+	_publish_blend_source();
+}
+
+Ref<Texture2D> Landscape3D::_get_layer_texture(int p_layer, LayerTexture p_which) const {
+	if (p_layer >= layers.size()) {
+		return Ref<Texture2D>();
+	}
+	const Ref<TerrainLayer> layer = layers[p_layer];
+	if (layer.is_null()) {
+		return Ref<Texture2D>();
+	}
+	switch (p_which) {
+		case LAYER_TEXTURE_ALBEDO:
+			return layer->get_albedo_texture();
+		case LAYER_TEXTURE_NORMAL:
+			return layer->get_normal_texture();
+		case LAYER_TEXTURE_ORM:
+			return layer->get_orm_texture();
+		case LAYER_TEXTURE_HEIGHT:
+			return layer->get_height_texture();
+		case LAYER_TEXTURE_MAX:
+			break;
+	}
+	return Ref<Texture2D>();
+}
+
+uint32_t Landscape3D::_get_changed_layer_textures() const {
+	const int array_layers = MAX(CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS), 1);
+	uint32_t changed = 0;
+	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
+		const Vector<Ref<Texture2D>> &sources = layer_texture_sources[which];
+		if (sources.size() != array_layers) {
+			changed |= 1u << which;
+			continue;
+		}
+		for (int i = 0; i < array_layers; i++) {
+			if (sources[i] != _get_layer_texture(i, LayerTexture(which))) {
+				changed |= 1u << which;
+				break;
+			}
+		}
+	}
+	return changed;
+}
+
+void Landscape3D::_queue_layer_textures(uint32_t p_which) {
+	if (p_which == 0) {
+		return;
+	}
+	layer_textures_dirty |= p_which;
+	if (!layer_textures_queued) {
+		// Picking a texture in the inspector, or reimporting one, changes it a few times in a row:
+		// the arrays are rebuilt once, at the end of the frame.
+		layer_textures_queued = true;
+		callable_mp(this, &Landscape3D::_flush_layer_textures).call_deferred();
+	}
+}
+
+void Landscape3D::_flush_layer_textures() {
+	layer_textures_queued = false;
+	const uint32_t which = layer_textures_dirty;
+	layer_textures_dirty = 0;
+	_rebuild_layer_textures(which);
+}
+
+void Landscape3D::_on_layer_texture_changed(ObjectID p_texture) {
+	// A texture a layer uses was reimported or edited: its contents are new, though it is the same
+	// texture. Whichever arrays use it are built again.
+	uint32_t which = 0;
+	for (int kind = 0; kind < LAYER_TEXTURE_MAX; kind++) {
+		for (const Ref<Texture2D> &texture : layer_texture_sources[kind]) {
+			if (texture.is_valid() && texture->get_instance_id() == p_texture) {
+				which |= 1u << kind;
+				break;
+			}
+		}
+	}
+	_queue_layer_textures(which);
+}
+
+void Landscape3D::_watch_layer_texture(const Ref<Texture2D> &p_texture, bool p_watch) {
+	if (p_texture.is_null()) {
+		return;
+	}
+	const Callable callback = callable_mp(this, &Landscape3D::_on_layer_texture_changed).bind(p_texture->get_instance_id());
+	const bool watched = p_texture->is_connected(CoreStringName(changed), callback);
+	if (p_watch && !watched) {
+		p_texture->connect(CoreStringName(changed), callback);
+	} else if (!p_watch && watched) {
+		p_texture->disconnect(CoreStringName(changed), callback);
+	}
+}
+
+void Landscape3D::_rebuild_layer_textures(uint32_t p_which) {
+	_ensure_material();
+	if (p_which == 0) {
+		return;
+	}
+
+	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
+	const int array_layers = MAX(layer_count, 1);
+
+	struct ArraySpec {
+		Color default_color;
+		Image::Format format;
+		// Mipmaps of a normal map are renormalized: averaging two normals shortens the result, and
+		// a normal map whose vectors are not unit length reads as a flattened, washed-out surface
+		// at distance.
+		bool renormalize;
+		StringName param;
+	};
+	// The height array is single-channel, unlike the other three: POM and displacement only ever
+	// read one value per sample. White = a height of 1.0 = zero parallax depth (see pom_offset()),
+	// so a layer with no height_texture is unaffected by POM even while it is enabled on the node.
+	const ArraySpec specs[LAYER_TEXTURE_MAX] = {
+		{ Color(0.6, 0.6, 0.6, 1.0), Image::FORMAT_RGBA8, false, SNAME("albedo_array") },
+		{ Color(0.5, 0.5, 1.0, 1.0), Image::FORMAT_RGBA8, true, SNAME("normal_array") },
+		{ Color(1.0, 0.5, 0.0, 1.0), Image::FORMAT_RGBA8, false, SNAME("orm_array") },
+		{ Color(1, 1, 1), Image::FORMAT_R8, false, SNAME("height_array") },
+	};
+	Ref<Texture2DArray> *arrays[LAYER_TEXTURE_MAX] = { &albedo_array, &normal_array, &orm_array, &height_array };
+
+	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
+		if (!(p_which & (1u << which))) {
+			continue;
+		}
+		// Only the arrays asked for are read back and resampled: that is what takes long, a whole
+		// set of textures with mipmaps for each.
+		Vector<Ref<Texture2D>> &sources = layer_texture_sources[which];
+		for (const Ref<Texture2D> &texture : sources) {
+			_watch_layer_texture(texture, false);
+		}
+		sources.resize(array_layers);
+		Vector<Ref<Image>> images;
+		images.resize(array_layers);
+		for (int i = 0; i < array_layers; i++) {
+			const Ref<Texture2D> texture = _get_layer_texture(i, LayerTexture(which));
+			sources.write[i] = texture;
+			images.write[i] = texture.is_valid() ? texture->get_image() : Ref<Image>();
+		}
+		*arrays[which] = build_layer_texture_array(images, specs[which].default_color, specs[which].format, specs[which].renormalize, layer_texture_size_limit);
+		_set_shader_parameter(specs[which].param, *arrays[which]);
+	}
+	// Kept up to date with their contents too, whichever array they are in.
+	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
+		for (const Ref<Texture2D> &texture : layer_texture_sources[which]) {
+			_watch_layer_texture(texture, true);
+		}
+	}
+
+	if (p_which & (1u << LAYER_TEXTURE_HEIGHT)) {
+		_set_shader_parameter(SNAME("height_texture_size"), float(MAX(height_array->get_width(), 1)));
+	}
+	_invalidate_virtual_texture_all();
+	_publish_blend_source();
 }
 
 Vector2i Landscape3D::_get_block_grid_size() const {
@@ -2112,9 +2555,11 @@ void Landscape3D::_update_collision_regions(const Vector<Rect2i> &p_regions) {
 }
 
 void Landscape3D::_on_layers_changed() {
+	// A layer's color, roughness, UV scale and such only change uniforms; its textures are read back
+	// and resampled into the arrays only when they are not the ones the arrays were built from.
 	const float previous_bound = displacement_bound;
-	_rebuild_layer_textures();
-	_rebuild_weight_texture();
+	_update_layer_params();
+	_queue_layer_textures(_get_changed_layer_textures());
 	if (displacement_bound != previous_bound && terrain_data.is_valid() && occluder_enabled && micro_detail_distance > 0.0f) {
 		// The occluders sit below the deepest displacement.
 		_rebuild_all_occluders();
@@ -2192,7 +2637,15 @@ void Landscape3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 		}
 	}
 
-	_on_layers_changed();
+	// A new set of layers: everything is built right away, as the scene that holds them is loaded.
+	const float previous_bound = displacement_bound;
+	_update_layer_params();
+	_rebuild_layer_textures(_get_changed_layer_textures());
+	_rebuild_weight_texture();
+	if (displacement_bound != previous_bound && terrain_data.is_valid() && occluder_enabled && micro_detail_distance > 0.0f) {
+		_rebuild_all_occluders();
+	}
+	lod_dirty = true;
 	update_configuration_warnings();
 }
 
@@ -2289,6 +2742,74 @@ Landscape3D::DebugView Landscape3D::get_debug_view() const {
 	return debug_view;
 }
 
+void Landscape3D::set_virtual_texture_enabled(bool p_enabled) {
+	if (virtual_texture_enabled == p_enabled) {
+		return;
+	}
+	virtual_texture_enabled = p_enabled;
+	_update_virtual_texture();
+}
+
+bool Landscape3D::is_virtual_texture_enabled() const {
+	return virtual_texture_enabled;
+}
+
+void Landscape3D::set_virtual_texture_texel_size(float p_size) {
+	p_size = MAX(p_size, 0.001f);
+	if (virtual_texture_texel_size == p_size) {
+		return;
+	}
+	virtual_texture_texel_size = p_size;
+	_update_virtual_texture();
+}
+
+float Landscape3D::get_virtual_texture_texel_size() const {
+	return virtual_texture_texel_size;
+}
+
+void Landscape3D::set_virtual_texture_near_distance(float p_distance) {
+	virtual_texture_near_distance = MAX(p_distance, 0.0f);
+	if (material.is_valid() && virtual_texture.is_valid()) {
+		material->set_shader_parameter(SNAME("rvt_near_distance"), virtual_texture_near_distance);
+	}
+	_publish_blend_source();
+}
+
+float Landscape3D::get_virtual_texture_near_distance() const {
+	return virtual_texture_near_distance;
+}
+
+void Landscape3D::set_virtual_texture_layers(uint32_t p_layers) {
+	// The terrain itself draws into the texture through these: with none, nothing would.
+	p_layers = p_layers ? p_layers : 1u;
+	if (virtual_texture_layers == p_layers) {
+		return;
+	}
+	virtual_texture_layers = p_layers;
+	_update_writer_instance();
+	_update_virtual_texture_volume();
+	_publish_blend_source();
+}
+
+uint32_t Landscape3D::get_virtual_texture_layers() const {
+	return virtual_texture_layers;
+}
+
+RID Landscape3D::get_virtual_texture() const {
+	return virtual_texture;
+}
+
+Transform3D Landscape3D::get_virtual_texture_volume() const {
+	if (virtual_texture.is_null() || terrain_data.is_null() || quadtree.is_empty()) {
+		return Transform3D();
+	}
+	return _get_safe_global_transform() * _get_virtual_texture_local_volume();
+}
+
+int Landscape3D::get_virtual_texture_size() const {
+	return virtual_texture_size;
+}
+
 void Landscape3D::set_occluder_enabled(bool p_enabled) {
 	if (occluder_enabled == p_enabled) {
 		return;
@@ -2364,7 +2885,7 @@ uint32_t Landscape3D::get_collision_mask() const {
 
 void Landscape3D::set_layer_texture_size_limit(int p_size) {
 	layer_texture_size_limit = CLAMP(p_size, 16, 8192);
-	_rebuild_layer_textures();
+	_rebuild_layer_textures((1u << LAYER_TEXTURE_MAX) - 1);
 }
 
 int Landscape3D::get_layer_texture_size_limit() const {
@@ -2881,9 +3402,11 @@ Landscape3D::Landscape3D() {
 }
 
 Landscape3D::~Landscape3D() {
+	BlendLandscape3D::remove_landscape_source(get_instance_id());
 	_disconnect_frame_hook();
 	_clear_occluders();
 	_free_draw_instances();
+	_free_virtual_texture();
 	if (terrain_data.is_valid()) {
 		terrain_data->disconnect_changed(callable_mp(this, &Landscape3D::_on_terrain_data_changed));
 	}

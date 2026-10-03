@@ -2259,6 +2259,8 @@ void RenderingServer::_bind_methods() {
 	BIND_CONSTANT(RSE::CANVAS_LAYER_MIN);
 	BIND_CONSTANT(RSE::CANVAS_LAYER_MAX);
 	BIND_CONSTANT(RSE::MAX_GLOW_LEVELS);
+	BIND_CONSTANT(RSE::VIRTUAL_TEXTURE_PAGE_SIZE);
+	BIND_CONSTANT(RSE::VIRTUAL_TEXTURE_PAGE_BORDER);
 	BIND_CONSTANT(RSE::MAX_CURSORS);
 	BIND_CONSTANT(RSE::MAX_2D_DIRECTIONAL_LIGHTS);
 	BIND_CONSTANT(RSE::MAX_MESH_SURFACES);
@@ -2303,6 +2305,13 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("texture_get_rd_texture", "texture", "srgb"), &RenderingServer::texture_get_rd_texture, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("texture_get_native_handle", "texture", "srgb"), &RenderingServer::texture_get_native_handle, DEFVAL(false));
 
+	ClassDB::bind_method(D_METHOD("texture_virtual_create", "width", "height", "type", "fallback"), &RenderingServer::texture_virtual_create);
+	ClassDB::bind_method(D_METHOD("texture_virtual_set_page_request_callback", "texture", "callback"), &RenderingServer::texture_virtual_set_page_request_callback);
+	ClassDB::bind_method(D_METHOD("texture_virtual_update_page", "texture", "mipmap", "x", "y", "image"), &RenderingServer::texture_virtual_update_page);
+	ClassDB::bind_method(D_METHOD("texture_virtual_set_runtime_volume", "texture", "scenario", "volume", "layers"), &RenderingServer::texture_virtual_set_runtime_volume);
+	ClassDB::bind_method(D_METHOD("texture_virtual_invalidate", "texture", "uv_rect"), &RenderingServer::texture_virtual_invalidate);
+	ClassDB::bind_method(D_METHOD("is_virtual_texturing_supported"), &RenderingServer::is_virtual_texturing_supported);
+
 	BIND_ENUM_CONSTANT(RSE::TEXTURE_TYPE_2D);
 	BIND_ENUM_CONSTANT(RSE::TEXTURE_TYPE_LAYERED);
 	BIND_ENUM_CONSTANT(RSE::TEXTURE_TYPE_3D);
@@ -2322,6 +2331,9 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::TEXTURE_DRAWABLE_FORMAT_RGBA8_SRGB);
 	BIND_ENUM_CONSTANT(RSE::TEXTURE_DRAWABLE_FORMAT_RGBAH);
 	BIND_ENUM_CONSTANT(RSE::TEXTURE_DRAWABLE_FORMAT_RGBAF);
+
+	BIND_ENUM_CONSTANT(RSE::VIRTUAL_TEXTURE_STREAMED);
+	BIND_ENUM_CONSTANT(RSE::VIRTUAL_TEXTURE_RUNTIME);
 
 	/* SHADER */
 
@@ -3254,6 +3266,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("instance_set_surface_override_material", "instance", "surface", "material"), &RenderingServer::instance_set_surface_override_material);
 	ClassDB::bind_method(D_METHOD("instance_set_visible", "instance", "visible"), &RenderingServer::instance_set_visible);
 	ClassDB::bind_method(D_METHOD("instance_geometry_set_transparency", "instance", "transparency"), &RenderingServer::instance_geometry_set_transparency);
+	ClassDB::bind_method(D_METHOD("instance_geometry_set_virtual_texture_layers", "instance", "layers", "draw_in_main_pass"), &RenderingServer::instance_geometry_set_virtual_texture_layers);
 
 	ClassDB::bind_method(D_METHOD("instance_teleport", "instance"), &RenderingServer::instance_teleport);
 
@@ -3850,6 +3863,12 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/textures/light_projectors/filter", PROPERTY_HINT_ENUM, "Nearest (Fast),Linear (Fast),Nearest Mipmap (Fast),Linear Mipmap (Fast),Nearest Mipmap Anisotropic (Average),Linear Mipmap Anisotropic (Average)"), RSE::LIGHT_PROJECTOR_FILTER_LINEAR_MIPMAPS);
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/occlusion_culling/occlusion_rays_per_thread", PROPERTY_HINT_RANGE, "1,2048,1,or_greater"), 512);
+
+	GLOBAL_DEF_RST("rendering/virtual_texturing/enabled", true);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/virtual_texturing/streamed_cache_size", PROPERTY_HINT_RANGE, "8,128,1"), 24);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/virtual_texturing/runtime_cache_size", PROPERTY_HINT_RANGE, "8,128,1"), 20);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/virtual_texturing/max_page_uploads_per_frame", PROPERTY_HINT_RANGE, "1,256,1"), 32);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/virtual_texturing/max_runtime_pages_per_frame", PROPERTY_HINT_RANGE, "1,64,1"), 16);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/glow/upscale_mode", PROPERTY_HINT_ENUM, "Linear (Fast),Bicubic (Slow)"), 1);
 	GLOBAL_DEF("rendering/environment/glow/upscale_mode.mobile", 0);

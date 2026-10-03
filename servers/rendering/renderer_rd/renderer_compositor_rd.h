@@ -43,6 +43,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/particles_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/utilities.h"
+#include "servers/rendering/renderer_rd/storage_rd/virtual_texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
 class RendererCompositorRD : public RendererCompositor {
@@ -59,6 +60,7 @@ protected:
 	RendererRD::MeshStorage *mesh_storage = nullptr;
 	RendererRD::ParticlesStorage *particles_storage = nullptr;
 	RendererRD::TextureStorage *texture_storage = nullptr;
+	RendererRD::VirtualTextureStorage *virtual_texture_storage = nullptr;
 	RendererRD::Utilities *utilities = nullptr;
 
 	enum BlitMode {
