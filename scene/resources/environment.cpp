@@ -422,6 +422,83 @@ void Environment::_update_xegtao() {
 			xegtao_ao_channel_affect);
 }
 
+// Motion blur
+
+void Environment::set_motion_blur_enabled(bool p_enabled) {
+	motion_blur_enabled = p_enabled;
+	_update_motion_blur();
+}
+
+bool Environment::is_motion_blur_enabled() const {
+	return motion_blur_enabled;
+}
+
+void Environment::set_motion_blur_intensity(float p_intensity) {
+	motion_blur_intensity = MAX(p_intensity, 0.0f);
+	_update_motion_blur();
+}
+
+float Environment::get_motion_blur_intensity() const {
+	return motion_blur_intensity;
+}
+
+void Environment::set_motion_blur_reference_fps(float p_fps) {
+	motion_blur_reference_fps = MAX(p_fps, 0.0f);
+	_update_motion_blur();
+}
+
+float Environment::get_motion_blur_reference_fps() const {
+	return motion_blur_reference_fps;
+}
+
+void Environment::set_motion_blur_max_radius(float p_max_radius) {
+	motion_blur_max_radius = CLAMP(p_max_radius, 0.0f, 1.0f);
+	_update_motion_blur();
+}
+
+float Environment::get_motion_blur_max_radius() const {
+	return motion_blur_max_radius;
+}
+
+void Environment::set_motion_blur_camera_rotation_scale(float p_scale) {
+	motion_blur_camera_rotation_scale = p_scale;
+	_update_motion_blur();
+}
+
+float Environment::get_motion_blur_camera_rotation_scale() const {
+	return motion_blur_camera_rotation_scale;
+}
+
+void Environment::set_motion_blur_camera_movement_scale(float p_scale) {
+	motion_blur_camera_movement_scale = p_scale;
+	_update_motion_blur();
+}
+
+float Environment::get_motion_blur_camera_movement_scale() const {
+	return motion_blur_camera_movement_scale;
+}
+
+void Environment::set_motion_blur_object_scale(float p_scale) {
+	motion_blur_object_scale = p_scale;
+	_update_motion_blur();
+}
+
+float Environment::get_motion_blur_object_scale() const {
+	return motion_blur_object_scale;
+}
+
+void Environment::_update_motion_blur() {
+	RS::get_singleton()->environment_set_motion_blur(
+			environment,
+			motion_blur_enabled,
+			motion_blur_intensity,
+			motion_blur_reference_fps,
+			motion_blur_max_radius,
+			motion_blur_camera_rotation_scale,
+			motion_blur_camera_movement_scale,
+			motion_blur_object_scale);
+}
+
 // Atmosphere
 
 void Environment::set_atmosphere_enabled(bool p_enabled) {
@@ -1445,6 +1522,12 @@ void Environment::_validate_property(PropertyInfo &p_property) const {
 		return;
 	}
 
+	// Motion blur needs the motion vectors only Forward+ renders.
+	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_property.name.begins_with("motion_blur_")) {
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+		return;
+	}
+
 	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus") {
 		// Hide XeGTAO properties that only work in Forward+.
 		if (p_property.name.begins_with("xegtao_")) {
@@ -1927,6 +2010,32 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "volumetric_fog_temporal_reprojection_enabled"), "set_volumetric_fog_temporal_reprojection_enabled", "is_volumetric_fog_temporal_reprojection_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "volumetric_fog_temporal_reprojection_amount", PROPERTY_HINT_RANGE, "0.5,0.99,0.001"), "set_volumetric_fog_temporal_reprojection_amount", "get_volumetric_fog_temporal_reprojection_amount");
 
+	// Motion blur
+
+	ClassDB::bind_method(D_METHOD("set_motion_blur_enabled", "enabled"), &Environment::set_motion_blur_enabled);
+	ClassDB::bind_method(D_METHOD("is_motion_blur_enabled"), &Environment::is_motion_blur_enabled);
+	ClassDB::bind_method(D_METHOD("set_motion_blur_intensity", "intensity"), &Environment::set_motion_blur_intensity);
+	ClassDB::bind_method(D_METHOD("get_motion_blur_intensity"), &Environment::get_motion_blur_intensity);
+	ClassDB::bind_method(D_METHOD("set_motion_blur_reference_fps", "fps"), &Environment::set_motion_blur_reference_fps);
+	ClassDB::bind_method(D_METHOD("get_motion_blur_reference_fps"), &Environment::get_motion_blur_reference_fps);
+	ClassDB::bind_method(D_METHOD("set_motion_blur_max_radius", "max_radius"), &Environment::set_motion_blur_max_radius);
+	ClassDB::bind_method(D_METHOD("get_motion_blur_max_radius"), &Environment::get_motion_blur_max_radius);
+	ClassDB::bind_method(D_METHOD("set_motion_blur_camera_rotation_scale", "scale"), &Environment::set_motion_blur_camera_rotation_scale);
+	ClassDB::bind_method(D_METHOD("get_motion_blur_camera_rotation_scale"), &Environment::get_motion_blur_camera_rotation_scale);
+	ClassDB::bind_method(D_METHOD("set_motion_blur_camera_movement_scale", "scale"), &Environment::set_motion_blur_camera_movement_scale);
+	ClassDB::bind_method(D_METHOD("get_motion_blur_camera_movement_scale"), &Environment::get_motion_blur_camera_movement_scale);
+	ClassDB::bind_method(D_METHOD("set_motion_blur_object_scale", "scale"), &Environment::set_motion_blur_object_scale);
+	ClassDB::bind_method(D_METHOD("get_motion_blur_object_scale"), &Environment::get_motion_blur_object_scale);
+
+	ADD_GROUP("Motion Blur", "motion_blur_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "motion_blur_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_motion_blur_enabled", "is_motion_blur_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "motion_blur_intensity", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater"), "set_motion_blur_intensity", "get_motion_blur_intensity");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "motion_blur_reference_fps", PROPERTY_HINT_RANGE, "0,240,1,or_greater,suffix:FPS"), "set_motion_blur_reference_fps", "get_motion_blur_reference_fps");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "motion_blur_max_radius", PROPERTY_HINT_RANGE, "0,0.25,0.001"), "set_motion_blur_max_radius", "get_motion_blur_max_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "motion_blur_camera_rotation_scale", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater"), "set_motion_blur_camera_rotation_scale", "get_motion_blur_camera_rotation_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "motion_blur_camera_movement_scale", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater"), "set_motion_blur_camera_movement_scale", "get_motion_blur_camera_movement_scale");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "motion_blur_object_scale", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater"), "set_motion_blur_object_scale", "get_motion_blur_object_scale");
+
 	// Adjustment
 
 	ClassDB::bind_method(D_METHOD("set_adjustment_enabled", "enabled"), &Environment::set_adjustment_enabled);
@@ -2009,6 +2118,7 @@ Environment::Environment() {
 	_update_tonemap();
 	_update_ssr();
 	_update_xegtao();
+	_update_motion_blur();
 	_update_atmosphere();
 	_update_sscs();
 	_update_ssil();

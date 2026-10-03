@@ -702,6 +702,10 @@ public:
 
 	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) = 0;
 
+	virtual void environment_set_motion_blur(RID p_env, bool p_enable, float p_intensity, float p_reference_fps, float p_max_radius, float p_camera_rotation_scale, float p_camera_movement_scale, float p_object_scale) = 0;
+
+	virtual void environment_set_motion_blur_quality(RSE::EnvironmentMotionBlurQuality p_quality) = 0;
+
 	virtual void environment_set_atmosphere(RID p_env, bool p_enable, float p_planet_radius, float p_height, const Color &p_ground_albedo, float p_multiscattering_factor, const Color &p_sky_luminance_factor, float p_aerial_perspective_distance_scale, float p_aerial_perspective_start_depth, bool p_affect_directional_lights) = 0;
 	virtual void environment_set_atmosphere_rayleigh(RID p_env, const Color &p_scattering, float p_scattering_scale, float p_exponential_distribution) = 0;
 	virtual void environment_set_atmosphere_mie(RID p_env, const Color &p_scattering, float p_scattering_scale, const Color &p_absorption, float p_absorption_scale, float p_anisotropy, float p_exponential_distribution) = 0;
@@ -1183,6 +1187,7 @@ VARIANT_ENUM_CAST_EXT(RSE::EnvironmentFogMode, RenderingServer::EnvironmentFogMo
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentToneMapper, RenderingServer::EnvironmentToneMapper);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSSRRoughnessQuality, RenderingServer::EnvironmentSSRRoughnessQuality);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentXeGTAOQuality, RenderingServer::EnvironmentXeGTAOQuality);
+VARIANT_ENUM_CAST_EXT(RSE::EnvironmentMotionBlurQuality, RenderingServer::EnvironmentMotionBlurQuality);
 VARIANT_ENUM_CAST_EXT(RSE::ScreenSpaceContactShadowsLength, RenderingServer::ScreenSpaceContactShadowsLength);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSSILQuality, RenderingServer::EnvironmentSSILQuality);
 VARIANT_ENUM_CAST_EXT(RSE::EnvironmentSDFGIFramesToConverge, RenderingServer::EnvironmentSDFGIFramesToConverge);

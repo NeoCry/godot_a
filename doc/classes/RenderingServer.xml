@@ -1458,6 +1458,27 @@
 				Configures glow for the specified environment RID. See [code]glow_*[/code] properties in [Environment] for more information.
 			</description>
 		</method>
+		<method name="environment_set_motion_blur">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="intensity" type="float" />
+			<param index="3" name="reference_fps" type="float" />
+			<param index="4" name="max_radius" type="float" />
+			<param index="5" name="camera_rotation_scale" type="float" />
+			<param index="6" name="camera_movement_scale" type="float" />
+			<param index="7" name="object_scale" type="float" />
+			<description>
+				Sets the variables to be used with the motion blur post-process effect. See [Environment] for more details.
+			</description>
+		</method>
+		<method name="environment_set_motion_blur_quality">
+			<return type="void" />
+			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentMotionBlurQuality" />
+			<description>
+				Sets the quality of the motion blur effect. See also [member ProjectSettings.rendering/environment/motion_blur/quality].
+			</description>
+		</method>
 		<method name="environment_set_sdfgi">
 			<return type="void" />
 			<param index="0" name="env" type="RID" />
@@ -6063,6 +6084,21 @@
 		</constant>
 		<constant name="ENV_XEGTAO_QUALITY_MAX" value="4" enum="EnvironmentXeGTAOQuality">
 			Represents the size of the [enum EnvironmentXeGTAOQuality] enum.
+		</constant>
+		<constant name="ENV_MOTION_BLUR_QUALITY_LOW" value="0" enum="EnvironmentMotionBlurQuality">
+			Lowest quality of motion blur: 9 samples per moving pixel.
+		</constant>
+		<constant name="ENV_MOTION_BLUR_QUALITY_MEDIUM" value="1" enum="EnvironmentMotionBlurQuality">
+			Medium quality of motion blur: 15 samples per moving pixel.
+		</constant>
+		<constant name="ENV_MOTION_BLUR_QUALITY_HIGH" value="2" enum="EnvironmentMotionBlurQuality">
+			High quality of motion blur: 25 samples per moving pixel.
+		</constant>
+		<constant name="ENV_MOTION_BLUR_QUALITY_ULTRA" value="3" enum="EnvironmentMotionBlurQuality">
+			Highest quality of motion blur: 35 samples per moving pixel.
+		</constant>
+		<constant name="ENV_MOTION_BLUR_QUALITY_MAX" value="4" enum="EnvironmentMotionBlurQuality">
+			Represents the size of the [enum EnvironmentMotionBlurQuality] enum.
 		</constant>
 		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_SHORT" value="0" enum="ScreenSpaceContactShadowsLength">
 			Cast shorter screen-space shadow rays. Fastest option, but the effect will not be able to reach as far.

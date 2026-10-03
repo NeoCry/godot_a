@@ -1407,6 +1407,19 @@ public:
 
 	PASS5(environment_set_xegtao_quality, RSE::EnvironmentXeGTAOQuality, int, bool, float, float)
 
+	// Motion blur
+	PASS8(environment_set_motion_blur, RID, bool, float, float, float, float, float, float)
+
+	PASS1RC(bool, environment_get_motion_blur_enabled, RID)
+	PASS1RC(float, environment_get_motion_blur_intensity, RID)
+	PASS1RC(float, environment_get_motion_blur_reference_fps, RID)
+	PASS1RC(float, environment_get_motion_blur_max_radius, RID)
+	PASS1RC(float, environment_get_motion_blur_camera_rotation_scale, RID)
+	PASS1RC(float, environment_get_motion_blur_camera_movement_scale, RID)
+	PASS1RC(float, environment_get_motion_blur_object_scale, RID)
+
+	PASS1(environment_set_motion_blur_quality, RSE::EnvironmentMotionBlurQuality)
+
 	// Atmosphere
 	PASS10(environment_set_atmosphere, RID, bool, float, float, const Color &, float, const Color &, float, float, bool)
 	PASS4(environment_set_atmosphere_rayleigh, RID, const Color &, float, float)

@@ -2033,6 +2033,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	bool using_upscaling = scale_type != SCALE_NONE;
 
+	// Motion blur blurs the color buffer post processing works on, which a temporal upscaler outputs at the target size.
+	bool using_motion_blur = rb_data.is_valid() && _motion_blur_is_active(p_render_data, using_upscaling ? rb->get_target_size() : rb->get_internal_size());
+
 	// check if we need motion vectors
 	bool motion_vectors_required;
 	if (using_debug_mvs) {
@@ -2042,6 +2045,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	} else if (!is_reflection_probe && using_taa) {
 		motion_vectors_required = true;
 	} else if (!is_reflection_probe && using_upscaling) {
+		motion_vectors_required = true;
+	} else if (using_motion_blur) {
 		motion_vectors_required = true;
 	} else {
 		motion_vectors_required = false;
@@ -2695,7 +2700,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	RD::get_singleton()->draw_command_begin_label("Resolve");
 
 	if (rb_data.is_valid() && use_msaa) {
-		bool resolve_velocity_buffer = (using_taa || using_upscaling || ce_needs_motion_vectors) && rb->has_velocity_buffer(true);
+		bool resolve_velocity_buffer = (using_taa || using_upscaling || ce_needs_motion_vectors || using_motion_blur) && rb->has_velocity_buffer(true);
 		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 			RD::get_singleton()->texture_resolve_multisample(rb->get_color_msaa(v), rb->get_internal_texture(v));
 			resolve_effects->resolve_depth(rb->get_depth_msaa(v), rb->get_depth_texture(v), rb->get_internal_size(), texture_multisamples[msaa]);
@@ -5721,6 +5726,7 @@ RenderForwardClustered::RenderForwardClustered() {
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
 	xegtao = memnew(RendererRD::XeGTAO);
+	motion_blur = memnew(RendererRD::MotionBlur);
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
@@ -5738,6 +5744,11 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (xegtao != nullptr) {
 		memdelete(xegtao);
 		xegtao = nullptr;
+	}
+
+	if (motion_blur != nullptr) {
+		memdelete(motion_blur);
+		motion_blur = nullptr;
 	}
 
 	if (taa != nullptr) {

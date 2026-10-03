@@ -6,6 +6,7 @@
 	<description>
 		Resource for environment nodes (like [WorldEnvironment]) that define multiple environment operations (such as background [Sky] or [Color], ambient light, fog, depth-of-field...). These parameters affect the final render of the scene. The order of these operations is:
 		- Depth of Field Blur
+		- Motion Blur
 		- Auto Exposure
 		- Glow
 		- Tonemap
@@ -267,6 +268,32 @@
 		<member name="glow_strength" type="float" setter="set_glow_strength" getter="get_glow_strength" default="1.0">
 			The strength that is used when blurring across the screen to generate the glow effect. This affects the distance and intensity of the blur. When using the Mobile rendering method, this should be increased to compensate for the lower dynamic range.
 			[b]Note:[/b] [member glow_strength] has no effect when using the Compatibility rendering method, due to this rendering method using a simpler glow implementation optimized for low-end devices.
+		</member>
+		<member name="motion_blur_camera_movement_scale" type="float" setter="set_motion_blur_camera_movement_scale" getter="get_motion_blur_camera_movement_scale" default="1.0">
+			Multiplier for the blur caused by the camera moving through the scene.
+		</member>
+		<member name="motion_blur_camera_rotation_scale" type="float" setter="set_motion_blur_camera_rotation_scale" getter="get_motion_blur_camera_rotation_scale" default="1.0">
+			Multiplier for the blur caused by the camera turning, and by changes to its projection such as zooming. Set it to [code]0.0[/code] to keep the image sharp while looking around, while still blurring moving objects.
+		</member>
+		<member name="motion_blur_enabled" type="bool" setter="set_motion_blur_enabled" getter="is_motion_blur_enabled" default="false">
+			If [code]true[/code], motion blur is enabled. Whatever moves across the screen, because it moves or because the camera does, is blurred along its motion, as it would be over a camera's exposure.
+			Godot implements the reconstruction filter of Guertin, McGuire and Nowrouzezahrai's "A Fast and Stable Feature-Aware Motion Blur Filter" (2014). The screen is split into tiles as large as [member motion_blur_max_radius], and the dominant motion around each tile is found. Each moving pixel then gathers samples along that motion and along its own, and tells apart what is in front of it from what is behind it, so that moving objects blur over the background and the background shows through their blurred edges, without either bleeding into the other. The number of samples is set by [member ProjectSettings.rendering/environment/motion_blur/quality].
+			Motion blur is applied to the linear HDR image, after depth of field and before glow, auto-exposure and tonemapping.
+			[b]Note:[/b] Only supported in the Forward+ rendering method. It needs motion vectors, which Forward+ renders whenever motion blur is enabled, even without TAA or a temporal upscaler.
+		</member>
+		<member name="motion_blur_intensity" type="float" setter="set_motion_blur_intensity" getter="get_motion_blur_intensity" default="0.5">
+			The fraction of a frame during which the virtual camera's shutter is open. Whatever moves is blurred over the distance it covers in that time: [code]0.5[/code] matches the 180° shutter of film cameras, [code]1.0[/code] blurs over the whole distance covered in a frame, and higher values exaggerate the effect. The frame is one at [member motion_blur_reference_fps], so with the defaults the shutter stays open for 1/60 of a second whatever the actual frame rate is.
+		</member>
+		<member name="motion_blur_max_radius" type="float" setter="set_motion_blur_max_radius" getter="get_motion_blur_max_radius" default="0.05">
+			How far, at most, the blur extends to either side of a pixel, as a fraction of the viewport's height. Faster motion is blurred as if it were this fast. It is also the size of the tiles the effect works on, so raising it doesn't make the effect slower in itself, but the same number of samples is then spread over longer blurs, which can make them look grainy (see [member ProjectSettings.rendering/environment/motion_blur/quality]).
+		</member>
+		<member name="motion_blur_object_scale" type="float" setter="set_motion_blur_object_scale" getter="get_motion_blur_object_scale" default="1.0">
+			Multiplier for the blur caused by objects moving on their own (including skinned and particle motion), as opposed to the camera's motion. Set it to [code]0.0[/code] to only blur the camera's motion.
+		</member>
+		<member name="motion_blur_reference_fps" type="float" setter="set_motion_blur_reference_fps" getter="get_motion_blur_reference_fps" default="30.0">
+			The frame rate [member motion_blur_intensity] refers to, which makes the length of the blur independent of the actual frame rate: the blur is as long as it would be at this frame rate. Lower values give longer blurs.
+			At [code]0.0[/code], the actual frame rate is used instead, as a real camera would: the blur is then longer at low frame rates, and gets very short at high ones (at 144 FPS, it is a fifth as long as at 30 FPS), where it can become hard to notice.
+			The frame rate is measured in game time, so [member Engine.time_scale] and a fixed frame rate (such as Movie Maker mode's) are taken into account.
 		</member>
 		<member name="reflected_light_source" type="int" setter="set_reflection_source" getter="get_reflection_source" enum="Environment.ReflectionSource" default="0">
 			The reflected (specular) light source.
