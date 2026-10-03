@@ -226,6 +226,7 @@ const char *ShaderLanguage::token_names[TK_MAX] = {
 	"HINT_BLIT_SOURCE1",
 	"HINT_BLIT_SOURCE2",
 	"HINT_BLIT_SOURCE3",
+	"HINT_VIRTUAL_TEXTURE",
 	"FILTER_NEAREST",
 	"FILTER_LINEAR",
 	"FILTER_NEAREST_MIPMAP",
@@ -399,6 +400,7 @@ const ShaderLanguage::KeyWord ShaderLanguage::keyword_list[] = {
 	{ TK_HINT_SCREEN_TEXTURE, "hint_screen_texture", CF_UNSPECIFIED, {}, {} },
 	{ TK_HINT_NORMAL_ROUGHNESS_TEXTURE, "hint_normal_roughness_texture", CF_UNSPECIFIED, {}, {} },
 	{ TK_HINT_DEPTH_TEXTURE, "hint_depth_texture", CF_UNSPECIFIED, {}, {} },
+	{ TK_HINT_VIRTUAL_TEXTURE, "hint_virtual_texture", CF_UNSPECIFIED, {}, {} },
 
 	{ TK_HINT_BLIT_SOURCE0, "hint_blit_source0", CF_UNSPECIFIED, {}, {} },
 	{ TK_HINT_BLIT_SOURCE1, "hint_blit_source1", CF_UNSPECIFIED, {}, {} },
@@ -3663,6 +3665,37 @@ bool ShaderLanguage::_validate_function_call(BlockNode *p_block, const FunctionI
 
 	int argcount = args.size();
 
+	if (argcount > 0 && p_func->arguments[1]->type == Node::NODE_TYPE_VARIABLE && is_sampler_type(p_func->arguments[1]->get_datatype())) {
+		static const char *unsupported[] = { "textureProj", "textureProjLod", "textureProjGrad", "texelFetch", "textureQueryLod", "textureQueryLevels", "textureGather", nullptr };
+		bool supported = true;
+		for (int i = 0; unsupported[i]; i++) {
+			if (name == unsupported[i]) {
+				supported = false;
+				break;
+			}
+		}
+		const StringName texture_name = static_cast<VariableNode *>(p_func->arguments[1])->name;
+		if (!supported && shader->uniforms.has(texture_name)) {
+			if (shader->uniforms[texture_name].virtual_texture) {
+				_set_error(vformat(RTR("Virtual textures can only be sampled with '%s', '%s' or '%s', and measured with '%s'."), "texture()", "textureLod()", "textureGrad()", "textureSize()"));
+				return false;
+			}
+		} else if (!supported) {
+			// A function's sampler argument: it can't take virtual textures from now on (see
+			// _propagate_function_call_sampler_uniform_settings()).
+			for (BlockNode *b = p_block; b; b = b->parent_block) {
+				if (b->parent_function) {
+					for (int i = 0; i < b->parent_function->arguments.size(); i++) {
+						if (b->parent_function->arguments[i].name == texture_name) {
+							b->parent_function->arguments.write[i].tex_virtual_unsupported = true;
+						}
+					}
+					break;
+				}
+			}
+		}
+	}
+
 	if (stages) {
 		// Stage functions can be used in custom functions as well, that why need to check them all.
 		for (const KeyValue<StringName, FunctionInfo> &E : *stages) {
@@ -5796,7 +5829,7 @@ ShaderLanguage::ShaderNode::Uniform::Hint ShaderLanguage::_sanitize_hint(ShaderN
 	return ShaderNode::Uniform::HINT_NONE;
 }
 
-bool ShaderLanguage::_propagate_function_call_sampler_uniform_settings(const StringName &p_name, int p_argument, TextureFilter p_filter, TextureRepeat p_repeat, ShaderNode::Uniform::Hint p_hint) {
+bool ShaderLanguage::_propagate_function_call_sampler_uniform_settings(const StringName &p_name, int p_argument, TextureFilter p_filter, TextureRepeat p_repeat, ShaderNode::Uniform::Hint p_hint, bool p_virtual, bool p_virtual_srgb) {
 	for (int i = 0; i < shader->vfunctions.size(); i++) {
 		if (shader->vfunctions[i].name == p_name) {
 			ERR_FAIL_INDEX_V(p_argument, shader->vfunctions[i].function->arguments.size(), false);
@@ -5804,10 +5837,16 @@ bool ShaderLanguage::_propagate_function_call_sampler_uniform_settings(const Str
 			if (arg->tex_builtin_check) {
 				_set_error(vformat(RTR("Sampler argument %d of function '%s' called more than once using both built-ins and uniform textures, this is not supported (use either one or the other)."), p_argument, String(p_name)));
 				return false;
+			} else if (p_virtual && arg->tex_virtual_unsupported) {
+				_set_error(vformat(RTR("Sampler argument %d of function '%s' is given a virtual texture, which can only be sampled with '%s', '%s' or '%s', and measured with '%s'."), p_argument, String(p_name), "texture()", "textureLod()", "textureGrad()", "textureSize()"));
+				return false;
 			} else if (arg->tex_argument_check) {
 				// Was checked, verify that filter, repeat, and hint are the same.
-				if (arg->tex_argument_filter == p_filter && arg->tex_argument_repeat == p_repeat && arg->tex_hint == _sanitize_hint(p_hint)) {
+				if (arg->tex_argument_filter == p_filter && arg->tex_argument_repeat == p_repeat && arg->tex_hint == _sanitize_hint(p_hint) && arg->tex_virtual == p_virtual && (!p_virtual || arg->tex_virtual_srgb == p_virtual_srgb)) {
 					return true;
+				} else if (arg->tex_virtual != p_virtual) {
+					_set_error(vformat(RTR("Sampler argument %d of function '%s' called more than once using both virtual textures and textures that are not, this is not supported (use either one or the other)."), p_argument, String(p_name)));
+					return false;
 				} else {
 					_set_error(vformat(RTR("Sampler argument %d of function '%s' called more than once using textures that differ in either filter, repeat, or texture hint setting."), p_argument, String(p_name)));
 					return false;
@@ -5817,9 +5856,11 @@ bool ShaderLanguage::_propagate_function_call_sampler_uniform_settings(const Str
 				arg->tex_argument_filter = p_filter;
 				arg->tex_argument_repeat = p_repeat;
 				arg->tex_hint = _sanitize_hint(p_hint);
+				arg->tex_virtual = p_virtual;
+				arg->tex_virtual_srgb = p_virtual && p_virtual_srgb;
 				for (KeyValue<StringName, HashSet<int>> &E : arg->tex_argument_connect) {
 					for (const int &F : E.value) {
-						if (!_propagate_function_call_sampler_uniform_settings(E.key, F, p_filter, p_repeat, p_hint)) {
+						if (!_propagate_function_call_sampler_uniform_settings(E.key, F, p_filter, p_repeat, p_hint, p_virtual, p_virtual_srgb)) {
 							return false;
 						}
 					}
@@ -6665,7 +6706,7 @@ ShaderLanguage::Node *ShaderLanguage::_parse_expression(BlockNode *p_block, cons
 											}
 
 											//propagate
-											if (!_propagate_function_call_sampler_uniform_settings(name, i, u->filter, u->repeat, u->hint)) {
+											if (!_propagate_function_call_sampler_uniform_settings(name, i, u->filter, u->repeat, u->hint, u->virtual_texture, u->use_color)) {
 												return nullptr;
 											}
 										} else if (p_function_info.built_ins.has(varname)) {
@@ -10204,6 +10245,25 @@ Error ShaderLanguage::_parse_shader(const HashMap<StringName, FunctionInfo> &p_f
 										return ERR_PARSE_ERROR;
 									}
 								} break;
+								case TK_HINT_VIRTUAL_TEXTURE: {
+									if (type != TYPE_SAMPLER2D && type != TYPE_SAMPLER2DARRAY) {
+										_set_error(vformat(RTR("'hint_virtual_texture' is only for '%s' and '%s' uniforms."), "sampler2D", "sampler2DArray"));
+										return ERR_PARSE_ERROR;
+									}
+									if (shader_type_identifier != StringName() && String(shader_type_identifier) != "spatial") {
+										_set_error(vformat(RTR("'hint_virtual_texture' is not supported in '%s' shaders."), shader_type_identifier));
+										return ERR_PARSE_ERROR;
+									}
+									if (uniform.array_size > 0 || uniform.scope != ShaderNode::Uniform::SCOPE_LOCAL) {
+										_set_error(RTR("'hint_virtual_texture' is not supported on uniform arrays, or on global or instance uniforms."));
+										return ERR_PARSE_ERROR;
+									}
+									if (uniform.virtual_texture) {
+										_set_error(vformat(RTR("Duplicated hint: '%s'."), "hint_virtual_texture"));
+										return ERR_PARSE_ERROR;
+									}
+									uniform.virtual_texture = true;
+								} break;
 								case TK_FILTER_NEAREST: {
 									new_filter = FILTER_NEAREST;
 								} break;
@@ -12246,6 +12306,7 @@ Error ShaderLanguage::complete(const String &p_code, const ShaderCompileInfo &p_
 						options.push_back("hint_screen_texture");
 						options.push_back("hint_normal_roughness_texture");
 						options.push_back("hint_depth_texture");
+						options.push_back("hint_virtual_texture");
 						options.push_back("hint_blit_source0");
 						options.push_back("hint_blit_source1");
 						options.push_back("hint_blit_source2");

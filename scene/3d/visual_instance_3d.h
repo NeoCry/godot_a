@@ -144,6 +144,9 @@ private:
 	GIMode gi_mode = GI_MODE_STATIC;
 	bool ignore_occlusion_culling = false;
 	bool ignore_screen_space_shadows = false;
+	// Runtime virtual textures (a Landscape3D's) this draws into, and whether cameras draw it too.
+	uint32_t virtual_texture_draw_layers = 0;
+	bool virtual_texture_draw_in_main_pass = true;
 
 	const StringName *_instance_uniform_get_remap(const StringName &p_name) const;
 
@@ -211,6 +214,12 @@ public:
 
 	void set_ignore_screen_space_shadows(bool p_enabled);
 	bool is_ignoring_screen_space_shadows() const;
+
+	void set_virtual_texture_draw_layers(uint32_t p_layers);
+	uint32_t get_virtual_texture_draw_layers() const;
+
+	void set_virtual_texture_draw_in_main_pass(bool p_enabled);
+	bool is_virtual_texture_draw_in_main_pass_enabled() const;
 
 	virtual Ref<TriangleMesh> generate_triangle_mesh() const;
 

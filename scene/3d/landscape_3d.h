@@ -95,6 +95,7 @@ public:
 		DEBUG_VIEW_DISABLED,
 		DEBUG_VIEW_LOD_LEVELS,
 		DEBUG_VIEW_WIREFRAME,
+		DEBUG_VIEW_VIRTUAL_TEXTURE,
 	};
 
 	// The terrain's occluders are built, and larger edits grouped (the
@@ -183,6 +184,25 @@ private:
 
 	DebugView debug_view = DEBUG_VIEW_DISABLED;
 
+	// Runtime virtual texturing (see virtual_texture_enabled): the blended
+	// layers are drawn, a page at a time and only where cameras look, into a
+	// runtime virtual texture, which the terrain then reads instead of
+	// blending every layer on every pixel every frame. The pages are drawn by
+	// writer_instance, a single quad over the whole terrain with
+	// writer_material (the same shader, told to draw rather than read), which
+	// only virtual texturing ever draws; anything else drawing into the same
+	// virtual_texture_layers (a road, a decal) is drawn into the pages along
+	// with it.
+	bool virtual_texture_enabled = true;
+	float virtual_texture_texel_size = 0.02;
+	float virtual_texture_near_distance = 0.0;
+	uint32_t virtual_texture_layers = 1;
+	RID virtual_texture;
+	int virtual_texture_size = 0;
+	Ref<ShaderMaterial> writer_material;
+	RID writer_instance;
+	static inline Ref<ArrayMesh> writer_mesh;
+
 	// Occlusion culling. Every block hands the renderer a decimated,
 	// deliberately pessimistic copy of its own surface as an occluder, so that
 	// hills hide whatever stands behind them (foliage especially) without
@@ -239,6 +259,19 @@ private:
 
 	static void _ensure_patch_mesh();
 	void _ensure_material();
+	// Sets a parameter on both the material the terrain is drawn with and the
+	// one it is drawn into its virtual texture with.
+	void _set_shader_parameter(const StringName &p_name, const Variant &p_value);
+
+	bool _is_virtual_texture_active() const;
+	void _update_virtual_texture();
+	void _free_virtual_texture();
+	Transform3D _get_virtual_texture_local_volume() const;
+	void _update_virtual_texture_volume();
+	void _update_writer_instance();
+	// Draws the pages of the virtual texture over these samples again.
+	void _invalidate_virtual_texture(const Rect2i &p_samples);
+	void _invalidate_virtual_texture_all();
 	void _ensure_draw_instances();
 	void _free_draw_instances();
 	void _update_draw_instances();
@@ -334,6 +367,27 @@ public:
 
 	void set_debug_view(DebugView p_view);
 	DebugView get_debug_view() const;
+
+	void set_virtual_texture_enabled(bool p_enabled);
+	bool is_virtual_texture_enabled() const;
+
+	void set_virtual_texture_texel_size(float p_size);
+	float get_virtual_texture_texel_size() const;
+
+	void set_virtual_texture_near_distance(float p_distance);
+	float get_virtual_texture_near_distance() const;
+
+	void set_virtual_texture_layers(uint32_t p_layers);
+	uint32_t get_virtual_texture_layers() const;
+
+	// The runtime virtual texture the terrain is drawn into, while there is
+	// one (see RenderingServer.texture_virtual_create()), and what it covers:
+	// the unit cube this maps into the world, X along the texture's U, Z along
+	// its V.
+	RID get_virtual_texture() const;
+	Transform3D get_virtual_texture_volume() const;
+	// How many texels the virtual texture has along each side, 0 if none.
+	int get_virtual_texture_size() const;
 
 	void set_occluder_enabled(bool p_enabled);
 	bool is_occluder_enabled() const;

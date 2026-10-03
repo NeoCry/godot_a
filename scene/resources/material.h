@@ -391,6 +391,10 @@ private:
 		// flag bitfield
 		uint32_t feature_mask;
 		uint32_t flags;
+		// The textures (by TextureParam) that are virtual textures, sampled with hint_virtual_texture.
+		uint32_t virtual_textures;
+		// Keeps the key free of padding, which hash() and operator==() would read.
+		uint32_t reserved;
 
 		MaterialKey() {
 			memset(this, 0, sizeof(MaterialKey));
@@ -459,8 +463,12 @@ private:
 			}
 		}
 
+		mk.virtual_textures = _get_virtual_texture_mask();
+
 		return mk;
 	}
+
+	uint32_t _get_virtual_texture_mask() const;
 
 	struct ShaderNames {
 		StringName albedo;

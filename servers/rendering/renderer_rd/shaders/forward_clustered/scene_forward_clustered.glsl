@@ -874,15 +874,21 @@ void main() {
 #define OUTPUT_IS_MULTIVIEW false
 #endif
 
+#define VT_STAGE_FRAGMENT
+#if defined(VIRTUAL_TEXTURE_USED) && !defined(MODE_RENDER_DEPTH)
+// Pixels that sample virtual textures report the pages they wanted (see virtual_texture_inc.glsl).
+#define VT_FEEDBACK
+#endif
+
 /* Include half precision types. */
 #include "../half_inc.glsl"
 #include "scene_forward_clustered_inc.glsl"
 
 /* Varyings */
 
-#if defined(TEXTURE_STREAMING) && !defined(MODE_RENDER_DEPTH) && (defined(UV_USED) || defined(STREAMING_UV_USED))
-// Since material feedback writes to a ssbo buffer, early fragment tests likely get disabled by the
-// driver so unless we want really bad performance, we need to force enable it again.
+#if (defined(TEXTURE_STREAMING) && !defined(MODE_RENDER_DEPTH) && (defined(UV_USED) || defined(STREAMING_UV_USED))) || defined(VT_FEEDBACK)
+// Since material and virtual texture feedback write to ssbo buffers, early fragment tests likely get
+// disabled by the driver so unless we want really bad performance, we need to force enable it again.
 //
 // To Early-Z, or Not To Early-Z
 //  - https://therealmjp.github.io/posts/to-earlyz-or-not-to-earlyz/#uavsstorage-texturesstorage-buffers
@@ -3192,13 +3198,20 @@ void fragment_shader(in SceneData scene_data) {
 	albedo_output_buffer.a = alpha;
 
 	normal_output_buffer.rgb = encode24(normal) * 0.5 + 0.5;
-	normal_output_buffer.a = 0.0;
+	// Runtime virtual textures keep specular here (see VirtualTextureStorage).
+	normal_output_buffer.a = specular;
 	depth_output_buffer.r = -vertex.z;
 
 	orm_output_buffer.r = ao;
 	orm_output_buffer.g = roughness;
 	orm_output_buffer.b = metallic;
 	orm_output_buffer.a = sss_strength;
+#ifdef ALPHA_USED
+	// Blended over what lies under it in a runtime virtual texture page, with the same alpha in every
+	// output (see VirtualTextureStorage::get_material_pass_blend_state()).
+	normal_output_buffer.a = float(alpha);
+	orm_output_buffer.a = float(alpha);
+#endif
 
 	emission_output_buffer.rgb = emission;
 	emission_output_buffer.a = 0.0;

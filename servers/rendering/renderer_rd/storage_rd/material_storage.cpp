@@ -38,6 +38,7 @@
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/virtual_texture_storage.h"
 #include "servers/rendering/storage/variant_converters.h"
 
 #include "modules/modules_enabled.gen.h"
@@ -900,6 +901,45 @@ void MaterialStorage::MaterialData::update_textures(const HashMap<StringName, Va
 		if (p_texture_uniforms[i].hint == ShaderLanguage::ShaderNode::Uniform::HINT_SCREEN_TEXTURE ||
 				p_texture_uniforms[i].hint == ShaderLanguage::ShaderNode::Uniform::HINT_NORMAL_ROUGHNESS_TEXTURE ||
 				p_texture_uniforms[i].hint == ShaderLanguage::ShaderNode::Uniform::HINT_DEPTH_TEXTURE) {
+			continue;
+		}
+
+		if (p_texture_uniforms[i].virtual_texture) {
+			// Bound to the virtual texture's page table (see VirtualTextureStorage), or with no virtual
+			// texture assigned, to one that reads as the hint's default.
+			RID texture;
+			HashMap<StringName, Variant>::ConstIterator V = p_parameters.find(uniform_name);
+			if (V) {
+				texture = V->value;
+			} else {
+				HashMap<StringName, HashMap<int, RID>>::ConstIterator W = p_default_textures.find(uniform_name);
+				if (W && W->value.has(0)) {
+					texture = W->value[0];
+				}
+			}
+			RID page_table = texture.is_valid() ? TextureStorage::get_singleton()->texture_get_virtual_page_table(texture) : RID();
+			if (page_table.is_null()) {
+				if (texture.is_valid() && TextureStorage::get_singleton()->owns_texture(texture)) {
+					WARN_PRINT_ONCE("A texture that is not a virtual texture was assigned to a hint_virtual_texture uniform, which reads as its default value instead. Convert the texture to a virtual texture (from the FileSystem dock's context menu), or remove the hint.");
+				}
+				VirtualTextureStorage::NullPageTable null_table = VirtualTextureStorage::NULL_PAGE_TABLE_WHITE;
+				switch (p_texture_uniforms[i].hint) {
+					case ShaderLanguage::ShaderNode::Uniform::HINT_DEFAULT_BLACK:
+						null_table = VirtualTextureStorage::NULL_PAGE_TABLE_BLACK;
+						break;
+					case ShaderLanguage::ShaderNode::Uniform::HINT_DEFAULT_TRANSPARENT:
+						null_table = VirtualTextureStorage::NULL_PAGE_TABLE_TRANSPARENT;
+						break;
+					case ShaderLanguage::ShaderNode::Uniform::HINT_NORMAL:
+					case ShaderLanguage::ShaderNode::Uniform::HINT_ROUGHNESS_NORMAL:
+						null_table = VirtualTextureStorage::NULL_PAGE_TABLE_NORMAL;
+						break;
+					default:
+						break;
+				}
+				page_table = VirtualTextureStorage::get_singleton()->get_null_page_table(null_table);
+			}
+			p_textures[k++] = page_table;
 			continue;
 		}
 

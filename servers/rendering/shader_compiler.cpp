@@ -301,6 +301,34 @@ String ShaderCompiler::_get_sampler_name(ShaderLanguage::TextureFilter p_filter,
 	return String(name_mapping[p_filter + (p_repeat == ShaderLanguage::REPEAT_ENABLE ? ShaderLanguage::FILTER_DEFAULT : 0)]);
 }
 
+// Virtual texture uniforms are sampled through their page tables only where the renderer has virtual
+// texturing; anywhere else they are plain textures, bound to their fallback image.
+static bool _uses_virtual_texturing() {
+	return !RS::get_singleton()->is_low_end() && RS::get_singleton()->is_virtual_texturing_supported();
+}
+
+String ShaderCompiler::_dump_virtual_texture_call(const SL::OperatorNode *p_call, const StringName &p_function, bool p_srgb, SL::TextureRepeat p_repeat, int p_level, GeneratedCode &r_gen_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_default_actions) {
+	const bool repeat = p_repeat == SL::REPEAT_ENABLE || (p_repeat == SL::REPEAT_DEFAULT && p_default_actions.default_repeat == SL::REPEAT_ENABLE);
+	const String flags = itos((p_srgb ? 1 : 0) | (repeat ? 2 : 0)) + "u";
+	const String suffix = p_call->arguments[1]->get_datatype() == SL::TYPE_SAMPLER2DARRAY ? "_array" : "";
+
+	Vector<String> args;
+	for (int i = 1; i < p_call->arguments.size(); i++) {
+		args.push_back(_dump_node_code(p_call->arguments[i], p_level, r_gen_code, p_actions, p_default_actions, false));
+	}
+
+	if (p_function == "textureSize") {
+		return "vt_texture_size" + suffix + "(" + args[0] + ", " + args[1] + ")";
+	} else if (p_function == "textureLod") {
+		return "vt_texture_lod" + suffix + "(" + args[0] + ", " + args[1] + ", " + args[2] + ", " + flags + ")";
+	} else if (p_function == "textureGrad") {
+		return "vt_texture_grad" + suffix + "(" + args[0] + ", " + args[1] + ", " + args[2] + ", " + args[3] + ", " + flags + ")";
+	} else if (args.size() > 2) {
+		return "vt_texture_bias" + suffix + "(" + args[0] + ", " + args[1] + ", " + args[2] + ", " + flags + ")";
+	}
+	return "vt_texture" + suffix + "(" + args[0] + ", " + args[1] + ", " + flags + ")";
+}
+
 void ShaderCompiler::_dump_function_deps(const SL::ShaderNode *p_node, const StringName &p_for_func, const HashMap<StringName, String> &p_func_code, String &r_to_add, HashSet<StringName> &added) {
 	int fidx = -1;
 
@@ -365,7 +393,11 @@ void ShaderCompiler::_dump_function_deps(const SL::ShaderNode *p_node, const Str
 			if (fnode->arguments[i].type == SL::TYPE_STRUCT) {
 				header += _qualstr(fnode->arguments[i].qualifier) + _mkid(fnode->arguments[i].struct_name) + " " + _mkid(fnode->arguments[i].name);
 			} else {
-				header += _qualstr(fnode->arguments[i].qualifier) + _prestr(fnode->arguments[i].precision) + _typestr(fnode->arguments[i].type) + " " + _mkid(fnode->arguments[i].name);
+				String type = _typestr(fnode->arguments[i].type);
+				if (fnode->arguments[i].tex_virtual && _uses_virtual_texturing()) {
+					type = "utexture2D"; // A virtual texture's page table.
+				}
+				header += _qualstr(fnode->arguments[i].qualifier) + _prestr(fnode->arguments[i].precision) + type + " " + _mkid(fnode->arguments[i].name);
 			}
 			if (fnode->arguments[i].array_size > 0) {
 				header += "[";
@@ -603,6 +635,9 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				if (is_buffer_global) {
 					//this is an integer to index the global table
 					ucode += _typestr(ShaderLanguage::TYPE_UINT);
+				} else if (uniform.virtual_texture && _uses_virtual_texturing()) {
+					// Bound to the virtual texture's page table, which names the pages to sample.
+					ucode += "utexture2D";
 				} else {
 					ucode += _prestr(uniform.precision, ShaderLanguage::is_float_type(uniform.type));
 					ucode += _typestr(uniform.type);
@@ -625,6 +660,10 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					texture.hint = uniform.hint;
 					texture.type = uniform.type;
 					texture.use_color = uniform.use_color;
+					texture.virtual_texture = uniform.virtual_texture && _uses_virtual_texturing();
+					if (texture.virtual_texture) {
+						r_gen_code.uses_virtual_textures = true;
+					}
 					texture.filter = uniform.filter;
 					texture.repeat = uniform.repeat;
 					texture.global = uniform.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL;
@@ -1213,6 +1252,37 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					bool texture_func_returns_data = false;
 					bool texture_func_simple = false;
 
+					if (is_internal_func && onode->arguments.size() >= 3 && texture_functions.has(vnode->name) && _uses_virtual_texturing()) {
+						// Virtual textures are sampled through their page table (see virtual_texture_inc.glsl),
+						// which is what their uniforms are bound to.
+						bool is_virtual = false;
+						bool virtual_srgb = false;
+						SL::TextureRepeat virtual_repeat = SL::REPEAT_DEFAULT;
+						if (onode->arguments[1]->type == SL::Node::NODE_TYPE_VARIABLE) {
+							const StringName texture_name = static_cast<const SL::VariableNode *>(onode->arguments[1])->name;
+							if (shader->uniforms.has(texture_name)) {
+								const SL::ShaderNode::Uniform &u = shader->uniforms[texture_name];
+								is_virtual = u.virtual_texture;
+								virtual_srgb = u.use_color;
+								virtual_repeat = u.repeat;
+							} else if (function) {
+								for (int j = 0; j < function->arguments.size(); j++) {
+									const SL::FunctionNode::Argument &arg = function->arguments[j];
+									if (arg.name == texture_name && arg.tex_argument_check && arg.tex_virtual) {
+										is_virtual = true;
+										virtual_srgb = arg.tex_virtual_srgb;
+										virtual_repeat = arg.tex_argument_repeat;
+										break;
+									}
+								}
+							}
+						}
+						if (is_virtual) {
+							code += _dump_virtual_texture_call(onode, vnode->name, virtual_srgb, virtual_repeat, p_level, r_gen_code, p_actions, p_default_actions);
+							break;
+						}
+					}
+
 					if (onode->op == SL::OP_STRUCT) {
 						code += _mkid(vnode->name);
 					} else if (onode->op == SL::OP_CONSTRUCT) {
@@ -1654,6 +1724,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	r_gen_code.uses_fragment_time = false;
 	r_gen_code.uses_vertex_time = false;
 	r_gen_code.uses_global_textures = false;
+	r_gen_code.uses_virtual_textures = false;
 	r_gen_code.uses_screen_texture_mipmaps = false;
 	r_gen_code.uses_screen_texture = false;
 	r_gen_code.uses_depth_texture = false;
@@ -1669,6 +1740,10 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	function = nullptr;
 	// Return value only relevant within nested calls.
 	_ALLOW_DISCARD_ _dump_node_code(shader, 1, r_gen_code, *p_actions, actions, false);
+
+	if (r_gen_code.uses_virtual_textures) {
+		r_gen_code.defines.push_back("\n#define VIRTUAL_TEXTURE_USED\n");
+	}
 
 	return OK;
 }

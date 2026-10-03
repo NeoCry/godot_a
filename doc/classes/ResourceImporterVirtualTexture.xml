@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="ResourceImporterVirtualTexture" inherits="ResourceImporter" api_type="editor" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Imports an image as a [VirtualTexture2D], streamed a page at a time.
+	</brief_description>
+	<description>
+		This importer turns an image into a [VirtualTexture2D]: a texture cut into pages, which are only loaded into video memory once the camera samples them. Use it for textures too large to keep in video memory whole, such as a terrain's or a large building's unique texture.
+		Images are not imported this way on their own. Right-click one or more images in the FileSystem dock and choose [b]Convert to Virtual Texture[/b]: they are reimported with this importer, keeping their normal map setting, and every reference to them is kept. [b]Convert to Regular Texture[/b] reimports them as ordinary textures again.
+		Both sides of the texture are resized to the closest power of two, from [constant RenderingServer.VIRTUAL_TEXTURE_PAGE_SIZE] to 131072 texels (see [member process/size_limit]).
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="compress/lossy_quality" type="float" setter="" getter="" default="0.8">
+			The quality of the pages' WebP compression, when [member compress/mode] is Lossy. Higher values look better and take more room on disk.
+		</member>
+		<member name="compress/mode" type="int" setter="" getter="" default="0">
+			How pages are compressed on disk; see [enum VirtualTexture2D.PageFormat]. In video memory they are always uncompressed, but only a fixed number of them is resident at once.
+		</member>
+		<member name="process/normal_map" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], the texture is a normal map: its mipmaps are renormalized as they are made, rather than only averaged. It is set when converting a texture that was imported as a normal map.
+		</member>
+		<member name="process/repeat" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], pages along the texture's edges are bordered with texels from its opposite edge, so that it repeats seamlessly. Turn this off for a texture that is never repeated, such as one covering a whole terrain, so that its edges are not blended with each other.
+		</member>
+		<member name="process/size_limit" type="int" setter="" getter="" default="0">
+			If greater than [code]0[/code], the texture is downscaled so that neither side is larger than this, in texels, rounded down to a power of two.
+		</member>
+	</members>
+</class>

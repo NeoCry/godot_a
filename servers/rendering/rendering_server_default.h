@@ -270,6 +270,27 @@ public:
 
 	FUNC2(texture_2d_attach_streaming_state, RID, RID);
 
+	// Unlike the other texture constructors, never initialized on the calling thread: a virtual texture
+	// belongs to the renderer's page cache, which only the rendering thread touches.
+	virtual RID texture_virtual_create(int p_width, int p_height, RSE::VirtualTextureType p_type, const Ref<Image> &p_fallback) override {
+		RID ret = RSG::texture_storage->texture_allocate();
+		if (Thread::get_caller_id() == server_thread) {
+			RSG::texture_storage->texture_virtual_initialize(ret, p_width, p_height, p_type, p_fallback);
+		} else {
+			command_queue.push(RSG::texture_storage, &RendererTextureStorage::texture_virtual_initialize, ret, p_width, p_height, p_type, p_fallback);
+		}
+		return ret;
+	}
+
+	FUNC2(texture_virtual_set_page_request_callback, RID, const Callable &)
+	FUNC5(texture_virtual_update_page, RID, int, int, int, const Ref<Image> &)
+	FUNC4(texture_virtual_set_runtime_volume, RID, RID, const Transform3D &, uint32_t)
+	FUNC2(texture_virtual_invalidate, RID, const Rect2 &)
+
+	virtual bool is_virtual_texturing_supported() const override {
+		return RSG::texture_storage->texture_virtual_is_supported();
+	}
+
 	/* SHADER API */
 
 #undef ServerName
@@ -992,6 +1013,7 @@ public:
 	FUNC4(instance_geometry_set_lightmap, RID, RID, const Rect2 &, int)
 	FUNC2(instance_geometry_set_lod_bias, RID, float)
 	FUNC2(instance_geometry_set_transparency, RID, float)
+	FUNC3(instance_geometry_set_virtual_texture_layers, RID, uint32_t, bool)
 	FUNC3(instance_geometry_set_shader_parameter, RID, const StringName &, const Variant &)
 	FUNC2RC(Variant, instance_geometry_get_shader_parameter, RID, const StringName &)
 	FUNC2RC(Variant, instance_geometry_get_shader_parameter_default_value, RID, const StringName &)

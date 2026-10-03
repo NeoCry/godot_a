@@ -2030,6 +2030,15 @@
 				[b]Note:[/b] [param transparency] is clamped between [code]0.0[/code] and [code]1.0[/code], so this property cannot be used to make transparent materials more opaque than they originally are.
 			</description>
 		</method>
+		<method name="instance_geometry_set_virtual_texture_layers">
+			<return type="void" />
+			<param index="0" name="instance" type="RID" />
+			<param index="1" name="layers" type="int" />
+			<param index="2" name="draw_in_main_pass" type="bool" />
+			<description>
+				Sets the runtime virtual textures [param instance] is drawn into: those whose layers (see [method texture_virtual_set_runtime_volume]) share a bit with [param layers]. [code]0[/code] draws it into none. If [param draw_in_main_pass] is [code]false[/code], the instance is drawn into those virtual textures only, and not seen by cameras or in shadows. Equivalent to [member GeometryInstance3D.virtual_texture_draw_layers] and [member GeometryInstance3D.virtual_texture_draw_in_main_pass].
+			</description>
+		</method>
 		<method name="instance_geometry_set_visibility_range">
 			<return type="void" />
 			<param index="0" name="instance" type="RID" />
@@ -2180,6 +2189,12 @@
 			<return type="bool" />
 			<description>
 				Returns [code]true[/code] if our code is currently executing on the rendering thread.
+			</description>
+		</method>
+		<method name="is_virtual_texturing_supported" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if virtual textures (see [method texture_virtual_create]) are sampled as such: with the Forward+ or Mobile renderer, and [member ProjectSettings.rendering/virtual_texturing/enabled]. Otherwise every virtual texture is sampled as its fallback, and runtime virtual textures are never drawn.
 			</description>
 		</method>
 		<method name="light_area_set_normalize_energy">
@@ -4194,6 +4209,61 @@
 				Sets the size at which the texture should be [i]displayed[/i] in 2D, ignoring its original size. This does not rescale the texture data itself, only how it is drawn in 2D. Set [param width] and [param height] to 0 to disable the size override.
 			</description>
 		</method>
+		<method name="texture_virtual_create">
+			<return type="RID" />
+			<param index="0" name="width" type="int" />
+			<param index="1" name="height" type="int" />
+			<param index="2" name="type" type="int" enum="RenderingServer.VirtualTextureType" />
+			<param index="3" name="fallback" type="Image" />
+			<description>
+				Creates a virtual texture of [param width]×[param height] texels, both powers of two from [constant VIRTUAL_TEXTURE_PAGE_SIZE] up to 1024 pages. Its pages are only filled in once a camera samples them, at the mipmap it samples them at, so a texture of any size costs a fixed share of a page cache shared by every virtual texture, plus a page table of one 32-bit entry for every page of every mipmap. Mipmaps go down to one page across the texture's narrower side.
+				Shaders sample it through uniforms with the [code]hint_virtual_texture[/code] hint. Anywhere else it is [param fallback], a plain texture, or a small gray one if [param fallback] is [code]null[/code]; see [method is_virtual_texturing_supported].
+				With [constant VIRTUAL_TEXTURE_STREAMED], its pages are supplied by the caller: see [method texture_virtual_set_page_request_callback]. With [constant VIRTUAL_TEXTURE_RUNTIME], they are drawn by the renderer from a part of the scene: see [method texture_virtual_set_runtime_volume].
+				Once you are done with the texture, free it with [method free_rid].
+				[b]Note:[/b] The equivalent resource for streaming from disk is [VirtualTexture2D].
+			</description>
+		</method>
+		<method name="texture_virtual_invalidate">
+			<return type="void" />
+			<param index="0" name="texture" type="RID" />
+			<param index="1" name="uv_rect" type="Rect2" />
+			<description>
+				Marks the pages of [param texture] covering [param uv_rect] (in UV, from [code](0, 0)[/code] to [code](1, 1)[/code]) out of date, at every mipmap. A runtime virtual texture draws those already in its cache again, a few every frame (see [member ProjectSettings.rendering/virtual_texturing/max_runtime_pages_per_frame]), and keeps showing them until then; a streamed one drops them and requests them again.
+				Runtime virtual textures already invalidate what geometry drawn into them covers whenever it moves, changes or appears; this is for what they can't see changing, such as the parameters of a material or a texture it samples.
+			</description>
+		</method>
+		<method name="texture_virtual_set_page_request_callback">
+			<return type="void" />
+			<param index="0" name="texture" type="RID" />
+			<param index="1" name="callback" type="Callable" />
+			<description>
+				Sets the [Callable] the [constant VIRTUAL_TEXTURE_STREAMED] virtual texture [param texture] asks for the pages it is missing. It is called on the rendering thread, with a [PackedInt32Array] of [code]mipmap, x, y[/code] triplets, the coarsest pages first; each page asked for should eventually be supplied with [method texture_virtual_update_page], from any thread. A page not supplied within a few seconds is asked for again if it is still needed.
+				[b]Note:[/b] The callback should return quickly, leaving loading the pages to a thread of its own.
+			</description>
+		</method>
+		<method name="texture_virtual_set_runtime_volume">
+			<return type="void" />
+			<param index="0" name="texture" type="RID" />
+			<param index="1" name="scenario" type="RID" />
+			<param index="2" name="volume" type="Transform3D" />
+			<param index="3" name="layers" type="int" />
+			<description>
+				Sets the part of [param scenario] the [constant VIRTUAL_TEXTURE_RUNTIME] virtual texture [param texture] is drawn from. [param volume] maps a unit cube onto the world: its X axis runs along the texture's U, its Z axis along V, and its Y axis from the bottom of what is drawn to the top. Pages are drawn looking straight down its Y axis, orthographically, by every instance whose virtual texture layers share a bit with [param layers] (see [method instance_geometry_set_virtual_texture_layers]), as their materials render: albedo, then normal, roughness, metallic, ambient occlusion and specular. Materials that use [code]ALPHA[/code] are blended over what lies under them, like decals.
+				The texture holds three layers, all sampled with the same UV: layer 0 is albedo (sRGB, as a [code]source_color[/code] uniform reads it); layer 1 is the surface's normal, in the camera space of the page, [code]normalize(rgb * 2.0 - 1.0)[/code], with specular in alpha; layer 2 is ambient occlusion, roughness and metallic.
+				Changing [param volume] keeps the pages drawn so far as long as it only moves up or down along its Y axis or changes its height; otherwise, as for any change of [param scenario] or [param layers], they are drawn again.
+			</description>
+		</method>
+		<method name="texture_virtual_update_page">
+			<return type="void" />
+			<param index="0" name="texture" type="RID" />
+			<param index="1" name="mipmap" type="int" />
+			<param index="2" name="x" type="int" />
+			<param index="3" name="y" type="int" />
+			<param index="4" name="image" type="Image" />
+			<description>
+				Supplies the page at [param x], [param y] of mipmap [param mipmap] of the [constant VIRTUAL_TEXTURE_STREAMED] virtual texture [param texture], as asked for by its page request callback (see [method texture_virtual_set_page_request_callback]). [param image] must be [constant VIRTUAL_TEXTURE_PAGE_SIZE] texels a side plus a border of [constant VIRTUAL_TEXTURE_PAGE_BORDER] texels from its neighbors all around (136×136 texels), and is converted to [constant Image.FORMAT_RGBA8]. Up to [member ProjectSettings.rendering/virtual_texturing/max_page_uploads_per_frame] pages are copied to video memory every frame. Pages that were not asked for, or are no longer needed, are ignored.
+			</description>
+		</method>
 		<method name="viewport_attach_camera">
 			<return type="void" />
 			<param index="0" name="viewport" type="RID" />
@@ -4883,6 +4953,12 @@
 		<constant name="MAX_GLOW_LEVELS" value="7">
 			The maximum number of glow levels that can be used with the glow post-processing effect.
 		</constant>
+		<constant name="VIRTUAL_TEXTURE_PAGE_SIZE" value="128">
+			The size of a virtual texture's pages, in texels a side.
+		</constant>
+		<constant name="VIRTUAL_TEXTURE_PAGE_BORDER" value="4">
+			How many texels of their neighbors surround a virtual texture's pages in video memory, so that filtering never reads across a page's edge.
+		</constant>
 		<constant name="MAX_CURSORS" value="8" deprecated="This constant is not used by the engine.">
 		</constant>
 		<constant name="MAX_2D_DIRECTIONAL_LIGHTS" value="8">
@@ -4939,6 +5015,12 @@
 		</constant>
 		<constant name="TEXTURE_DRAWABLE_FORMAT_RGBAF" value="3" enum="TextureDrawableFormat">
 			OpenGL texture format GL_RGBA32F where there are four components, each a 32-bit floating-point value.
+		</constant>
+		<constant name="VIRTUAL_TEXTURE_STREAMED" value="0" enum="VirtualTextureType">
+			A virtual texture whose pages are supplied by the caller, typically streamed from disk; see [method texture_virtual_set_page_request_callback].
+		</constant>
+		<constant name="VIRTUAL_TEXTURE_RUNTIME" value="1" enum="VirtualTextureType">
+			A virtual texture whose pages are drawn by the renderer from a part of the scene; see [method texture_virtual_set_runtime_volume].
 		</constant>
 		<constant name="SHADER_SPATIAL" value="0" enum="ShaderMode">
 			Shader is a 3D shader.

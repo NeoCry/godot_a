@@ -68,6 +68,8 @@ public:
 			ShaderLanguage::DataType type = ShaderLanguage::DataType::TYPE_VOID;
 			ShaderLanguage::ShaderNode::Uniform::Hint hint = ShaderLanguage::ShaderNode::Uniform::Hint::HINT_NONE;
 			bool use_color = false;
+			// hint_virtual_texture: the binding takes the texture's page table, not the texture.
+			bool virtual_texture = false;
 			ShaderLanguage::TextureFilter filter = ShaderLanguage::TextureFilter::FILTER_DEFAULT;
 			ShaderLanguage::TextureRepeat repeat = ShaderLanguage::TextureRepeat::REPEAT_DEFAULT;
 			bool global = false;
@@ -84,6 +86,7 @@ public:
 		HashMap<String, String> code;
 
 		bool uses_global_textures = false;
+		bool uses_virtual_textures = false;
 		bool uses_fragment_time = false;
 		bool uses_vertex_time = false;
 		bool uses_screen_texture_mipmaps = false;
@@ -117,6 +120,7 @@ private:
 
 	void _dump_function_deps(const ShaderLanguage::ShaderNode *p_node, const StringName &p_for_func, const HashMap<StringName, String> &p_func_code, String &r_to_add, HashSet<StringName> &added);
 	String _dump_node_code(const ShaderLanguage::Node *p_node, int p_level, GeneratedCode &r_gen_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_default_actions, bool p_assigning, bool p_scope = true);
+	String _dump_virtual_texture_call(const ShaderLanguage::OperatorNode *p_call, const StringName &p_function, bool p_srgb, ShaderLanguage::TextureRepeat p_repeat, int p_level, GeneratedCode &r_gen_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_default_actions);
 
 	const ShaderLanguage::ShaderNode *shader = nullptr;
 	const ShaderLanguage::FunctionNode *function = nullptr;

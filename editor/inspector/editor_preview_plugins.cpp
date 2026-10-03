@@ -46,6 +46,7 @@
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/virtual_texture_2d.h"
 #include "servers/audio/audio_server.h"
 #include "servers/rendering/rendering_server.h"
 
@@ -145,6 +146,9 @@ Ref<Texture2D> EditorTexturePreviewPlugin::generate(const Ref<Resource> &p_from,
 			img = data->duplicate();
 		}
 
+	} else if (Ref<VirtualTexture2D> tex_virtual = p_from; tex_virtual.is_valid()) {
+		// Its fallback, rather than putting the whole texture back together from disk for a thumbnail.
+		img = tex_virtual->get_fallback_image();
 	} else {
 		Ref<Texture2D> tex = p_from;
 		if (tex.is_valid()) {
@@ -159,7 +163,11 @@ Ref<Texture2D> EditorTexturePreviewPlugin::generate(const Ref<Resource> &p_from,
 		return Ref<Texture2D>();
 	}
 
-	p_metadata["dimensions"] = img->get_size();
+	if (Ref<VirtualTexture2D> tex_virtual = p_from; tex_virtual.is_valid()) {
+		p_metadata["dimensions"] = tex_virtual->get_size();
+	} else {
+		p_metadata["dimensions"] = img->get_size();
+	}
 
 	img->clear_mipmaps();
 

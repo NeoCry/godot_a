@@ -192,6 +192,7 @@ public:
 		TK_HINT_BLIT_SOURCE1,
 		TK_HINT_BLIT_SOURCE2,
 		TK_HINT_BLIT_SOURCE3,
+		TK_HINT_VIRTUAL_TEXTURE,
 		TK_FILTER_NEAREST,
 		TK_FILTER_LINEAR,
 		TK_FILTER_NEAREST_MIPMAP,
@@ -712,6 +713,8 @@ public:
 			Scope scope = SCOPE_LOCAL;
 			Hint hint = HINT_NONE;
 			bool use_color = false;
+			// hint_virtual_texture: sampled through a virtual texture's page table rather than directly.
+			bool virtual_texture = false;
 			TextureFilter filter = FILTER_DEFAULT;
 			TextureRepeat repeat = REPEAT_DEFAULT;
 			float hint_range[3];
@@ -763,6 +766,12 @@ public:
 			bool tex_builtin_check = false;
 			StringName tex_builtin;
 			ShaderNode::Uniform::Hint tex_hint = ShaderNode::Uniform::HINT_NONE;
+			// Whether the textures passed here are virtual (see ShaderNode::Uniform::virtual_texture), and
+			// for those, whether they hold color (source_color).
+			bool tex_virtual = false;
+			bool tex_virtual_srgb = false;
+			// Whether the function reads it in a way virtual textures can't be (texelFetch() and such).
+			bool tex_virtual_unsupported = false;
 			bool is_const = false;
 			int array_size = 0;
 
@@ -1226,7 +1235,7 @@ private:
 	bool _validate_function_call(BlockNode *p_block, const FunctionInfo &p_function_info, OperatorNode *p_func, DataType *r_ret_type, StringName *r_ret_type_str, bool *r_is_custom_function = nullptr);
 	bool _parse_function_arguments(BlockNode *p_block, const FunctionInfo &p_function_info, OperatorNode *p_func, int *r_complete_arg = nullptr);
 	ShaderNode::Uniform::Hint _sanitize_hint(ShaderNode::Uniform::Hint p_hint);
-	bool _propagate_function_call_sampler_uniform_settings(const StringName &p_name, int p_argument, TextureFilter p_filter, TextureRepeat p_repeat, ShaderNode::Uniform::Hint p_hint);
+	bool _propagate_function_call_sampler_uniform_settings(const StringName &p_name, int p_argument, TextureFilter p_filter, TextureRepeat p_repeat, ShaderNode::Uniform::Hint p_hint, bool p_virtual = false, bool p_virtual_srgb = false);
 	bool _propagate_function_call_sampler_builtin_reference(const StringName &p_name, int p_argument, const StringName &p_builtin);
 	bool _validate_varying_assign(ShaderNode::Varying &p_varying, String *r_message);
 	bool _check_node_constness(const Node *p_node) const;

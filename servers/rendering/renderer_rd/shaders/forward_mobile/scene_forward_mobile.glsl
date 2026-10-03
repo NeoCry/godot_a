@@ -838,6 +838,12 @@ void main() {
 #define OUTPUT_IS_MULTIVIEW false
 #endif
 
+#define VT_STAGE_FRAGMENT
+#if defined(VIRTUAL_TEXTURE_USED) && !defined(MODE_RENDER_DEPTH)
+// Pixels that sample virtual textures report the pages they wanted (see virtual_texture_inc.glsl).
+#define VT_FEEDBACK
+#endif
+
 /* Include half precision types. */
 #include "../half_inc.glsl"
 
@@ -871,6 +877,14 @@ layout(early_fragment_tests) in;
 #endif // early fragment tests are safe
 
 #endif // TEXTURE_STREAMING
+
+#if defined(VT_FEEDBACK) && !defined(EARLY_Z_ON)
+// Virtual texture feedback writes to a ssbo buffer too.
+#if !defined(DEPTH_USED) && !defined(ALPHA_SCISSOR_USED) && !defined(ALPHA_HASH_USED) && !defined(ENABLE_CLIP_ALPHA) && !defined(UBERSHADER) && !defined(DISCARD_USED)
+layout(early_fragment_tests) in;
+#define EARLY_Z_ON
+#endif
+#endif // VT_FEEDBACK
 
 // All interpolators are intentionally kept at full precision as storageInputOutput16 is not
 // checked for support. Devices with Adreno GPUs don't usually support this capability.
@@ -2361,13 +2375,20 @@ void main() {
 	albedo_output_buffer.a = alpha;
 
 	normal_output_buffer.rgb = normal * 0.5 + 0.5;
-	normal_output_buffer.a = 0.0;
+	// Runtime virtual textures keep specular here (see VirtualTextureStorage).
+	normal_output_buffer.a = float(specular);
 	depth_output_buffer.r = -vertex.z;
 
 	orm_output_buffer.r = ao;
 	orm_output_buffer.g = roughness;
 	orm_output_buffer.b = metallic;
 	orm_output_buffer.a = sss_strength;
+#ifdef ALPHA_USED
+	// Blended over what lies under it in a runtime virtual texture page, with the same alpha in every
+	// output (see VirtualTextureStorage::get_material_pass_blend_state()).
+	normal_output_buffer.a = float(alpha);
+	orm_output_buffer.a = float(alpha);
+#endif
 
 	emission_output_buffer.rgb = emission;
 	emission_output_buffer.a = 0.0;

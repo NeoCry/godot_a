@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/virtual_texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_server_globals.h"
 
@@ -966,6 +967,11 @@ void TextureStorage::texture_free(RID p_texture) {
 	ERR_FAIL_COND(t->is_render_target);
 
 	t->cleanup();
+
+	if (t->virtual_texture.is_valid() && VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_free(t->virtual_texture);
+		t->virtual_texture = RID();
+	}
 
 	if (t->is_proxy && t->proxy_to.is_valid()) {
 		Texture *proxy_to = texture_owner.get_or_null(t->proxy_to);
@@ -2052,9 +2058,19 @@ void TextureStorage::texture_replace(RID p_texture, RID p_by_texture) {
 
 	RID streaming_state = tex->streaming_state;
 
+	if (tex->virtual_texture.is_valid() && VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_free(tex->virtual_texture);
+	}
+
 	*tex = *by_tex;
 
 	tex->streaming_state = streaming_state; // restore streaming state
+
+	if (tex->virtual_texture.is_valid() && VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_set_owner(tex->virtual_texture, p_texture);
+	}
+	// It moved with the rest; the texture being freed below must not take it along.
+	by_tex->virtual_texture = RID();
 
 	tex->proxies = proxies_to_update; //restore proxies, so they can be updated
 
@@ -5432,4 +5448,103 @@ void TextureStorage::texture_2d_attach_streaming_state(RID p_texture, RID p_stre
 	Texture *tex = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL_MSG(tex, "Invalid texture RID.");
 	tex->streaming_state = p_streaming_state;
+}
+
+/* VIRTUAL TEXTURE API */
+
+void TextureStorage::texture_virtual_initialize(RID p_texture, int p_width, int p_height, RSE::VirtualTextureType p_type, const Ref<Image> &p_fallback) {
+	// An ordinary texture of the fallback image first: that is what it is anywhere virtual texturing is
+	// not (a canvas item, a uniform without hint_virtual_texture, a renderer or device without it).
+	RendererTextureStorage::texture_virtual_initialize(p_texture, p_width, p_height, p_type, p_fallback);
+
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL(tex);
+	VirtualTextureStorage *vts = VirtualTextureStorage::get_singleton();
+	if (vts) {
+		tex->virtual_texture = vts->virtual_texture_create(p_texture, p_width, p_height, p_type);
+	}
+}
+
+void TextureStorage::texture_virtual_set_page_request_callback(RID p_texture, const Callable &p_callback) {
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL(tex);
+	if (tex->virtual_texture.is_valid()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_set_page_request_callback(tex->virtual_texture, p_callback);
+	}
+}
+
+void TextureStorage::texture_virtual_update_page(RID p_texture, int p_mipmap, int p_x, int p_y, const Ref<Image> &p_image) {
+	// Silently ignored once the texture is gone: providers hand pages over from threads of their own.
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	if (tex && tex->virtual_texture.is_valid()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_update_page(tex->virtual_texture, p_mipmap, p_x, p_y, p_image);
+	}
+}
+
+void TextureStorage::texture_virtual_set_runtime_volume(RID p_texture, RID p_scenario, const Transform3D &p_volume, uint32_t p_layers) {
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL(tex);
+	if (tex->virtual_texture.is_valid()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_set_runtime_volume(tex->virtual_texture, p_scenario, p_volume, p_layers);
+	}
+}
+
+void TextureStorage::texture_virtual_invalidate(RID p_texture, const Rect2 &p_uv_rect) {
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL(tex);
+	if (tex->virtual_texture.is_valid()) {
+		VirtualTextureStorage::get_singleton()->virtual_texture_invalidate(tex->virtual_texture, p_uv_rect);
+	}
+}
+
+bool TextureStorage::texture_virtual_is_supported() const {
+	return VirtualTextureStorage::get_singleton() && VirtualTextureStorage::get_singleton()->is_enabled();
+}
+
+void TextureStorage::virtual_textures_update() {
+	if (VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->update();
+	}
+}
+
+void TextureStorage::virtual_textures_get_runtime_pending(LocalVector<RID> &r_textures) {
+	if (VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->get_runtime_pending(r_textures);
+	}
+}
+
+RID TextureStorage::virtual_texture_runtime_begin(RID p_texture, LocalVector<VirtualTextureRenderPage> &r_pages, RID &r_scenario, uint32_t &r_layers) {
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	if (!tex || tex->virtual_texture.is_null()) {
+		r_pages.clear();
+		return RID();
+	}
+	return VirtualTextureStorage::get_singleton()->runtime_begin(tex->virtual_texture, r_pages, r_scenario, r_layers);
+}
+
+void TextureStorage::virtual_texture_runtime_end(RID p_texture) {
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	if (tex && tex->virtual_texture.is_valid()) {
+		VirtualTextureStorage::get_singleton()->runtime_end(tex->virtual_texture);
+	}
+}
+
+void TextureStorage::virtual_textures_invalidate_world_aabb(RID p_scenario, uint32_t p_layers, const AABB &p_aabb) {
+	if (VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->invalidate_world_aabb(p_scenario, p_layers, p_aabb);
+	}
+}
+
+void TextureStorage::virtual_textures_flush() {
+	if (VirtualTextureStorage::get_singleton()) {
+		VirtualTextureStorage::get_singleton()->flush();
+	}
+}
+
+RID TextureStorage::texture_get_virtual_page_table(RID p_texture) const {
+	const Texture *tex = texture_owner.get_or_null(p_texture);
+	if (!tex || tex->virtual_texture.is_null()) {
+		return RID();
+	}
+	return VirtualTextureStorage::get_singleton()->virtual_texture_get_page_table(tex->virtual_texture);
 }

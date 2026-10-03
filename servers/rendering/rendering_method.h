@@ -93,6 +93,7 @@ public:
 	virtual void instance_set_surface_override_material(RID p_instance, int p_surface, RID p_material) = 0;
 	virtual void instance_set_visible(RID p_instance, bool p_visible) = 0;
 	virtual void instance_geometry_set_transparency(RID p_instance, float p_transparency) = 0;
+	virtual void instance_geometry_set_virtual_texture_layers(RID p_instance, uint32_t p_layers, bool p_draw_in_main_pass) = 0;
 
 	virtual void instance_teleport(RID p_instance) = 0;
 
@@ -370,6 +371,8 @@ public:
 
 	virtual void update() = 0;
 	virtual void render_probes() = 0;
+	// Streams in and draws the pages of virtual textures that the last frames asked for.
+	virtual void update_virtual_textures() = 0;
 	virtual void update_visibility_notifiers() = 0;
 
 	virtual void decals_set_filter(RSE::DecalFilter p_filter) = 0;

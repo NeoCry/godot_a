@@ -37,6 +37,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/particles_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/virtual_texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -3324,7 +3325,7 @@ void RenderForwardClustered::_render_particle_collider_heightfield(RID p_fb, con
 	RD::get_singleton()->draw_command_end_label();
 }
 
-void RenderForwardClustered::_render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, float p_exposure_normalization) {
+void RenderForwardClustered::_render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, float p_exposure_normalization, bool p_flip_y) {
 	RENDER_TIMESTAMP("Setup Rendering 3D Material");
 
 	RD::get_singleton()->draw_command_begin_label("Render 3D Material");
@@ -3340,6 +3341,8 @@ void RenderForwardClustered::_render_material(const Transform3D &p_cam_transform
 	scene_data.time = time;
 	scene_data.time_step = time_step;
 	scene_data.main_cam_transform = p_cam_transform;
+	// Flipped, rows run from the top of the view down, as in the main pass.
+	scene_data.flip_y = p_flip_y;
 
 	RenderDataRD render_data;
 	render_data.scene_data = &scene_data;
@@ -3368,7 +3371,7 @@ void RenderForwardClustered::_render_material(const Transform3D &p_cam_transform
 	RENDER_TIMESTAMP("Render 3D Material");
 
 	{
-		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), true, pass_mode, 0, true, false, rp_uniform_set);
+		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), !p_flip_y, pass_mode, 0, true, false, rp_uniform_set);
 		//regular forward for now
 		Vector<Color> clear = {
 			Color(0, 0, 0, 0),
@@ -3558,12 +3561,15 @@ void RenderForwardClustered::base_uniforms_changed() {
 void RenderForwardClustered::_update_render_base_uniform_set() {
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 
-	if (render_base_uniform_set.is_null() || !RD::get_singleton()->uniform_set_is_valid(render_base_uniform_set) || (lightmap_texture_array_version != light_storage->lightmap_array_get_version())) {
+	RendererRD::VirtualTextureStorage *virtual_texture_storage = RendererRD::VirtualTextureStorage::get_singleton();
+
+	if (render_base_uniform_set.is_null() || !RD::get_singleton()->uniform_set_is_valid(render_base_uniform_set) || (lightmap_texture_array_version != light_storage->lightmap_array_get_version()) || (virtual_texture_bindings_version != virtual_texture_storage->get_bindings_version())) {
 		if (render_base_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(render_base_uniform_set)) {
 			RD::get_singleton()->free_rid(render_base_uniform_set);
 		}
 
 		lightmap_texture_array_version = light_storage->lightmap_array_get_version();
+		virtual_texture_bindings_version = virtual_texture_storage->get_bindings_version();
 
 		Vector<RD::Uniform> uniforms;
 
@@ -3740,6 +3746,12 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 			RID area_light_atlas = RendererRD::TextureStorage::get_singleton()->area_light_atlas_get_texture();
 			u.append_id(area_light_atlas);
+			uniforms.push_back(u);
+		}
+
+		RD::Uniform virtual_texture_uniforms[RendererRD::VirtualTextureStorage::SCENE_UNIFORM_COUNT];
+		virtual_texture_storage->get_scene_uniforms(virtual_texture_uniforms, 21);
+		for (const RD::Uniform &u : virtual_texture_uniforms) {
 			uniforms.push_back(u);
 		}
 

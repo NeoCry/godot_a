@@ -362,6 +362,9 @@ public:
 		PagedArray<InstanceData> instance_data;
 		VisibilityArray instance_visibility;
 
+		// Geometry that draws into runtime virtual textures (see instance_geometry_set_virtual_texture_layers()).
+		HashSet<Instance *> virtual_texture_writers;
+
 		Scenario() {
 			indexers[INDEXER_GEOMETRY].set_index(INDEXER_GEOMETRY);
 			indexers[INDEXER_VOLUMES].set_index(INDEXER_VOLUMES);
@@ -468,6 +471,9 @@ public:
 		HashSet<Instance *> visibility_dependencies;
 		uint32_t visibility_dependencies_depth = 0;
 		float transparency = 0.0f;
+		// The runtime virtual textures this draws into, and whether it is drawn by cameras as well.
+		uint32_t virtual_texture_layers = 0;
+		bool virtual_texture_main_pass = true;
 		Scenario *scenario = nullptr;
 		SelfList<Instance> scenario_item;
 
@@ -1052,6 +1058,7 @@ public:
 	uint32_t max_shadows_used = 0;
 
 	RendererSceneRender::RenderSDFGIData render_sdfgi_data[SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE];
+	PagedArray<RenderGeometryInstance *> virtual_texture_page_instances;
 	RendererSceneRender::RenderSDFGIUpdateData sdfgi_update_data;
 
 	uint32_t thread_cull_threshold = 200;
@@ -1076,6 +1083,16 @@ public:
 	virtual void instance_set_surface_override_material(RID p_instance, int p_surface, RID p_material);
 	virtual void instance_set_visible(RID p_instance, bool p_visible);
 	virtual void instance_geometry_set_transparency(RID p_instance, float p_transparency);
+	virtual void instance_geometry_set_virtual_texture_layers(RID p_instance, uint32_t p_layers, bool p_draw_in_main_pass);
+	// What culling for cameras and shadows sees as the instance's layers: none, for an instance drawn
+	// only into virtual textures.
+	_FORCE_INLINE_ static bool _is_drawn_in_main_pass(const Instance *p_instance) {
+		return p_instance->virtual_texture_main_pass || p_instance->virtual_texture_layers == 0;
+	}
+	_FORCE_INLINE_ static uint32_t _get_cull_layer_mask(const Instance *p_instance) {
+		return _is_drawn_in_main_pass(p_instance) ? p_instance->layer_mask : 0;
+	}
+	void _invalidate_virtual_textures(const Instance *p_instance, const AABB &p_aabb) const;
 
 	virtual void instance_teleport(RID p_instance);
 
@@ -1218,6 +1235,7 @@ public:
 
 	void render_particle_colliders();
 	virtual void render_probes();
+	virtual void update_virtual_textures();
 
 	TypedArray<Image> bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size);
 	PackedByteArray bake_render_area_light_atlas(const TypedArray<RID> &p_area_light_textures, const TypedArray<Rect2> &p_area_light_atlas_texture_rects, const Size2i &p_size, int p_mipmaps);

@@ -41,6 +41,7 @@
 #include "core/version.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/texture.h"
+#include "scene/resources/virtual_texture_2d.h"
 #include "servers/rendering/rendering_server.h"
 
 void Material::set_next_pass(const Ref<Material> &p_pass) {
@@ -652,6 +653,21 @@ void BaseMaterial3D::finish_shaders() {
 
 	memdelete(shader_names);
 	shader_names = nullptr;
+}
+
+uint32_t BaseMaterial3D::_get_virtual_texture_mask() const {
+	// A texture passed to triplanar_texture() is sampled the same way as every other one passed to
+	// it, so with triplanar mapping virtual textures stand in with their fallback image.
+	if (flags[FLAG_UV1_USE_TRIPLANAR] || flags[FLAG_UV2_USE_TRIPLANAR]) {
+		return 0;
+	}
+	uint32_t mask = 0;
+	for (int i = 0; i < TEXTURE_MAX; i++) {
+		if (Object::cast_to<VirtualTexture2D>(textures[i].ptr())) {
+			mask |= 1u << i;
+		}
+	}
+	return mask;
 }
 
 void BaseMaterial3D::_update_shader() {
@@ -2071,6 +2087,15 @@ void fragment() {)";
 	// We must create the shader outside the shader_map_mutex to avoid potential deadlocks with
 	// other tasks in the WorkerThreadPool simultaneously creating materials, which
 	// may also hold the shared shader_map_mutex lock.
+	// Virtual textures are sampled through their page tables: StandardMaterial3D needs no setting
+	// for them, a texture converted to one is streamed wherever it is used.
+	for (int i = 0; i < TEXTURE_MAX; i++) {
+		if (mk.virtual_textures & (1u << i)) {
+			const String declaration = "uniform sampler2D " + String(shader_names->texture_names[i]) + " : ";
+			code = code.replace_first(declaration, declaration + "hint_virtual_texture, ");
+		}
+	}
+
 	RID new_shader = RS::get_singleton()->shader_create_from_code(code);
 
 	MutexLock lock(shader_map_mutex);
@@ -3360,7 +3385,7 @@ Shader::Mode BaseMaterial3D::get_shader_mode() const {
 }
 
 void BaseMaterial3D::_bind_methods() {
-	static_assert(sizeof(MaterialKey) == 16, "MaterialKey should be 16 bytes");
+	static_assert(sizeof(MaterialKey) == 24, "MaterialKey should be 24 bytes");
 
 	ClassDB::bind_method(D_METHOD("set_albedo", "albedo"), &BaseMaterial3D::set_albedo);
 	ClassDB::bind_method(D_METHOD("get_albedo"), &BaseMaterial3D::get_albedo);

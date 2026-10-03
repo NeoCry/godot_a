@@ -3685,6 +3685,21 @@
 		<member name="rendering/viewport/transparent_background" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], enables [member Viewport.transparent_bg] on the root viewport. This allows per-pixel transparency to be effective after also enabling [member display/window/size/transparent] and [member display/window/per_pixel_transparency/allowed].
 		</member>
+		<member name="rendering/virtual_texturing/enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], virtual textures (see [VirtualTexture2D] and [member Landscape3D.virtual_texture_enabled]) are streamed a page at a time on the Forward+ and Mobile renderers. If [code]false[/code], they are sampled as their small fallback, and runtime virtual textures are not used.
+		</member>
+		<member name="rendering/virtual_texturing/max_page_uploads_per_frame" type="int" setter="" getter="" default="32">
+			The most pages of streamed virtual textures (see [VirtualTexture2D]) copied to video memory in one frame. Higher values sharpen textures faster after the camera moves or cuts, at the cost of longer frames when it does.
+		</member>
+		<member name="rendering/virtual_texturing/max_runtime_pages_per_frame" type="int" setter="" getter="" default="16">
+			The most pages of runtime virtual textures (see [member Landscape3D.virtual_texture_enabled]) drawn in one frame. Each one draws the geometry it covers again, so higher values sharpen and update them faster at the cost of longer frames.
+		</member>
+		<member name="rendering/virtual_texturing/runtime_cache_size" type="int" setter="" getter="" default="20">
+			How many pages a side the cache shared by runtime virtual textures holds (see [member Landscape3D.virtual_texture_enabled]): [code]20[/code] holds 400 pages. Each page costs about 285 KB of video memory, for its three layers and their mipmaps, so [code]20[/code] takes about 115 MB. Raise it if runtime virtual textures stay blurry while the camera stands still, which means the pages in view don't fit.
+		</member>
+		<member name="rendering/virtual_texturing/streamed_cache_size" type="int" setter="" getter="" default="24">
+			How many pages a side the cache shared by streamed virtual textures ([VirtualTexture2D]) holds: [code]24[/code] holds 576 pages. Each page costs about 95 KB of video memory, with its mipmaps, so [code]24[/code] takes about 55 MB. Raise it if virtual textures stay blurry while the camera stands still, which means the pages in view don't fit.
+		</member>
 		<member name="rendering/vrs/mode" type="int" setter="" getter="" default="0">
 			Set the default Variable Rate Shading (VRS) mode for the main viewport. See [member Viewport.vrs_mode] to change this at runtime, and [enum Viewport.VRSMode] for possible values.
 		</member>

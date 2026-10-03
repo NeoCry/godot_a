@@ -154,6 +154,16 @@ public:
 
 	virtual void texture_2d_attach_streaming_state(RID p_texture, RID p_streaming_state) = 0;
 
+	// Virtual textures. Only the part of one that the camera actually needs, at the resolution it needs it,
+	// is kept in video memory: a page at a time, in a shared cache. Sampled through shader uniforms with
+	// hint_virtual_texture; anywhere else they stand in as an ordinary texture of their fallback image.
+	virtual RID texture_virtual_create(int p_width, int p_height, RSE::VirtualTextureType p_type, const Ref<Image> &p_fallback) = 0;
+	virtual void texture_virtual_set_page_request_callback(RID p_texture, const Callable &p_callback) = 0;
+	virtual void texture_virtual_update_page(RID p_texture, int p_mipmap, int p_x, int p_y, const Ref<Image> &p_image) = 0;
+	virtual void texture_virtual_set_runtime_volume(RID p_texture, RID p_scenario, const Transform3D &p_volume, uint32_t p_layers) = 0;
+	virtual void texture_virtual_invalidate(RID p_texture, const Rect2 &p_uv_rect) = 0;
+	virtual bool is_virtual_texturing_supported() const = 0;
+
 	Array _texture_debug_usage_bind();
 
 	virtual void texture_set_force_redraw_if_visible(RID p_texture, bool p_enable) = 0;
@@ -790,6 +800,7 @@ public:
 	virtual void instance_geometry_set_lightmap(RID p_instance, RID p_lightmap, const Rect2 &p_lightmap_uv_scale, int p_lightmap_slice) = 0;
 	virtual void instance_geometry_set_lod_bias(RID p_instance, float p_lod_bias) = 0;
 	virtual void instance_geometry_set_transparency(RID p_instance, float p_transparency) = 0;
+	virtual void instance_geometry_set_virtual_texture_layers(RID p_instance, uint32_t p_layers, bool p_draw_in_main_pass) = 0;
 
 	virtual void instance_geometry_set_shader_parameter(RID p_instance, const StringName &, const Variant &p_value) = 0;
 	virtual Variant instance_geometry_get_shader_parameter(RID p_instance, const StringName &) const = 0;
@@ -1115,6 +1126,7 @@ VARIANT_ENUM_CAST_EXT(RSE::TextureType, RenderingServer::TextureType);
 VARIANT_ENUM_CAST_EXT(RSE::TextureLayeredType, RenderingServer::TextureLayeredType);
 VARIANT_ENUM_CAST_EXT(RSE::CubeMapLayer, RenderingServer::CubeMapLayer);
 VARIANT_ENUM_CAST_EXT(RSE::TextureDrawableFormat, RenderingServer::TextureDrawableFormat);
+VARIANT_ENUM_CAST_EXT(RSE::VirtualTextureType, RenderingServer::VirtualTextureType);
 VARIANT_ENUM_CAST_EXT(RSE::PipelineSource, RenderingServer::PipelineSource);
 VARIANT_ENUM_CAST_EXT(RSE::ShaderMode, RenderingServer::ShaderMode);
 VARIANT_ENUM_CAST_EXT(RSE::ArrayType, RenderingServer::ArrayType);

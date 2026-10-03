@@ -76,6 +76,12 @@
 			[b]Note:[/b] [member transparency] is clamped between [code]0.0[/code] and [code]1.0[/code], so this property cannot be used to make transparent materials more opaque than they originally are.
 			[b]Note:[/b] Only supported when using the Forward+ rendering method. When using the Mobile or Compatibility rendering method, [member transparency] is ignored and is considered as always being [code]0.0[/code].
 		</member>
+		<member name="virtual_texture_draw_in_main_pass" type="bool" setter="set_virtual_texture_draw_in_main_pass" getter="is_virtual_texture_draw_in_main_pass_enabled" default="true">
+			If [code]false[/code], this geometry is only drawn into the runtime virtual textures [member virtual_texture_draw_layers] selects, not seen by cameras or in shadows: use this for decals, paths or tire tracks painted onto a terrain, which then cost nothing to render once their pages are drawn. Has no effect while [member virtual_texture_draw_layers] is [code]0[/code].
+		</member>
+		<member name="virtual_texture_draw_layers" type="int" setter="set_virtual_texture_draw_layers" getter="get_virtual_texture_draw_layers" default="0">
+			The runtime virtual textures this geometry is drawn into: those whose layers (such as [member Landscape3D.virtual_texture_layers]) share a bit with these. Its material is drawn into them looking straight down, as described in [method RenderingServer.texture_virtual_set_runtime_volume]; one that uses [code]ALPHA[/code] is blended over the terrain like a decal. [code]0[/code] draws it into none.
+		</member>
 		<member name="visibility_range_begin" type="float" setter="set_visibility_range_begin" getter="get_visibility_range_begin" default="0.0" keywords="lod_begin, hlod_begin">
 			Starting distance from which the GeometryInstance3D will be visible, taking [member visibility_range_begin_margin] into account as well. The default value of 0 is used to disable the range check.
 		</member>
