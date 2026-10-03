@@ -9,7 +9,7 @@
 
 layout(local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE, local_size_z = GROUP_SIZE) in;
 
-#elif defined(MODE_OCCLUSION) || defined(MODE_SCROLL)
+#elif defined(MODE_OCCLUSION) || defined(MODE_SCROLL) || defined(MODE_BOX_CARRY)
 //buffer layout
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -118,7 +118,7 @@ layout(r32ui, set = 0, binding = 4) uniform restrict readonly uimage3D src_light
 layout(r32ui, set = 0, binding = 5) uniform restrict readonly uimage3D src_light_aniso;
 layout(r32ui, set = 0, binding = 6) uniform restrict readonly uimage3D src_facing;
 
-layout(r8, set = 0, binding = 7) uniform restrict writeonly image3D dst_sdf;
+layout(r8, set = 0, binding = 7) uniform restrict image3D dst_sdf;
 layout(r16ui, set = 0, binding = 8) uniform restrict writeonly uimage3D dst_occlusion;
 
 layout(set = 0, binding = 10, std430) restrict buffer DispatchData {
@@ -145,6 +145,11 @@ dst_process_voxels;
 shared ProcessVoxel store_positions[4 * 4 * 4];
 shared uint store_position_count;
 shared uint store_from_index;
+
+// The cascade's light, cleared around the box when only the cells around it are updated.
+layout(r32ui, set = 0, binding = 12) uniform restrict writeonly uimage3D dst_light;
+layout(rgba8, set = 0, binding = 13) uniform restrict writeonly image3D dst_aniso0;
+layout(rg8, set = 0, binding = 14) uniform restrict writeonly image3D dst_aniso1;
 #endif
 
 #ifdef MODE_SCROLL
@@ -184,6 +189,61 @@ layout(r16ui, set = 0, binding = 2) uniform restrict readonly uimage3D src_occlu
 
 #endif
 
+#ifdef MODE_BOX_LOWER_SDF
+
+layout(r8, set = 0, binding = 1) uniform restrict image3D dst_sdf;
+
+#endif
+
+#ifdef MODE_BOX_CARRY
+
+layout(r16ui, set = 0, binding = 1) uniform restrict writeonly uimage3D dst_albedo;
+layout(r32ui, set = 0, binding = 2) uniform restrict writeonly uimage3D dst_facing;
+layout(r32ui, set = 0, binding = 3) uniform restrict writeonly uimage3D dst_light;
+layout(r32ui, set = 0, binding = 4) uniform restrict writeonly uimage3D dst_light_aniso;
+
+// How many voxels the list held before this update.
+layout(set = 0, binding = 5, std430) restrict buffer readonly SrcDispatchData {
+	uint x;
+	uint y;
+	uint z;
+	uint total_count;
+}
+src_dispatch_data;
+
+struct ProcessVoxel {
+	uint position; // xyz 7 bit packed, extra 11 bits for neighbors.
+	uint albedo; //rgb bits 0-15 albedo, bits 16-21 are normal bits (set if geometry exists toward that side), extra 11 bits for neighbors
+	uint light; //rgbe8985 encoded total saved light, extra 2 bits for neighbors
+	uint light_aniso; //55555 light anisotropy, extra 2 bits for neighbors
+	//total neighbors: 26
+};
+
+// A copy of the list before this update.
+layout(set = 0, binding = 6, std430) restrict buffer readonly SrcProcessVoxels {
+	ProcessVoxel data[];
+}
+src_process_voxels;
+
+// The list being rebuilt (MODE_STORE adds the voxels around the box after this).
+layout(set = 0, binding = 7, std430) restrict buffer DispatchData {
+	uint x;
+	uint y;
+	uint z;
+	uint total_count;
+}
+dispatch_data;
+
+layout(set = 0, binding = 8, std430) restrict buffer writeonly ProcessVoxels {
+	ProcessVoxel data[];
+}
+dst_process_voxels;
+
+shared uint carry_count;
+shared uint carry_from_index;
+
+#endif
+
 layout(push_constant, std430) uniform Params {
 	ivec3 scroll;
 
@@ -202,8 +262,35 @@ layout(push_constant, std430) uniform Params {
 	uint pad;
 	ivec3 box_to;
 	uint pad2;
+
+	// The cells this pass works on, at the resolution it works at (see GI::SDFGI::_update_box()).
+	ivec3 region_from;
+	bool box_update; // Only the cells around the box are updated, the rest of the cascade is kept.
+	ivec3 region_to;
+	uint pad3;
 }
 params;
+
+// Around the box of a box update (see GI::SDFGI::_update_box()), the voxels within
+// BOX_VOXEL_MARGIN are put in the list again, the distance is computed again within
+// BOX_SDF_MARGIN (both defined by GI), and the light is cleared within this.
+#define BOX_LIGHT_MARGIN 1
+
+bool in_box(ivec3 p_pos, int p_margin) {
+	return all(greaterThanEqual(p_pos, params.box_from - ivec3(p_margin))) && all(lessThan(p_pos, params.box_to + ivec3(p_margin)));
+}
+
+bool in_region(ivec3 p_pos) {
+	return all(greaterThanEqual(p_pos, params.region_from)) && all(lessThan(p_pos, params.region_to));
+}
+
+// The cells whose occlusion a box update computes again (those of the probes around the box,
+// see MODE_OCCLUSION), and whose geometry the probe placement around the box looks at.
+bool in_box_occlusion_region(ivec3 p_pos) {
+	ivec3 from = (params.box_from / OCCLUSION_SIZE) * OCCLUSION_SIZE - ivec3(OCCLUSION_SIZE);
+	ivec3 to = ((params.box_to + ivec3(OCCLUSION_SIZE - 1)) / OCCLUSION_SIZE) * OCCLUSION_SIZE + ivec3(OCCLUSION_SIZE);
+	return all(greaterThanEqual(p_pos, from)) && all(lessThan(p_pos, to));
+}
 
 #ifdef MODE_PROBE_PLACEMENT
 
@@ -371,8 +458,9 @@ void main() {
 
 #ifdef MODE_SCROLL_OCCLUSION
 
-	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
-	if (any(greaterThanEqual(pos, ivec3(params.grid_size) - abs(params.scroll)))) { //too large, do nothing
+	// The region is the cells left after the scroll (or those around the box in a box update).
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz) + params.region_from;
+	if (any(greaterThanEqual(pos, params.region_to))) { //too large, do nothing
 		return;
 	}
 
@@ -395,7 +483,10 @@ void main() {
 
 #ifdef MODE_INITIALIZE_JUMP_FLOOD
 
-	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz) + params.region_from;
+	if (any(greaterThanEqual(pos, params.region_to))) {
+		return;
+	}
 
 	uint c = imageLoad(src_color, pos).r;
 	uvec4 v;
@@ -413,7 +504,10 @@ void main() {
 
 #ifdef MODE_INITIALIZE_JUMP_FLOOD_HALF
 
-	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz) + params.region_from;
+	if (any(greaterThanEqual(pos, params.region_to))) {
+		return;
+	}
 	ivec3 base_pos = pos * 2;
 
 	//since we store in half size, lets kind of randomize what we store, so
@@ -444,7 +538,10 @@ void main() {
 #ifdef MODE_JUMPFLOOD
 
 	//regular jumpflood, efficient for large steps, inefficient for small steps
-	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz) + params.region_from;
+	if (any(greaterThanEqual(pos, params.region_to))) {
+		return;
+	}
 
 	vec3 posf = vec3(pos);
 
@@ -498,7 +595,7 @@ void main() {
 
 	for (uint i = 0; i < offset_count; i++) {
 		ivec3 ofs = pos + offsets[i] * params.step_size;
-		if (any(lessThan(ofs, ivec3(0))) || any(greaterThanEqual(ofs, ivec3(params.grid_size)))) {
+		if (!in_region(ofs)) {
 			continue;
 		}
 		uvec4 q = imageLoad(src_positions, ofs);
@@ -521,7 +618,7 @@ void main() {
 	//optimized version using shared compute memory
 
 	ivec3 group_offset = ivec3(gl_WorkGroupID.xyz) % params.step_size;
-	ivec3 group_pos = group_offset + (ivec3(gl_WorkGroupID.xyz) / params.step_size) * ivec3(GROUP_SIZE * params.step_size);
+	ivec3 group_pos = params.region_from + group_offset + (ivec3(gl_WorkGroupID.xyz) / params.step_size) * ivec3(GROUP_SIZE * params.step_size);
 
 	//load data into local group memory
 
@@ -532,7 +629,7 @@ void main() {
 			ivec3 load_pos = base_pos + ((ivec3(i) >> ivec3(0, 1, 2)) & ivec3(1, 1, 1));
 			ivec3 load_global_pos = group_pos + (load_pos - ivec3(1)) * params.step_size;
 			uvec4 q;
-			if (all(greaterThanEqual(load_global_pos, ivec3(0))) && all(lessThan(load_global_pos, ivec3(params.grid_size)))) {
+			if (in_region(load_global_pos)) {
 				q = imageLoad(src_positions, load_global_pos);
 			} else {
 				q = uvec4(0); //unused
@@ -548,7 +645,7 @@ void main() {
 
 	ivec3 global_pos = group_pos + ivec3(gl_LocalInvocationID.xyz) * params.step_size;
 
-	if (any(lessThan(global_pos, ivec3(0))) || any(greaterThanEqual(global_pos, ivec3(params.grid_size)))) {
+	if (!in_region(global_pos)) {
 		return; //do nothing else, end here because outside range
 	}
 
@@ -614,7 +711,10 @@ void main() {
 
 #ifdef MODE_UPSCALE_JUMP_FLOOD
 
-	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz) + params.region_from;
+	if (any(greaterThanEqual(pos, params.region_to))) {
+		return;
+	}
 
 	uint c = imageLoad(src_color, pos).r;
 	uvec4 v;
@@ -798,6 +898,14 @@ void main() {
 		return;
 	}
 
+	if (params.box_update) {
+		// Only probes that look at the box can be placed differently: the rest are kept.
+		ivec3 probe_grid = probe_cell * OCCLUSION_SIZE;
+		if (any(greaterThanEqual(probe_grid - ivec3(OCCLUSION_SIZE), params.box_to)) || any(lessThanEqual(probe_grid + ivec3(OCCLUSION_SIZE), params.box_from))) {
+			return;
+		}
+	}
+
 	vec3 grid_pos = vec3(probe_cell * OCCLUSION_SIZE);
 	vec3 region_min = grid_pos - vec3(OCCLUSION_SIZE);
 	vec3 region_max = grid_pos + vec3(OCCLUSION_SIZE);
@@ -854,39 +962,92 @@ void main() {
 #ifdef MODE_STORE
 
 	ivec3 local = ivec3(gl_LocalInvocationID.xyz);
-	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
-	// store SDF
-	uvec4 p = imageLoad(src_positions, pos);
+	// The whole cascade, or in a box update, the cells around the box.
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz) + params.region_from;
+	uvec4 p;
 
 	bool solid = false;
-	float d;
-	if (ivec3(p.xyz) == pos) {
-		//solid block
-		d = 0;
-		solid = true;
+	bool store_occlusion = true;
+
+	if (!params.box_update) {
+		// store SDF
+		p = imageLoad(src_positions, pos);
+
+		float d;
+		if (ivec3(p.xyz) == pos) {
+			//solid block
+			d = 0;
+			solid = true;
+		} else {
+			//distance block
+			d = 1.0 + length(vec3(p.xyz) - vec3(pos));
+		}
+
+		d /= 255.0;
+
+		imageStore(dst_sdf, pos, vec4(d));
+	} else if (all(lessThan(pos, params.region_to))) {
+		// Only the cells around the box are updated (see GI::SDFGI::_update_box()), the rest of
+		// the distance field is lowered by MODE_BOX_LOWER_SDF.
+		if (in_box(pos, BOX_SDF_MARGIN)) {
+			// The jump flood only knew of the voxels within twice the margin of the box (or
+			// more), so those beyond are no nearer than the boundary of that (where it is not
+			// the cascade's).
+			p = imageLoad(src_positions, pos);
+
+			float d;
+			if (p.w != 0 && ivec3(p.xyz) == pos) {
+				d = 0.0;
+				solid = true;
+			} else {
+				ivec3 known_from = params.box_from - ivec3(2 * BOX_SDF_MARGIN);
+				ivec3 known_to = params.box_to + ivec3(2 * BOX_SDF_MARGIN);
+				float bound = 255.0;
+				for (int i = 0; i < 3; i++) {
+					if (known_from[i] > 0) {
+						bound = min(bound, float(pos[i] - known_from[i] + 1));
+					}
+					if (known_to[i] < params.grid_size) {
+						bound = min(bound, float(known_to[i] - pos[i]));
+					}
+				}
+				d = 1.0 + (p.w != 0 ? min(length(vec3(p.xyz) - vec3(pos)), bound) : bound);
+			}
+
+			imageStore(dst_sdf, pos, vec4(min(d, 255.0) / 255.0));
+		}
+
+		// The voxels around the box are put in the list again, the rest are still in it.
+		solid = solid && in_box(pos, BOX_VOXEL_MARGIN);
+		store_occlusion = in_box_occlusion_region(pos);
+
+		if (in_box(pos, BOX_LIGHT_MARGIN)) {
+			// Light of voxels that are gone, or written next to a voxel by one that may no longer
+			// be the nearest. The voxels around the box light it again this frame.
+			imageStore(dst_light, pos, uvec4(0));
+			imageStore(dst_aniso0, pos, vec4(0.0));
+			imageStore(dst_aniso1, pos, vec4(0.0));
+		}
 	} else {
-		//distance block
-		d = 1.0 + length(vec3(p.xyz) - vec3(pos));
+		store_occlusion = false; // Past the region (the group size rounds it up).
 	}
-
-	d /= 255.0;
-
-	imageStore(dst_sdf, pos, vec4(d));
 
 	// STORE OCCLUSION
 
-	uint occlusion = 0;
-	const uint occlusion_shift[8] = uint[](4, 8, 12, 0, 20, 24, 28, 16); // Channel i lands in r, g, b, a of B4G4R4A4 (see create()).
-	for (int i = 0; i < 8; i++) {
-		float occ = imageLoad(src_occlusion[i], pos).r;
-		occlusion |= uint(clamp(occ * 15.0, 0.0, 15.0)) << occlusion_shift[i];
-	}
-	{
-		ivec3 occ_pos = pos;
-		occ_pos.z += params.cascade * params.grid_size;
-		imageStore(dst_occlusion, occ_pos, uvec4(occlusion & 0xFFFF));
-		occ_pos.x += params.grid_size;
-		imageStore(dst_occlusion, occ_pos, uvec4(occlusion >> 16));
+	if (store_occlusion) {
+		uint occlusion = 0;
+		const uint occlusion_shift[8] = uint[](4, 8, 12, 0, 20, 24, 28, 16); // Channel i lands in r, g, b, a of B4G4R4A4 (see create()).
+		for (int i = 0; i < 8; i++) {
+			float occ = imageLoad(src_occlusion[i], pos).r;
+			occlusion |= uint(clamp(occ * 15.0, 0.0, 15.0)) << occlusion_shift[i];
+		}
+		{
+			ivec3 occ_pos = pos;
+			occ_pos.z += params.cascade * params.grid_size;
+			imageStore(dst_occlusion, occ_pos, uvec4(occlusion & 0xFFFF));
+			occ_pos.x += params.grid_size;
+			imageStore(dst_occlusion, occ_pos, uvec4(occlusion >> 16));
+		}
 	}
 
 	// STORE POSITIONS
@@ -966,5 +1127,80 @@ void main() {
 		dispatch_data.y = 1;
 		dispatch_data.z = 1;
 	}
+#endif
+
+#ifdef MODE_BOX_LOWER_SDF
+
+	// Away from the box of a box update (see GI::SDFGI::_update_box()), geometry can only have
+	// come closer by being in the box now, so the distance is lowered to the box's where that is
+	// less. Where geometry left the box, the distance stays what it was: too short, which tracing
+	// only takes as a reason for shorter steps, since it is at least BOX_SDF_MARGIN here.
+	ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+	if (any(greaterThanEqual(pos, ivec3(params.grid_size))) || in_box(pos, BOX_SDF_MARGIN)) {
+		return; // Computed again by MODE_STORE.
+	}
+
+	vec3 to_box = max(vec3(params.box_from - pos), max(vec3(pos - (params.box_to - ivec3(1))), vec3(0.0)));
+	float d = floor(1.0 + length(to_box));
+	if (d < imageLoad(dst_sdf, pos).r * 255.0 - 0.5) {
+		imageStore(dst_sdf, pos, vec4(d / 255.0));
+	}
+
+#endif
+
+#ifdef MODE_BOX_CARRY
+
+	// A box update (see GI::SDFGI::_update_box()) rebuilds the voxel list from a copy of it. The
+	// voxels around the box are left out, as MODE_STORE puts them in again as they are now, and
+	// those in the region the update works in are written to the render textures, the way
+	// MODE_SCROLL writes them all: that is what the jump flood, occlusion and probe placement
+	// read, and what MODE_STORE takes their stored light from. The box itself was voxelized again.
+
+	uint index = gl_GlobalInvocationID.x;
+	uint local_index = gl_LocalInvocationID.x;
+
+	if (local_index == 0) {
+		carry_count = 0;
+	}
+
+	groupMemoryBarrier();
+	barrier();
+
+	bool keep = false;
+	ProcessVoxel voxel;
+	uint keep_index = 0;
+
+	if (index < src_dispatch_data.total_count) {
+		voxel = src_process_voxels.data[index];
+		ivec3 pos = (ivec3(voxel.position) >> ivec3(0, 7, 14)) & ivec3(0x7F);
+
+		if (in_region(pos) && !in_box(pos, 0)) {
+			imageStore(dst_albedo, pos, uvec4(((voxel.albedo & 0x7FFF) << 1) | 1)); // Add the solid bit.
+			imageStore(dst_facing, pos, uvec4((voxel.albedo >> 15) & 0x3F));
+			imageStore(dst_light, pos, uvec4(voxel.light & 0x3fffffff));
+			imageStore(dst_light_aniso, pos, uvec4(voxel.light_aniso & 0x3fffffff));
+		}
+
+		keep = !in_box(pos, BOX_VOXEL_MARGIN);
+		if (keep) {
+			keep_index = atomicAdd(carry_count, 1);
+		}
+	}
+
+	groupMemoryBarrier();
+	barrier();
+
+	if (local_index == 0 && carry_count > 0) {
+		carry_from_index = atomicAdd(dispatch_data.total_count, carry_count);
+		atomicMax(dispatch_data.x, (carry_from_index + carry_count - 1) / 64 + 1);
+	}
+
+	groupMemoryBarrier();
+	barrier();
+
+	if (keep) {
+		dst_process_voxels.data[carry_from_index + keep_index] = voxel;
+	}
+
 #endif
 }

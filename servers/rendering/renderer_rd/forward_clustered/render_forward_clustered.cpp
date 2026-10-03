@@ -1359,6 +1359,7 @@ void RenderForwardClustered::_update_sdfgi(RenderDataRD *p_render_data) {
 		if (p_render_data->render_sdfgi_region_count > 0) {
 			sdfgi->reinit_rebuilt_probes();
 		}
+		sdfgi->heal_sdf();
 		if (p_render_data->sdfgi_update_data->update_static) {
 			sdfgi->render_static_lights(p_render_data, rb, p_render_data->sdfgi_update_data->static_cascade_count, p_render_data->sdfgi_update_data->static_cascade_indices, p_render_data->sdfgi_update_data->static_positional_lights);
 		}
