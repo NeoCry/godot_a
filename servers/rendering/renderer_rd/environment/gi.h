@@ -376,6 +376,8 @@ private:
 			PRE_PROCESS_OCCLUSION,
 			PRE_PROCESS_STORE,
 			PRE_PROCESS_PROBE_PLACEMENT,
+			PRE_PROCESS_BOX_CARRY,
+			PRE_PROCESS_BOX_LOWER_SDF,
 			PRE_PROCESS_MAX
 		};
 
@@ -397,6 +399,13 @@ private:
 			uint32_t pad;
 			int32_t box_to[3];
 			uint32_t pad2;
+
+			// The cells a pass works on (in the resolution it works at): the whole grid, except when
+			// only the cells around the box are updated (see SDFGI::_update_box()).
+			int32_t region_from[3];
+			uint32_t box_update; // Only the cells around the box are updated.
+			int32_t region_to[3];
+			uint32_t pad3;
 		};
 
 		SdfgiPreprocessShaderRD preprocess;
@@ -717,6 +726,16 @@ public:
 		enum {
 			MAX_CASCADES = 8,
 			DYNAMIC_OBJECT_CASCADE_DELAY = 4, // Frames; see update().
+			MAX_DIRTY_BOXES = 4, // Per cascade; see mark_dirty().
+			SDF_HEAL_DELAY = 30, // Frames without dynamic object updates; see heal_sdf().
+			// How far around the box of a dynamic object update the distance field is computed
+			// again, in cells (see _update_box()). Beyond it, the field is only lowered where the
+			// box may have brought geometry closer, so it never reads less than this there, which
+			// is more than any SDFGI lookup treats as near a surface (reflections, at most 4.3).
+			BOX_UPDATE_SDF_MARGIN = 5,
+			// How far around the box the voxels are put in the voxel list again, in cells: enough
+			// for every voxel next to a cell whose light the update clears (one cell around the box).
+			BOX_UPDATE_VOXEL_MARGIN = 2,
 			CASCADE_SIZE = 128,
 			PROBE_DIVISOR = 16,
 			ANISOTROPY_SIZE = 6,
@@ -771,6 +790,8 @@ public:
 			RID sdf_direct_light_dynamic_uniform_set;
 			RID scroll_uniform_set;
 			RID scroll_occlusion_uniform_set;
+			RID box_carry_uniform_set;
+			RID box_lower_sdf_uniform_set;
 			RID integrate_uniform_set;
 			RID lights_buffer;
 
@@ -779,16 +800,25 @@ public:
 			bool all_dynamic_lights_dirty = true;
 
 			// Where dynamic objects moved, appeared or went away since the cascade last voxelized
-			// that part of the world (in world space), still waiting to be voxelized again, and
-			// since when (the cascades waiting longest go first; see update()).
-			AABB dirty_box;
-			bool has_dirty_box = false;
-			uint64_t dirty_box_since = 0;
+			// that part of the world (in world space, apart from each other: see mark_dirty()),
+			// still waiting to be voxelized again, and since when (those waiting longest go
+			// first; see update()).
+			struct DirtyBox {
+				AABB box;
+				uint64_t since = 0;
+			};
+			LocalVector<DirtyBox> dirty_boxes;
 
 			// The cells being voxelized again this frame for it, as one more pending region.
 			bool updating_box = false;
 			Vector3i box_from;
 			Vector3i box_to;
+
+			// Whether _update_box() lowered the distance field away from a box since the cascade
+			// was last processed in full, and when it last did (see heal_sdf()).
+			bool sdf_lowered = false;
+			uint64_t last_box_update_frame = 0;
+			bool healing_sdf = false; // This frame.
 		};
 
 		// access to our containers
@@ -836,6 +866,9 @@ public:
 		float solid_cell_ratio = 0;
 		uint32_t solid_cell_count = 0;
 
+		// A copy of a cascade's solid cell list, which _update_box() rebuilds the list from.
+		RID solid_cell_scratch_buffer;
+
 		int num_cascades = 6;
 		float min_cell_size = 0;
 		uint32_t probe_axis_count = 0; //amount of probes per axis, this is an odd number because it encloses endpoints
@@ -873,11 +906,20 @@ public:
 		// Marks the world-space boxes as needing to be voxelized again (dynamic objects moved there).
 		void mark_dirty(const LocalVector<AABB> &p_aabbs);
 		void _get_box_cells(const Cascade &p_cascade, const AABB &p_box, Vector3i &r_from, Vector3i &r_to) const;
+		// Where _update_box() computes the distance field again for the cascade's box: a cube of
+		// r_size cells at r_from. False when it would take the whole cascade.
+		bool _get_box_jump_flood_region(const Cascade &p_cascade, Vector3i &r_from, int32_t &r_size) const;
+		void _update_box(uint32_t p_cascade, const Vector3i &p_jump_flood_from, int32_t p_jump_flood_size);
+		void _jump_flood(RD::ComputeListID p_compute_list, SDFGIShader::PreprocessPushConstant &p_push_constant, const Vector3i &p_from, int32_t p_size);
+		void _place_probes(RD::ComputeListID p_compute_list, SDFGIShader::PreprocessPushConstant &p_push_constant, uint32_t p_cascade);
 		int get_pending_region_count() const;
 		int get_pending_region_data(int p_region, Vector3i &r_local_offset, Vector3i &r_local_size, AABB &r_bounds) const;
 		void update_cascades();
 		// Call after this frame's render_region() calls: re-seeds the probes of cascades those rebuilt from scratch.
 		void reinit_rebuilt_probes();
+		// Call after this frame's render_region() calls: stores a cascade whose dynamic objects
+		// stopped moving again in full, with its distance field computed exactly (see update()).
+		void heal_sdf();
 		void _scroll_probes(RD::ComputeListID p_compute_list, uint32_t p_cascade, const Vector3i &p_probe_scroll, uint32_t p_flags);
 
 		void debug_draw(uint32_t p_view_count, const Projection *p_projections, const Transform3D &p_transform, int p_width, int p_height, RID p_render_target, RID p_texture, const Vector<RID> &p_texture_views);

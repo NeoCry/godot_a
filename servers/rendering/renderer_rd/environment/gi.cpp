@@ -615,6 +615,8 @@ void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_re
 		RD::get_singleton()->texture_clear(probe_state_texture, Color(0, 0, 0, 1), 0, 1, 0, tf_probe_state.array_layers);
 	}
 
+	solid_cell_scratch_buffer = RD::get_singleton()->storage_buffer_create(sizeof(SDFGI::Cascade::SolidCell) * solid_cell_count);
+
 	for (SDFGI::Cascade &cascade : cascades) {
 		/* 3D Textures */
 
@@ -734,6 +736,27 @@ void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_re
 				u.append_id(cascade.solid_cell_buffer);
 				uniforms.push_back(u);
 			}
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+				u.binding = 12;
+				u.append_id(cascade.light_data);
+				uniforms.push_back(u);
+			}
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+				u.binding = 13;
+				u.append_id(cascade.light_aniso_0_tex);
+				uniforms.push_back(u);
+			}
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+				u.binding = 14;
+				u.append_id(cascade.light_aniso_1_tex);
+				uniforms.push_back(u);
+			}
 
 			cascade.sdf_store_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.preprocess.version_get_shader(gi->sdfgi_shader.preprocess_shader, SDFGIShader::PRE_PROCESS_STORE), 0);
 		}
@@ -805,6 +828,37 @@ void GI::SDFGI::create(RID p_env, const Vector3 &p_world_position, uint32_t p_re
 			}
 
 			cascade.scroll_occlusion_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.preprocess.version_get_shader(gi->sdfgi_shader.preprocess_shader, SDFGIShader::PRE_PROCESS_SCROLL_OCCLUSION), 0);
+		}
+		{
+			Vector<RD::Uniform> uniforms;
+			RID images[4] = { render_albedo, render_geom_facing, render_emission, render_emission_aniso };
+			for (int j = 0; j < 4; j++) {
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+				u.binding = 1 + j;
+				u.append_id(images[j]);
+				uniforms.push_back(u);
+			}
+			RID buffers[4] = { cascade.solid_cell_dispatch_buffer_call, solid_cell_scratch_buffer, cascade.solid_cell_dispatch_buffer_storage, cascade.solid_cell_buffer };
+			for (int j = 0; j < 4; j++) {
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+				u.binding = 5 + j;
+				u.append_id(buffers[j]);
+				uniforms.push_back(u);
+			}
+
+			cascade.box_carry_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.preprocess.version_get_shader(gi->sdfgi_shader.preprocess_shader, SDFGIShader::PRE_PROCESS_BOX_CARRY), 0);
+		}
+		{
+			Vector<RD::Uniform> uniforms;
+			RD::Uniform u;
+			u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+			u.binding = 1;
+			u.append_id(cascade.sdf_tex);
+			uniforms.push_back(u);
+
+			cascade.box_lower_sdf_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, gi->sdfgi_shader.preprocess.version_get_shader(gi->sdfgi_shader.preprocess_shader, SDFGIShader::PRE_PROCESS_BOX_LOWER_SDF), 0);
 		}
 	}
 
@@ -1260,6 +1314,8 @@ GI::SDFGI::~SDFGI() {
 		RD::get_singleton()->free_rid(c.lights_buffer);
 	}
 
+	RD::get_singleton()->free_rid(solid_cell_scratch_buffer);
+
 	RD::get_singleton()->free_rid(render_albedo);
 	RD::get_singleton()->free_rid(render_emission);
 	RD::get_singleton()->free_rid(render_emission_aniso);
@@ -1359,39 +1415,63 @@ void GI::SDFGI::update(RID p_env, const Vector3 &p_world_position) {
 		}
 	}
 
-	// Voxelize again where dynamic objects moved (see mark_dirty()), in a few cascades per frame:
-	// those that have waited longest first, so one kept busy by something that never stops
-	// moving does not hold the others up for good, but with each cascade counting as having
-	// waited DYNAMIC_OBJECT_CASCADE_DELAY frames less than the one below it: the nearest, finest
-	// cascades, where a moving object shows most, keep up with it, and the farther ones follow.
+	// Voxelize again where dynamic objects moved (see mark_dirty()), one box per cascade, in a
+	// few cascades per frame: the boxes that have waited longest first, so one kept busy by
+	// something that never stops moving does not hold the others up for good, but with each
+	// cascade counting as having waited DYNAMIC_OBJECT_CASCADE_DELAY frames less than the one
+	// below it: the nearest, finest cascades, where a moving object shows most, keep up with it,
+	// and the farther ones follow.
 	for (SDFGI::Cascade &cascade : cascades) {
 		cascade.updating_box = false;
+		cascade.healing_sdf = false;
+		if (cascade.dirty_regions == SDFGI::Cascade::DIRTY_ALL) {
+			cascade.dirty_boxes.clear(); // Voxelized again from scratch anyway.
+			continue;
+		}
+		for (uint32_t j = 0; j < cascade.dirty_boxes.size();) {
+			Vector3i from;
+			Vector3i to;
+			_get_box_cells(cascade, cascade.dirty_boxes[j].box, from, to);
+			if (from.x >= to.x || from.y >= to.y || from.z >= to.z) {
+				cascade.dirty_boxes.remove_at_unordered(j); // No longer in the cascade.
+				continue;
+			}
+			j++;
+		}
 	}
 	for (uint32_t budget = gi->sdfgi_dynamic_object_updates_per_frame; budget > 0; budget--) {
 		int next = -1;
+		uint32_t next_box = 0;
 		for (uint32_t i = 0; i < cascades.size(); i++) {
-			SDFGI::Cascade &cascade = cascades[i];
-			if (!cascade.has_dirty_box || cascade.updating_box) {
+			const SDFGI::Cascade &cascade = cascades[i];
+			if (cascade.updating_box) {
 				continue;
 			}
-			if (cascade.dirty_regions == SDFGI::Cascade::DIRTY_ALL) {
-				cascade.has_dirty_box = false; // Voxelized again from scratch anyway.
-				continue;
-			}
-			_get_box_cells(cascade, cascade.dirty_box, cascade.box_from, cascade.box_to);
-			if (cascade.box_from.x >= cascade.box_to.x || cascade.box_from.y >= cascade.box_to.y || cascade.box_from.z >= cascade.box_to.z) {
-				cascade.has_dirty_box = false; // No longer in the cascade.
-				continue;
-			}
-			if (next == -1 || cascade.dirty_box_since + i * DYNAMIC_OBJECT_CASCADE_DELAY < cascades[next].dirty_box_since + next * DYNAMIC_OBJECT_CASCADE_DELAY) {
-				next = i;
+			for (uint32_t j = 0; j < cascade.dirty_boxes.size(); j++) {
+				if (next == -1 || cascade.dirty_boxes[j].since + i * DYNAMIC_OBJECT_CASCADE_DELAY < cascades[next].dirty_boxes[next_box].since + next * DYNAMIC_OBJECT_CASCADE_DELAY) {
+					next = i;
+					next_box = j;
+				}
 			}
 		}
 		if (next == -1) {
 			break;
 		}
-		cascades[next].updating_box = true;
-		cascades[next].has_dirty_box = false;
+		SDFGI::Cascade &cascade = cascades[next];
+		cascade.updating_box = true;
+		_get_box_cells(cascade, cascade.dirty_boxes[next_box].box, cascade.box_from, cascade.box_to);
+		cascade.dirty_boxes.remove_at_unordered(next_box);
+	}
+
+	// Where the distance field was lowered away from boxes (see _update_box()), tracing takes
+	// more steps than it needs to. Once nothing has moved in a cascade for a while, it gets the
+	// field computed again exactly (see heal_sdf()), one cascade per frame.
+	uint64_t frame = RSG::rasterizer->get_frame_number();
+	for (SDFGI::Cascade &cascade : cascades) {
+		if (cascade.sdf_lowered && !cascade.updating_box && cascade.dirty_boxes.is_empty() && cascade.dirty_regions == Vector3i() && frame - cascade.last_box_update_frame >= SDF_HEAL_DELAY) {
+			cascade.healing_sdf = true;
+			break;
+		}
 	}
 }
 
@@ -1413,17 +1493,51 @@ void GI::SDFGI::mark_dirty(const LocalVector<AABB> &p_aabbs) {
 		bounds.position = Vector3(cascade.position - Vector3i(1, 1, 1) * int32_t(cascade_size >> 1)) * cascade.cell_size * Vector3(1, 1.0 / y_mult, 1);
 		bounds.size = Vector3(1, 1, 1) * float(cascade_size) * cascade.cell_size * Vector3(1, 1.0 / y_mult, 1);
 
+		// Boxes are kept apart, as one box around objects far from each other would take in
+		// everything in between (and be updated in full, see _update_box()), but merged when
+		// the cells their updates work on would overlap anyway.
+		Vector3 margin = Vector3(1, 1.0 / y_mult, 1) * cascade.cell_size * float(2 * BOX_UPDATE_SDF_MARGIN);
+
 		for (const AABB &aabb : p_aabbs) {
 			if (!bounds.intersects(aabb)) {
 				continue;
 			}
-			if (cascade.has_dirty_box) {
-				cascade.dirty_box.merge_with(aabb);
-			} else {
-				cascade.dirty_box = aabb;
-				cascade.has_dirty_box = true;
-				cascade.dirty_box_since = frame;
+
+			Cascade::DirtyBox added;
+			added.box = aabb;
+			added.since = frame;
+
+			for (uint32_t i = 0; i < cascade.dirty_boxes.size();) {
+				AABB nearby = cascade.dirty_boxes[i].box;
+				nearby.position -= margin;
+				nearby.size += margin * 2.0;
+				if (nearby.intersects(added.box)) {
+					added.box.merge_with(cascade.dirty_boxes[i].box);
+					added.since = MIN(added.since, cascade.dirty_boxes[i].since);
+					cascade.dirty_boxes.remove_at_unordered(i);
+					i = 0; // It may now be near those it was not.
+					continue;
+				}
+				i++;
 			}
+
+			if (cascade.dirty_boxes.size() == MAX_DIRTY_BOXES) {
+				// Too many apart: merge it with the one that grows the least by it.
+				uint32_t best = 0;
+				real_t best_growth = 0;
+				for (uint32_t i = 0; i < cascade.dirty_boxes.size(); i++) {
+					real_t growth = cascade.dirty_boxes[i].box.merge(added.box).get_volume() - cascade.dirty_boxes[i].box.get_volume();
+					if (i == 0 || growth < best_growth) {
+						best = i;
+						best_growth = growth;
+					}
+				}
+				added.box.merge_with(cascade.dirty_boxes[best].box);
+				added.since = MIN(added.since, cascade.dirty_boxes[best].since);
+				cascade.dirty_boxes.remove_at_unordered(best);
+			}
+
+			cascade.dirty_boxes.push_back(added);
 		}
 	}
 }
@@ -1850,6 +1964,66 @@ void GI::SDFGI::reinit_rebuilt_probes() {
 	}
 	RD::get_singleton()->compute_list_end();
 	RD::get_singleton()->draw_command_end_label();
+}
+
+void GI::SDFGI::heal_sdf() {
+	for (uint32_t i = 0; i < cascades.size(); i++) {
+		Cascade &cascade = cascades[i];
+		if (!cascade.healing_sdf) {
+			continue;
+		}
+		cascade.healing_sdf = false;
+		cascade.sdf_lowered = false;
+
+		RD::get_singleton()->draw_command_begin_label("SDFGI Heal SDF");
+		RENDER_TIMESTAMP("SDFGI Heal SDF");
+
+		// The voxels have not moved since they were stored, so the list has them all: write
+		// them and their occlusion to the render textures, find the nearest of them to every
+		// cell, and store the cascade again from that. That also puts the list back in the order
+		// of the cells (box updates leave it in that of their workgroups), which the voxels are
+		// lit faster in.
+		RD::get_singleton()->texture_clear(render_albedo, Color(0, 0, 0, 0), 0, 1, 0, 1);
+		RD::get_singleton()->buffer_copy(cascade.solid_cell_dispatch_buffer_storage, cascade.solid_cell_dispatch_buffer_call, 0, 0, sizeof(uint32_t) * 4);
+
+		SDFGIShader::PreprocessPushConstant push_constant;
+		memset(&push_constant, 0, sizeof(SDFGIShader::PreprocessPushConstant));
+		push_constant.grid_size = cascade_size;
+		push_constant.cascade = i;
+		for (int j = 0; j < 3; j++) {
+			push_constant.region_to[j] = cascade_size;
+		}
+
+		RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_SCROLL].get_rid());
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.scroll_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+		RD::get_singleton()->compute_list_dispatch_indirect(compute_list, cascade.solid_cell_dispatch_buffer_call, 0);
+
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_SCROLL_OCCLUSION].get_rid());
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.scroll_occlusion_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_size, cascade_size, cascade_size);
+
+		RD::get_singleton()->compute_list_end();
+
+		// The store builds the list from scratch.
+		uint32_t dispatch_init[4] = { 0, 1, 1, 0 };
+		RD::get_singleton()->buffer_update(cascade.solid_cell_dispatch_buffer_storage, 0, sizeof(uint32_t) * 4, dispatch_init);
+
+		compute_list = RD::get_singleton()->compute_list_begin();
+
+		_jump_flood(compute_list, push_constant, Vector3i(), cascade_size);
+
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_STORE].get_rid());
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.sdf_store_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_size, cascade_size, cascade_size);
+
+		RD::get_singleton()->compute_list_end();
+		RD::get_singleton()->draw_command_end_label();
+	}
 }
 
 void GI::SDFGI::debug_draw(uint32_t p_view_count, const Projection *p_projections, const Transform3D &p_transform, int p_width, int p_height, RID p_render_target, RID p_texture, const Vector<RID> &p_texture_views) {
@@ -2410,8 +2584,21 @@ void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_
 	//print_line("rendering cascade " + itos(p_region) + " objects: " + itos(p_cull_count) + " bounds: " + bounds + " from: " + from + " size: " + size + " cell size: " + rtos(cascades[cascade].cell_size));
 	RendererSceneRenderRD::get_singleton()->_render_sdfgi(p_render_buffers, from, size, bounds, p_instances, render_albedo, render_emission, render_emission_aniso, render_geom_facing, p_exposure_normalization);
 
+	if (cascade_next != cascade && cascades[cascade].updating_box && cascades[cascade].dirty_regions == Vector3i()) {
+		// Only voxelized again where dynamic objects moved: update the cells around them.
+		Vector3i jump_flood_from;
+		int32_t jump_flood_size;
+		if (_get_box_jump_flood_region(cascades[cascade], jump_flood_from, jump_flood_size)) {
+			cascades[cascade].baked_exposure_normalization = p_exposure_normalization;
+			_update_box(cascade, jump_flood_from, jump_flood_size);
+			return;
+		}
+	}
+
 	if (cascade_next != cascade) {
 		RD::get_singleton()->draw_command_begin_label("SDFGI Pre-Process Cascade");
+
+		cascades[cascade].sdf_lowered = false; // Computed in full below.
 
 		RENDER_TIMESTAMP("> SDFGI Update SDF");
 		//done rendering! must update SDF
@@ -2473,6 +2660,10 @@ void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_
 			groups.y = cascade_size - Math::abs(dirty.y);
 			groups.z = cascade_size - Math::abs(dirty.z);
 
+			for (int i = 0; i < 3; i++) {
+				push_constant.region_from[i] = 0;
+				push_constant.region_to[i] = groups[i];
+			}
 			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, groups.x, groups.y, groups.z);
 
@@ -2497,78 +2688,15 @@ void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_
 		static const int optimized_jf_group_size = 8;
 
 		if (half_size) {
-			push_constant.grid_size >>= 1;
-
-			uint32_t cascade_half_size = cascade_size >> 1;
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_INITIALIZE_HALF].get_rid());
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, sdf_initialize_half_uniform_set, 0);
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_half_size, cascade_half_size, cascade_half_size);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-
-			//must start with regular jumpflood
-
-			push_constant.half_size = true;
-			{
-				RENDER_TIMESTAMP("SDFGI Jump Flood (Half-Size)");
-
-				uint32_t s = cascade_half_size;
-
-				RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD].get_rid());
-
-				int jf_us = 0;
-				//start with regular jump flood for very coarse reads, as this is impossible to optimize
-				while (s > 1) {
-					s /= 2;
-					push_constant.step_size = s;
-					RD::get_singleton()->compute_list_bind_uniform_set(compute_list, jump_flood_half_uniform_set[jf_us], 0);
-					RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-					RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_half_size, cascade_half_size, cascade_half_size);
-					RD::get_singleton()->compute_list_add_barrier(compute_list);
-					jf_us = jf_us == 0 ? 1 : 0;
-
-					if (cascade_half_size / (s / 2) >= optimized_jf_group_size) {
-						break;
-					}
-				}
-
-				RENDER_TIMESTAMP("SDFGI Jump Flood Optimized (Half-Size)");
-
-				//continue with optimized jump flood for smaller reads
-				RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_OPTIMIZED].get_rid());
-				while (s > 1) {
-					s /= 2;
-					push_constant.step_size = s;
-					RD::get_singleton()->compute_list_bind_uniform_set(compute_list, jump_flood_half_uniform_set[jf_us], 0);
-					RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-					RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_half_size, cascade_half_size, cascade_half_size);
-					RD::get_singleton()->compute_list_add_barrier(compute_list);
-					jf_us = jf_us == 0 ? 1 : 0;
-				}
-			}
-
-			// restore grid size for last passes
-			push_constant.grid_size = cascade_size;
-
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_UPSCALE].get_rid());
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, sdf_upscale_uniform_set, 0);
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_size, cascade_size, cascade_size);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-
-			//run one pass of fullsize jumpflood to fix up half size artifacts
-
-			push_constant.half_size = false;
-			push_constant.step_size = 1;
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_OPTIMIZED].get_rid());
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, jump_flood_uniform_set[upscale_jfa_uniform_set_index], 0);
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_size, cascade_size, cascade_size);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-
+			_jump_flood(compute_list, push_constant, Vector3i(), cascade_size);
 		} else {
 			//full size jumpflood
 			RENDER_TIMESTAMP("SDFGI Jump Flood (Full-Size)");
+
+			for (int i = 0; i < 3; i++) {
+				push_constant.region_from[i] = 0;
+				push_constant.region_to[i] = cascade_size;
+			}
 
 			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_INITIALIZE].get_rid());
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, sdf_initialize_uniform_set, 0);
@@ -2615,53 +2743,7 @@ void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_
 			}
 		}
 
-		if (gi->sdfgi_probe_relocation) {
-			RENDER_TIMESTAMP("SDFGI Probe Placement");
-
-			// Where the probes of this cascade go, now that its geometry is known (see
-			// MODE_PROBE_PLACEMENT). Before occlusion, which works from the probes' final positions.
-			push_constant.cascade = cascade;
-			push_constant.min_distance = probe_bias + 0.5;
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_PROBE_PLACEMENT].get_rid());
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, probe_placement_uniform_set, 0);
-			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-			RD::get_singleton()->compute_list_dispatch_threads(compute_list, probe_axis_count, probe_axis_count, probe_axis_count);
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-		}
-
-		RENDER_TIMESTAMP("SDFGI Occlusion");
-
-		// occlusion
-		{
-			uint32_t probe_size = cascade_size / SDFGI::PROBE_DIVISOR;
-			Vector3i probe_global_pos = cascades[cascade].position / probe_size;
-
-			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_OCCLUSION].get_rid());
-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, occlusion_uniform_set, 0);
-			for (int i = 0; i < 8; i++) {
-				//dispatch all at once for performance
-				Vector3i offset(i & 1, (i >> 1) & 1, (i >> 2) & 1);
-
-				if ((probe_global_pos.x & 1) != 0) {
-					offset.x = (offset.x + 1) & 1;
-				}
-				if ((probe_global_pos.y & 1) != 0) {
-					offset.y = (offset.y + 1) & 1;
-				}
-				if ((probe_global_pos.z & 1) != 0) {
-					offset.z = (offset.z + 1) & 1;
-				}
-				push_constant.probe_offset[0] = offset.x;
-				push_constant.probe_offset[1] = offset.y;
-				push_constant.probe_offset[2] = offset.z;
-				push_constant.occlusion_index = i;
-				RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
-
-				Vector3i groups = Vector3i(probe_size + 1, probe_size + 1, probe_size + 1) - offset; //if offset, it's one less probe per axis to compute
-				RD::get_singleton()->compute_list_dispatch(compute_list, groups.x, groups.y, groups.z);
-			}
-			RD::get_singleton()->compute_list_add_barrier(compute_list);
-		}
+		_place_probes(compute_list, push_constant, cascade);
 
 		RENDER_TIMESTAMP("SDFGI Store");
 
@@ -2707,6 +2789,264 @@ void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_
 
 		RENDER_TIMESTAMP("< SDFGI Update SDF");
 		RD::get_singleton()->draw_command_end_label();
+	}
+}
+
+void GI::SDFGI::_jump_flood(RD::ComputeListID p_compute_list, SDFGIShader::PreprocessPushConstant &p_push_constant, const Vector3i &p_from, int32_t p_size) {
+	// Finds the nearest solid voxel of each cell of the cube of p_size cells at p_from (p_size a
+	// power of two of at least 16, p_from even), from the solid voxels in it, into render_sdf.
+	// At half size first, then a pass at full size to fix it up: much faster, very little difference.
+	static const int optimized_jf_group_size = 8;
+	const int32_t half_size = p_size >> 1;
+
+	p_push_constant.grid_size = cascade_size >> 1;
+	for (int i = 0; i < 3; i++) {
+		p_push_constant.region_from[i] = p_from[i] >> 1;
+		p_push_constant.region_to[i] = (p_from[i] >> 1) + half_size;
+	}
+
+	RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_INITIALIZE_HALF].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, sdf_initialize_half_uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(p_compute_list, half_size, half_size, half_size);
+	RD::get_singleton()->compute_list_add_barrier(p_compute_list);
+
+	//must start with regular jumpflood
+
+	p_push_constant.half_size = true;
+
+	RENDER_TIMESTAMP("SDFGI Jump Flood (Half-Size)");
+
+	int32_t s = half_size;
+
+	RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD].get_rid());
+
+	int jf_us = 0;
+	//start with regular jump flood for very coarse reads, as this is impossible to optimize
+	while (s > 1) {
+		s /= 2;
+		p_push_constant.step_size = s;
+		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, jump_flood_half_uniform_set[jf_us], 0);
+		RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(p_compute_list, half_size, half_size, half_size);
+		RD::get_singleton()->compute_list_add_barrier(p_compute_list);
+		jf_us = jf_us == 0 ? 1 : 0;
+
+		if (half_size / (s / 2) >= optimized_jf_group_size) {
+			break;
+		}
+	}
+
+	RENDER_TIMESTAMP("SDFGI Jump Flood Optimized (Half-Size)");
+
+	//continue with optimized jump flood for smaller reads
+	RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_OPTIMIZED].get_rid());
+	while (s > 1 || jf_us != upscale_jfa_uniform_set_index) {
+		// The upscale reads the result from where the passes for a whole cascade leave it: for
+		// a smaller cube, an extra pass at the smallest step may be needed to end up there.
+		s = MAX(s / 2, 1);
+		p_push_constant.step_size = s;
+		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, jump_flood_half_uniform_set[jf_us], 0);
+		RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(p_compute_list, half_size, half_size, half_size);
+		RD::get_singleton()->compute_list_add_barrier(p_compute_list);
+		jf_us = jf_us == 0 ? 1 : 0;
+	}
+
+	// restore grid size for last passes
+	p_push_constant.grid_size = cascade_size;
+	for (int i = 0; i < 3; i++) {
+		p_push_constant.region_from[i] = p_from[i];
+		p_push_constant.region_to[i] = p_from[i] + p_size;
+	}
+
+	RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_UPSCALE].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, sdf_upscale_uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(p_compute_list, p_size, p_size, p_size);
+	RD::get_singleton()->compute_list_add_barrier(p_compute_list);
+
+	//run one pass of fullsize jumpflood to fix up half size artifacts
+
+	p_push_constant.half_size = false;
+	p_push_constant.step_size = 1;
+	RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_JUMP_FLOOD_OPTIMIZED].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, jump_flood_uniform_set[upscale_jfa_uniform_set_index], 0);
+	RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(p_compute_list, p_size, p_size, p_size);
+	RD::get_singleton()->compute_list_add_barrier(p_compute_list);
+}
+
+bool GI::SDFGI::_get_box_jump_flood_region(const Cascade &p_cascade, Vector3i &r_from, int32_t &r_size) const {
+	// The distance field is computed again within BOX_UPDATE_SDF_MARGIN of the box, from the
+	// solid voxels within twice that, so that any beyond are no nearer than the margin (see
+	// MODE_STORE in sdfgi_preprocess.glsl). _jump_flood() works on cubes.
+	const Vector3i grid = Vector3i(1, 1, 1) * int32_t(cascade_size);
+	const Vector3i margin = Vector3i(1, 1, 1) * (2 * BOX_UPDATE_SDF_MARGIN);
+	Vector3i from = (p_cascade.box_from - margin).clamp(Vector3i(), grid);
+	Vector3i to = (p_cascade.box_to + margin).clamp(Vector3i(), grid);
+	from = Vector3i(from.x & ~1, from.y & ~1, from.z & ~1);
+
+	Vector3i size = to - from;
+	int32_t side = 16;
+	while (side < size[size.max_axis_index()]) {
+		side *= 2;
+	}
+	if (side >= int32_t(cascade_size)) {
+		return false; // As well process the whole cascade.
+	}
+
+	r_from = from.min(grid - Vector3i(1, 1, 1) * side);
+	r_size = side;
+	return true;
+}
+
+void GI::SDFGI::_update_box(uint32_t p_cascade, const Vector3i &p_jump_flood_from, int32_t p_jump_flood_size) {
+	// Dynamic objects moved within the cascade's box, which render_region() voxelized again. Only
+	// what that can change is updated, rather than everything, as after a scroll: the voxel list
+	// is rebuilt from a copy of itself, with the voxels around the box put in again as they are
+	// now; the distance field is computed again around the box, and only lowered elsewhere,
+	// where the box may have brought geometry closer; and the probes around the box are placed
+	// again and their occlusion computed again. The light around the box is cleared; static
+	// lights only light the box again (see render_static_lights()), the voxels around it keep
+	// what they had of them.
+	Cascade &cascade = cascades[p_cascade];
+	const Vector3i grid = Vector3i(1, 1, 1) * int32_t(cascade_size);
+	const int32_t occlusion_size = cascade_size / PROBE_DIVISOR;
+
+	RD::get_singleton()->draw_command_begin_label("SDFGI Update Box");
+	RENDER_TIMESTAMP("> SDFGI Update Box");
+
+	// The cells of the probes around the box (see in_box_occlusion_region() in sdfgi_preprocess.glsl).
+	Vector3i occlusion_from = ((cascade.box_from / occlusion_size) * occlusion_size - Vector3i(1, 1, 1) * occlusion_size).clamp(Vector3i(), grid);
+	Vector3i occlusion_to = (((cascade.box_to + Vector3i(1, 1, 1) * (occlusion_size - 1)) / occlusion_size) * occlusion_size + Vector3i(1, 1, 1) * occlusion_size).clamp(Vector3i(), grid);
+
+	// The list as it is, which the carry pass rebuilds it from.
+	RD::get_singleton()->buffer_copy(cascade.solid_cell_dispatch_buffer_storage, cascade.solid_cell_dispatch_buffer_call, 0, 0, sizeof(uint32_t) * 4);
+	RD::get_singleton()->buffer_copy(cascade.solid_cell_buffer, solid_cell_scratch_buffer, 0, 0, sizeof(Cascade::SolidCell) * solid_cell_count);
+	uint32_t dispatch_init[4] = { 0, 1, 1, 0 };
+	RD::get_singleton()->buffer_update(cascade.solid_cell_dispatch_buffer_storage, 0, sizeof(uint32_t) * 4, dispatch_init);
+
+	SDFGIShader::PreprocessPushConstant push_constant;
+	memset(&push_constant, 0, sizeof(SDFGIShader::PreprocessPushConstant));
+	push_constant.grid_size = cascade_size;
+	push_constant.cascade = p_cascade;
+	push_constant.box_update = 1;
+	for (int i = 0; i < 3; i++) {
+		push_constant.box_from[i] = cascade.box_from[i];
+		push_constant.box_to[i] = cascade.box_to[i];
+	}
+
+	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+
+	RENDER_TIMESTAMP("SDFGI Box Carry");
+
+	// The voxels the passes below read (the jump flood, around the box, and the probe placement
+	// and occlusion, around the probes there) go to the render textures.
+	for (int i = 0; i < 3; i++) {
+		push_constant.region_from[i] = MIN(occlusion_from[i], p_jump_flood_from[i]);
+		push_constant.region_to[i] = MAX(occlusion_to[i], p_jump_flood_from[i] + p_jump_flood_size);
+	}
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_BOX_CARRY].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.box_carry_uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_indirect(compute_list, cascade.solid_cell_dispatch_buffer_call, 0);
+
+	// So does their occlusion, of which only that of the probes around the box is computed again.
+	for (int i = 0; i < 3; i++) {
+		push_constant.region_from[i] = occlusion_from[i];
+		push_constant.region_to[i] = occlusion_to[i];
+	}
+	Vector3i occlusion_size_cells = occlusion_to - occlusion_from;
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_SCROLL_OCCLUSION].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.scroll_occlusion_uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(compute_list, occlusion_size_cells.x, occlusion_size_cells.y, occlusion_size_cells.z);
+	RD::get_singleton()->compute_list_add_barrier(compute_list);
+
+	_jump_flood(compute_list, push_constant, p_jump_flood_from, p_jump_flood_size);
+
+	_place_probes(compute_list, push_constant, p_cascade);
+
+	RENDER_TIMESTAMP("SDFGI Box Store");
+
+	// Around the box, which takes in all that the store writes there.
+	for (int i = 0; i < 3; i++) {
+		push_constant.region_from[i] = occlusion_from[i];
+		push_constant.region_to[i] = occlusion_to[i];
+	}
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_STORE].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.sdf_store_uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(compute_list, occlusion_size_cells.x, occlusion_size_cells.y, occlusion_size_cells.z);
+
+	// The rest of the distance field.
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_BOX_LOWER_SDF].get_rid());
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.box_lower_sdf_uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(compute_list, cascade_size, cascade_size, cascade_size);
+
+	RD::get_singleton()->compute_list_end();
+
+	// What moved may cast shadows on voxels anywhere in the cascade, not just around it: light
+	// them all this frame, as after a scroll.
+	cascade.all_dynamic_lights_dirty = true;
+
+	cascade.sdf_lowered = true;
+	cascade.last_box_update_frame = RSG::rasterizer->get_frame_number();
+
+	RENDER_TIMESTAMP("< SDFGI Update Box");
+	RD::get_singleton()->draw_command_end_label();
+}
+
+// Places the cascade's probes (with relocation), and computes their occlusion.
+void GI::SDFGI::_place_probes(RD::ComputeListID p_compute_list, SDFGIShader::PreprocessPushConstant &p_push_constant, uint32_t p_cascade) {
+	if (gi->sdfgi_probe_relocation) {
+		RENDER_TIMESTAMP("SDFGI Probe Placement");
+
+		// Where the probes of this cascade go, now that its geometry is known (see
+		// MODE_PROBE_PLACEMENT). Before occlusion, which works from the probes' final positions.
+		p_push_constant.cascade = p_cascade;
+		p_push_constant.min_distance = probe_bias + 0.5;
+		RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_PROBE_PLACEMENT].get_rid());
+		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, probe_placement_uniform_set, 0);
+		RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+		RD::get_singleton()->compute_list_dispatch_threads(p_compute_list, probe_axis_count, probe_axis_count, probe_axis_count);
+		RD::get_singleton()->compute_list_add_barrier(p_compute_list);
+	}
+
+	RENDER_TIMESTAMP("SDFGI Occlusion");
+
+	// occlusion
+	{
+		uint32_t probe_size = cascade_size / SDFGI::PROBE_DIVISOR;
+		Vector3i probe_global_pos = cascades[p_cascade].position / probe_size;
+
+		RD::get_singleton()->compute_list_bind_compute_pipeline(p_compute_list, gi->sdfgi_shader.preprocess_pipeline[SDFGIShader::PRE_PROCESS_OCCLUSION].get_rid());
+		RD::get_singleton()->compute_list_bind_uniform_set(p_compute_list, occlusion_uniform_set, 0);
+		for (int i = 0; i < 8; i++) {
+			//dispatch all at once for performance
+			Vector3i offset(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+
+			if ((probe_global_pos.x & 1) != 0) {
+				offset.x = (offset.x + 1) & 1;
+			}
+			if ((probe_global_pos.y & 1) != 0) {
+				offset.y = (offset.y + 1) & 1;
+			}
+			if ((probe_global_pos.z & 1) != 0) {
+				offset.z = (offset.z + 1) & 1;
+			}
+			p_push_constant.probe_offset[0] = offset.x;
+			p_push_constant.probe_offset[1] = offset.y;
+			p_push_constant.probe_offset[2] = offset.z;
+			p_push_constant.occlusion_index = i;
+			RD::get_singleton()->compute_list_set_push_constant(p_compute_list, &p_push_constant, sizeof(SDFGIShader::PreprocessPushConstant));
+
+			Vector3i groups = Vector3i(probe_size + 1, probe_size + 1, probe_size + 1) - offset; //if offset, it's one less probe per axis to compute
+			RD::get_singleton()->compute_list_dispatch(p_compute_list, groups.x, groups.y, groups.z);
+		}
+		RD::get_singleton()->compute_list_add_barrier(p_compute_list);
 	}
 }
 
@@ -4117,7 +4457,11 @@ void GI::init(SkyRD *p_sky) {
 		preprocess_modes.push_back("\n#define MODE_OCCLUSION\n");
 		preprocess_modes.push_back("\n#define MODE_STORE\n");
 		preprocess_modes.push_back("\n#define MODE_PROBE_PLACEMENT\n");
+		preprocess_modes.push_back("\n#define MODE_BOX_CARRY\n");
+		preprocess_modes.push_back("\n#define MODE_BOX_LOWER_SDF\n");
 		String defines = "\n#define OCCLUSION_SIZE " + itos(SDFGI::CASCADE_SIZE / SDFGI::PROBE_DIVISOR) + "\n";
+		defines += "\n#define BOX_SDF_MARGIN " + itos(SDFGI::BOX_UPDATE_SDF_MARGIN) + "\n";
+		defines += "\n#define BOX_VOXEL_MARGIN " + itos(SDFGI::BOX_UPDATE_VOXEL_MARGIN) + "\n";
 		sdfgi_shader.preprocess.initialize(preprocess_modes, defines);
 		sdfgi_shader.preprocess_shader = sdfgi_shader.preprocess.version_create();
 		for (int i = 0; i < SDFGIShader::PRE_PROCESS_MAX; i++) {
