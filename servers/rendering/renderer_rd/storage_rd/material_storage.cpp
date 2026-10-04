@@ -2691,6 +2691,18 @@ bool MaterialStorage::material_casts_shadows(RID p_material) {
 	return true; //by default everything casts shadows
 }
 
+bool MaterialStorage::material_uses_node_data(RID p_material) {
+	Material *material = material_owner.get_or_null(p_material);
+	ERR_FAIL_NULL_V(material, true);
+	if (material->shader && material->shader->data && material->shader->data->uses_node_data()) {
+		return true;
+	}
+	if (material->next_pass.is_valid()) {
+		return material_uses_node_data(material->next_pass);
+	}
+	return false;
+}
+
 RSE::CullMode RendererRD::MaterialStorage::material_get_cull_mode(RID p_material) const {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL_V(material, RSE::CULL_MODE_DISABLED);

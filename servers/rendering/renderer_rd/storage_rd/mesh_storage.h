@@ -402,6 +402,7 @@ public:
 	virtual RID mesh_surface_get_index_buffer_rd_rid(RID p_mesh, int p_surface) const override;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const override;
+	virtual bool mesh_has_lods(RID p_mesh) const override;
 
 	virtual void mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) override;
 	virtual AABB mesh_get_custom_aabb(RID p_mesh) const override;

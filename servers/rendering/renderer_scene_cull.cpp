@@ -1250,6 +1250,9 @@ void RendererSceneCull::instance_set_ignore_culling(RID p_instance, bool p_enabl
 		} else {
 			idata.flags &= ~InstanceData::FLAG_IGNORE_ALL_CULLING;
 		}
+		if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
+			_shadow_static_changed(instance); // It casts its shadows into other passes.
+		}
 	}
 }
 
@@ -1652,6 +1655,10 @@ void RendererSceneCull::instance_geometry_set_lod_bias(RID p_instance, float p_l
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 		ERR_FAIL_NULL(geom->geometry_instance);
 		geom->geometry_instance->set_lod_bias(p_lod_bias);
+
+		if (instance->scenario && instance->indexer_id.is_valid()) {
+			_shadow_static_changed(instance); // Its shadows pick other LODs.
+		}
 	}
 }
 
@@ -2091,9 +2098,23 @@ void RendererSceneCull::_shadow_static_mark_dirty(Scenario *p_scenario, const AA
 }
 
 void RendererSceneCull::_shadow_static_changed(Instance *p_instance) const {
+	Scenario *scenario = p_instance->scenario;
+	if (p_instance->shadow_batch_owner != nullptr) {
+		// It draws static meshes, which keep track of their own changes (see ShadowBatch).
+		p_instance->shadow_static = true;
+		p_instance->shadow_static_aabb = p_instance->transformed_aabb;
+		if (p_instance->array_index >= 0) {
+			scenario->instance_data[p_instance->array_index].flags |= InstanceData::FLAG_SHADOW_STATIC;
+		}
+		return;
+	}
+
+	if (p_instance->shadow_batch != nullptr) {
+		_shadow_batch_remove(p_instance);
+	}
+
 	// Anything that changes takes its shadows out of the caches of static objects, and is drawn
 	// every frame instead, until it hasn't changed for a while.
-	Scenario *scenario = p_instance->scenario;
 	if (p_instance->shadow_static) {
 		p_instance->shadow_static = false;
 		if (p_instance->array_index >= 0) {
@@ -2113,6 +2134,14 @@ void RendererSceneCull::_shadow_static_changed(Instance *p_instance) const {
 void RendererSceneCull::_shadow_static_removed(Instance *p_instance) const {
 	if (p_instance->scenario == nullptr) {
 		return;
+	}
+	if (p_instance->shadow_batch_owner != nullptr) {
+		// Its meshes cast the same shadows without it.
+		p_instance->shadow_static = false;
+		return;
+	}
+	if (p_instance->shadow_batch != nullptr) {
+		_shadow_batch_remove(p_instance);
 	}
 	if (p_instance->shadow_static) {
 		p_instance->shadow_static = false;
@@ -2143,7 +2172,318 @@ void RendererSceneCull::_update_shadow_static(Scenario *p_scenario) {
 		instance->shadow_static_aabb = instance->transformed_aabb;
 		p_scenario->instance_data[instance->array_index].flags |= InstanceData::FLAG_SHADOW_STATIC;
 		_shadow_static_mark_dirty(p_scenario, instance->shadow_static_aabb);
+		p_scenario->shadow_static_settled.push_back(instance);
 	}
+}
+
+// Shadow batches are only made of meshes this close to each other along each axis, so that each
+// of them is only culled for the shadow passes around it. Each batch is drawn with a draw call of
+// its own in each of those, where the meshes would have been drawn together otherwise.
+static constexpr real_t SHADOW_BATCH_CELL_SIZE = 128.0;
+// The same for meshes that have LODs: the LOD of a batch's shadows is picked from the distance
+// to the batch rather than to each of its meshes.
+static constexpr real_t SHADOW_BATCH_LOD_CELL_SIZE = 32.0;
+// Fewer meshes than this cast their own shadows: drawing them one by one costs less than culling
+// them on the GPU would.
+static constexpr uint32_t SHADOW_BATCH_MIN_INSTANCES = 4;
+
+bool RendererSceneCull::_instance_can_be_shadow_batched(const Instance *p_instance) {
+	if (p_instance->base_type != RSE::INSTANCE_MESH || !p_instance->shadow_static || p_instance->array_index < 0) {
+		return false;
+	}
+	const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(p_instance->base_data);
+	if (!geom->can_cast_shadows || p_instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF || _get_cull_layer_mask(p_instance) == 0) {
+		return false;
+	}
+	// Drawn as an instance of a MultiMesh, its materials would read their node differently, and it
+	// would have no shader parameters of its own.
+	if (geom->material_uses_node_data || p_instance->instance_uniforms.is_allocated()) {
+		return false;
+	}
+	// The batch culls its instances by the bounds of their mesh, draws all of them with the same
+	// face culling, and fades none of them.
+	if (p_instance->custom_aabb != nullptr || p_instance->extra_margin != 0.0 || p_instance->ignore_all_culling || p_instance->transform.basis.determinant() < 0.0 || p_instance->transparency != 0.0f) {
+		return false;
+	}
+	return true;
+}
+
+void RendererSceneCull::_shadow_batch_set_batched(Instance *p_member, bool p_batched) {
+	// Its shadows are cast by the batch instead.
+	if (p_member->array_index < 0) {
+		return;
+	}
+	InstanceData &idata = p_member->scenario->instance_data[p_member->array_index];
+	if (!p_batched && p_member->cast_shadows != RSE::SHADOW_CASTING_SETTING_OFF) {
+		idata.flags |= InstanceData::FLAG_CAST_SHADOWS;
+	} else {
+		idata.flags &= ~InstanceData::FLAG_CAST_SHADOWS;
+	}
+}
+
+void RendererSceneCull::_shadow_batch_mark_dirty(ShadowBatch *p_batch) const {
+	if (!p_batch->dirty_item.in_list()) {
+		shadow_batch_dirty_list.add(&p_batch->dirty_item);
+	}
+}
+
+void RendererSceneCull::_shadow_batch_add(Scenario *p_scenario, Instance *p_instance) {
+	ShadowBatchKey key;
+	key.mesh = p_instance->base;
+	key.material_override = p_instance->material_override;
+	key.material_overlay = p_instance->material_overlay;
+	key.materials = p_instance->materials;
+	key.layer_mask = _get_cull_layer_mask(p_instance);
+	key.lod_bias = p_instance->lod_bias;
+	key.double_sided = p_instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED;
+	real_t cell_size = SHADOW_BATCH_CELL_SIZE;
+	if (RSG::mesh_storage->mesh_has_lods(p_instance->base)) {
+		// The LOD is picked from the batch's scale as well, so meshes only share a batch with
+		// those of about the same scale, which the batch is given.
+		cell_size = SHADOW_BATCH_LOD_CELL_SIZE;
+		const Vector3 scale = p_instance->transform.basis.get_scale_abs();
+		const real_t max_scale = MAX(scale.x, MAX(scale.y, scale.z));
+		if (max_scale > 0.0) {
+			key.scale_step = (int)Math::round(Math::log(max_scale) / Math::log((real_t)2.0) * 2.0);
+		}
+	}
+	const Vector3 cell = p_instance->transformed_aabb.get_center() / cell_size;
+	key.cell = Vector3i(Math::floor(cell.x), Math::floor(cell.y), Math::floor(cell.z));
+
+	ShadowBatch *batch = nullptr;
+	ShadowBatch **found = p_scenario->shadow_batches.getptr(key);
+	if (found != nullptr) {
+		batch = *found;
+	} else {
+		batch = memnew(ShadowBatch);
+		batch->key = key;
+		batch->scenario = p_scenario;
+		p_scenario->shadow_batches.insert(key, batch);
+	}
+
+	p_instance->shadow_batch = batch;
+	p_instance->shadow_batch_index = batch->members.size();
+	batch->members.push_back(p_instance);
+
+	if (batch->instance.is_valid()) {
+		if (batch->members.size() == 1) {
+			// It dropped its mesh with its last member (see _shadow_batch_remove()).
+			RSG::mesh_storage->multimesh_set_mesh(batch->multimesh, batch->key.mesh);
+		}
+		_shadow_batch_set_batched(p_instance, true);
+		_shadow_batch_mark_dirty(batch);
+	} else if (batch->members.size() >= SHADOW_BATCH_MIN_INSTANCES) {
+		_shadow_batch_activate(batch);
+	}
+}
+
+void RendererSceneCull::_shadow_batch_remove(Instance *p_instance) const {
+	ShadowBatch *batch = p_instance->shadow_batch;
+	Instance *last = batch->members[batch->members.size() - 1];
+	batch->members[p_instance->shadow_batch_index] = last;
+	last->shadow_batch_index = p_instance->shadow_batch_index;
+	batch->members.resize(batch->members.size() - 1);
+	p_instance->shadow_batch = nullptr;
+	batch->scenario->shadow_batches_shrunk.insert(batch);
+
+	if (batch->instance.is_valid()) {
+		_shadow_batch_set_batched(p_instance, false);
+		if (batch->members.is_empty()) {
+			// Its mesh may be about to go away along with its last user. Emptied first, so that
+			// its bounds don't have to be computed again.
+			RSG::mesh_storage->multimesh_allocate_data(batch->multimesh, 0, RSE::MULTIMESH_TRANSFORM_3D);
+			RSG::mesh_storage->multimesh_set_mesh(batch->multimesh, RID());
+		}
+		_shadow_batch_mark_dirty(batch);
+	}
+}
+
+void RendererSceneCull::_shadow_batch_activate(ShadowBatch *p_batch) {
+	p_batch->multimesh = RSG::mesh_storage->multimesh_allocate();
+	RSG::mesh_storage->multimesh_initialize(p_batch->multimesh);
+	// Before it has instances, which it would read back to compute its bounds otherwise.
+	RSG::mesh_storage->multimesh_set_mesh(p_batch->multimesh, p_batch->key.mesh);
+	RSG::mesh_storage->multimesh_set_gpu_shadow_caster(p_batch->multimesh, true, 0.0, 0.0);
+
+	p_batch->instance = instance_allocate();
+	instance_initialize(p_batch->instance);
+	Instance *instance = instance_owner.get_or_null(p_batch->instance);
+	instance->shadow_batch_owner = p_batch;
+	instance_set_base(p_batch->instance, p_batch->multimesh);
+	instance->materials = p_batch->key.materials;
+	instance_geometry_set_material_override(p_batch->instance, p_batch->key.material_override);
+	instance_geometry_set_material_overlay(p_batch->instance, p_batch->key.material_overlay);
+	// Only drawn in shadow passes either way, but this keeps it out of the views' culling as well.
+	instance_geometry_set_cast_shadows_setting(p_batch->instance, RSE::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
+	if (p_batch->key.double_sided) {
+		static_cast<InstanceGeometryData *>(instance->base_data)->geometry_instance->set_cast_double_sided_shadows(true);
+	}
+	instance_set_layer_mask(p_batch->instance, p_batch->key.layer_mask);
+	instance_geometry_set_lod_bias(p_batch->instance, p_batch->key.lod_bias);
+	if (p_batch->key.scale_step != 0) {
+		// Its instances are scaled down by as much (see _shadow_batches_flush()).
+		instance_set_transform(p_batch->instance, Transform3D(Basis().scaled(Vector3(1, 1, 1) * p_batch->key.get_scale())));
+	}
+	instance_set_scenario(p_batch->instance, p_batch->scenario->self);
+
+	for (Instance *member : p_batch->members) {
+		_shadow_batch_set_batched(member, true);
+	}
+	_shadow_batch_mark_dirty(p_batch);
+}
+
+void RendererSceneCull::_shadow_batch_deactivate(ShadowBatch *p_batch) {
+	for (Instance *member : p_batch->members) {
+		_shadow_batch_set_batched(member, false);
+	}
+	if (p_batch->dirty_item.in_list()) {
+		shadow_batch_dirty_list.remove(&p_batch->dirty_item);
+	}
+	// The instance keeps pointing to the batch, which may be gone by the time it is freed: it is
+	// only ever compared to null.
+	shadow_batches_to_free.push_back(Pair<RID, RID>(p_batch->instance, p_batch->multimesh));
+	p_batch->instance = RID();
+	p_batch->multimesh = RID();
+}
+
+void RendererSceneCull::_shadow_batch_free(ShadowBatch *p_batch) {
+	if (p_batch->instance.is_valid()) {
+		_shadow_batch_deactivate(p_batch);
+	}
+	for (Instance *member : p_batch->members) {
+		member->shadow_batch = nullptr;
+	}
+	p_batch->scenario->shadow_batches.erase(p_batch->key);
+	p_batch->scenario->shadow_batches_shrunk.erase(p_batch);
+	memdelete(p_batch);
+}
+
+bool RendererSceneCull::_shadow_batches_flush() const {
+	bool flushed = false;
+	while (shadow_batch_dirty_list.first()) {
+		ShadowBatch *batch = shadow_batch_dirty_list.first()->self();
+		shadow_batch_dirty_list.remove(&batch->dirty_item);
+		flushed = true;
+
+		const uint32_t count = batch->members.size();
+		if (batch->multimesh.is_null() || count == 0) {
+			continue;
+		}
+
+		// In the space of the batch's instance, which only ever scales them (see _shadow_batch_add()).
+		const bool scaled = batch->key.scale_step != 0;
+		const real_t inv_scale = 1.0 / batch->key.get_scale();
+
+		Vector<float> buffer;
+		buffer.resize(count * 12);
+		float *w = buffer.ptrw();
+		AABB aabb = batch->members[0]->transformed_aabb;
+		for (uint32_t i = 0; i < count; i++) {
+			const Instance *member = batch->members[i];
+			const Transform3D t = scaled ? Transform3D(member->transform.basis * inv_scale, member->transform.origin * inv_scale) : member->transform;
+			float *dst = w + i * 12;
+			dst[0] = t.basis.rows[0][0];
+			dst[1] = t.basis.rows[0][1];
+			dst[2] = t.basis.rows[0][2];
+			dst[3] = t.origin.x;
+			dst[4] = t.basis.rows[1][0];
+			dst[5] = t.basis.rows[1][1];
+			dst[6] = t.basis.rows[1][2];
+			dst[7] = t.origin.y;
+			dst[8] = t.basis.rows[2][0];
+			dst[9] = t.basis.rows[2][1];
+			dst[10] = t.basis.rows[2][2];
+			dst[11] = t.origin.z;
+			aabb.merge_with(member->transformed_aabb);
+		}
+		if (scaled) {
+			aabb = AABB(aabb.position * inv_scale, aabb.size * inv_scale);
+		}
+
+		// The bounds go first, so that they aren't computed from the buffer.
+		RSG::mesh_storage->multimesh_allocate_data(batch->multimesh, count, RSE::MULTIMESH_TRANSFORM_3D);
+		RSG::mesh_storage->multimesh_set_custom_aabb(batch->multimesh, aabb);
+		RSG::mesh_storage->multimesh_set_buffer(batch->multimesh, buffer);
+	}
+	return flushed;
+}
+
+void RendererSceneCull::_shadow_batches_clear(Scenario *p_scenario) {
+	LocalVector<ShadowBatch *> batches;
+	for (const KeyValue<ShadowBatchKey, ShadowBatch *> &E : p_scenario->shadow_batches) {
+		batches.push_back(E.value);
+	}
+	for (ShadowBatch *batch : batches) {
+		_shadow_batch_free(batch);
+	}
+	p_scenario->shadow_static_settled.clear();
+	_shadow_batches_free_stopped();
+}
+
+void RendererSceneCull::_shadow_batches_free_stopped() {
+	LocalVector<Pair<RID, RID>> stopped = std::move(shadow_batches_to_free);
+	shadow_batches_to_free.clear();
+	for (const Pair<RID, RID> &E : stopped) {
+		free(E.first);
+		RSG::mesh_storage->multimesh_free(E.second);
+	}
+}
+
+void RendererSceneCull::_update_shadow_batches(Scenario *p_scenario) {
+	const bool enabled = scene_render->is_gpu_shadow_caster_supported() && GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/batch_static_shadow_casters");
+	if (!enabled) {
+		if (p_scenario->shadow_batching) {
+			_shadow_batches_clear(p_scenario);
+			p_scenario->shadow_batching = false;
+		}
+		p_scenario->shadow_static_settled.clear();
+		return;
+	}
+
+	if (!p_scenario->shadow_batching) {
+		// Just turned on: what is static already joins in as well.
+		p_scenario->shadow_batching = true;
+		p_scenario->shadow_static_settled.clear();
+		for (SelfList<Instance> *E = p_scenario->instances.first(); E; E = E->next()) {
+			if (E->self()->shadow_static) {
+				p_scenario->shadow_static_settled.push_back(E->self());
+			}
+		}
+	}
+
+	if (p_scenario->shadow_batches_shrunk.is_empty() && p_scenario->shadow_static_settled.is_empty()) {
+		return;
+	}
+
+	// Batches left without meshes go away, rather than be joined again.
+	LocalVector<ShadowBatch *> shrunk;
+	for (ShadowBatch *batch : p_scenario->shadow_batches_shrunk) {
+		shrunk.push_back(batch);
+	}
+	p_scenario->shadow_batches_shrunk.clear();
+	for (ShadowBatch *&batch : shrunk) {
+		if (batch->members.is_empty()) {
+			_shadow_batch_free(batch);
+			batch = nullptr;
+		}
+	}
+
+	for (Instance *instance : p_scenario->shadow_static_settled) {
+		if (instance->shadow_batch == nullptr && _instance_can_be_shadow_batched(instance)) {
+			_shadow_batch_add(p_scenario, instance);
+		}
+	}
+	p_scenario->shadow_static_settled.clear();
+
+	// Those left with too few leave them to cast their own shadows. Not as soon as they drop
+	// below the minimum, so that a mesh going back and forth doesn't start and stop its batch.
+	for (ShadowBatch *batch : shrunk) {
+		if (batch != nullptr && batch->instance.is_valid() && batch->members.size() < SHADOW_BATCH_MIN_INSTANCES / 2) {
+			_shadow_batch_deactivate(batch);
+		}
+	}
+
+	_shadow_batches_free_stopped();
 }
 
 void RendererSceneCull::_unpair_instance(Instance *p_instance) {
@@ -3242,7 +3582,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 					for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 						Instance *instance = instance_shadow_cull_result[j];
 						const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || _is_shadow_batched(instance) || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 							continue;
 						} else {
 							if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -3326,7 +3666,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 					for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 						Instance *instance = instance_shadow_cull_result[j];
 						const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+						if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || _is_shadow_batched(instance) || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 							continue;
 						} else {
 							if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -3395,7 +3735,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
 				const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || _is_shadow_batched(instance) || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -3462,7 +3802,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
 				const bool is_inactive_particle = (instance->base_type == RSE::INSTANCE_PARTICLES) && RSG::particles_storage->particles_is_inactive(instance->base);
-				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
+				if (!instance->visible || !((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || _is_shadow_batched(instance) || !(p_visible_layers & _get_cull_layer_mask(instance) & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base)) || is_inactive_particle) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -5150,6 +5490,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 			bool can_cast_shadows = true;
 			bool is_animated = false;
+			bool uses_node_data = false;
 
 			p_instance->instance_uniforms.materials_start();
 
@@ -5162,6 +5503,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 					can_cast_shadows = false;
 				}
 				is_animated = RSG::material_storage->material_is_animated(p_instance->material_override);
+				uses_node_data = RSG::material_storage->material_uses_node_data(p_instance->material_override);
 				p_instance->instance_uniforms.materials_append(p_instance->material_override);
 			} else {
 				if (p_instance->base_type == RSE::INSTANCE_MESH) {
@@ -5184,6 +5526,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 									is_animated = true;
 								}
 
+								if (RSG::material_storage->material_uses_node_data(mat)) {
+									uses_node_data = true;
+								}
+
 								p_instance->instance_uniforms.materials_append(mat);
 
 								RSG::material_storage->material_update_dependency(mat, &p_instance->dependency_tracker);
@@ -5202,7 +5548,8 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 						int sc = RSG::mesh_storage->mesh_get_surface_count(mesh);
 						for (int i = 0; i < sc; i++) {
-							RID mat = RSG::mesh_storage->mesh_surface_get_material(mesh, i);
+							// Only the instances drawing shadow batches have surface materials of their own (see ShadowBatch).
+							RID mat = i < p_instance->materials.size() && p_instance->materials[i].is_valid() ? p_instance->materials[i] : RSG::mesh_storage->mesh_surface_get_material(mesh, i);
 
 							if (!mat.is_valid()) {
 								cast_shadows = true;
@@ -5269,6 +5616,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			if (p_instance->material_overlay.is_valid()) {
 				can_cast_shadows = can_cast_shadows && RSG::material_storage->material_casts_shadows(p_instance->material_overlay);
 				is_animated = is_animated || RSG::material_storage->material_is_animated(p_instance->material_overlay);
+				uses_node_data = uses_node_data || RSG::material_storage->material_uses_node_data(p_instance->material_overlay);
 				p_instance->instance_uniforms.materials_append(p_instance->material_overlay);
 			}
 
@@ -5283,6 +5631,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			}
 
 			geom->material_is_animated = is_animated;
+			geom->material_uses_node_data = uses_node_data;
 
 			if (p_instance->instance_uniforms.materials_finish(p_instance->self)) {
 				geom->geometry_instance->set_instance_shader_uniforms_offset(p_instance->instance_uniforms.location());
@@ -5312,9 +5661,12 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 }
 
 void RendererSceneCull::update_dirty_instances() const {
-	while (_instance_update_list.first()) {
-		_update_dirty_instance(_instance_update_list.first()->self());
-	}
+	do {
+		while (_instance_update_list.first()) {
+			_update_dirty_instance(_instance_update_list.first()->self());
+		}
+		// Shadow batches whose meshes changed draw them again, which updates their own instances.
+	} while (_shadow_batches_flush());
 
 	// Update dirty resources after dirty instances as instance updates may affect resources.
 	RSG::utilities->update_dirty_resources();
@@ -5336,8 +5688,12 @@ void RendererSceneCull::update() {
 	render_particle_colliders();
 
 	for (uint32_t i = 0; i < rid_count; i++) {
-		_update_shadow_static(scenario_owner.get_or_null(rids[i]));
+		Scenario *scenario = scenario_owner.get_or_null(rids[i]);
+		_update_shadow_static(scenario);
+		_update_shadow_batches(scenario);
 	}
+	// What batching changed, before anything is culled.
+	update_dirty_instances();
 }
 
 bool RendererSceneCull::free(RID p_rid) {
@@ -5355,6 +5711,7 @@ bool RendererSceneCull::free(RID p_rid) {
 	} else if (scenario_owner.owns(p_rid)) {
 		Scenario *scenario = scenario_owner.get_or_null(p_rid);
 
+		_shadow_batches_clear(scenario);
 		while (scenario->instances.first()) {
 			instance_set_scenario(scenario->instances.first()->self()->self, RID());
 		}

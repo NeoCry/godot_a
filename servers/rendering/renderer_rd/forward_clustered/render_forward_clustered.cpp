@@ -3314,7 +3314,8 @@ uint32_t RenderForwardClustered::_shadow_cull_add_job(GeometryInstanceForwardClu
 	ShadowCull::Job job = {};
 
 	// The test runs in the MultiMesh's own space, so the frustum is brought over rather than
-	// every instance being transformed into world space.
+	// every instance being transformed into world space. Distance ranges are measured in that
+	// space too, as FoliageGPUCuller does.
 	const Transform3D to_local = p_instance->transform.affine_inverse();
 	job.plane_count = MIN(p_planes.size(), 6);
 	for (uint32_t i = 0; i < job.plane_count; i++) {
@@ -5230,8 +5231,14 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 
 				materials = mesh_storage->mesh_get_surface_count_and_materials(mesh, surface_count);
 				if (materials) {
+					// Only the instances drawing the shadows of batches of static meshes have
+					// surface materials of their own (see RendererSceneCull::ShadowBatch).
+					const RID *inst_materials = ginstance->data->surface_materials.ptr();
+					uint32_t surf_mat_count = ginstance->data->surface_materials.size();
+
 					for (uint32_t j = 0; j < surface_count; j++) {
-						_geometry_instance_add_surface(ginstance, j, materials[j], mesh);
+						RID material = (j < surf_mat_count && inst_materials[j].is_valid()) ? inst_materials[j] : materials[j];
+						_geometry_instance_add_surface(ginstance, j, material, mesh);
 					}
 				}
 

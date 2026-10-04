@@ -73,6 +73,8 @@ public:
 	virtual RID mesh_surface_get_index_buffer_rd_rid(RID p_mesh, int p_surface) const = 0;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const = 0;
+	// Whether any surface of the mesh, or of the mesh it casts shadows with, has LODs.
+	virtual bool mesh_has_lods(RID p_mesh) const { return false; }
 
 	virtual void mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) = 0;
 	virtual AABB mesh_get_custom_aabb(RID p_mesh) const = 0;

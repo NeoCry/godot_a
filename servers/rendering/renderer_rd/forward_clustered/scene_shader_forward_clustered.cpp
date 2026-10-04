@@ -84,6 +84,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_world_coordinates = false;
 	uses_particle_trails = false;
 	uses_z_clip_scale = false;
+	reads_node_data = false;
 
 	int depth_drawi = DEPTH_DRAW_OPAQUE;
 
@@ -135,6 +136,14 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 
 	actions.usage_flag_pointers["DISCARD"] = &uses_discard;
 	actions.usage_flag_pointers["TIME"] = &uses_time;
+	// What fragment shaders read of these comes from the node a MultiMesh is drawn for, not from
+	// its instance, and the instance index differs as well.
+	actions.usage_flag_pointers["MODEL_MATRIX"] = &reads_node_data;
+	actions.usage_flag_pointers["MODEL_NORMAL_MATRIX"] = &reads_node_data;
+	actions.usage_flag_pointers["NODE_POSITION_WORLD"] = &reads_node_data;
+	actions.usage_flag_pointers["NODE_POSITION_VIEW"] = &reads_node_data;
+	actions.usage_flag_pointers["INSTANCE_ID"] = &reads_node_data;
+	actions.usage_flag_pointers["INSTANCE_CUSTOM"] = &reads_node_data;
 	actions.usage_flag_pointers["ROUGHNESS"] = &uses_roughness;
 	actions.usage_flag_pointers["NORMAL"] = &uses_normal;
 	actions.usage_flag_pointers["NORMAL_MAP"] = &uses_normal_map;

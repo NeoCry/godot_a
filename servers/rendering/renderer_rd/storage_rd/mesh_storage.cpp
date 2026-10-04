@@ -722,6 +722,20 @@ int MeshStorage::mesh_get_surface_count(RID p_mesh) const {
 	return mesh->surface_count;
 }
 
+bool MeshStorage::mesh_has_lods(RID p_mesh) const {
+	const Mesh *mesh = mesh_owner.get_or_null(p_mesh);
+	ERR_FAIL_NULL_V(mesh, false);
+	for (uint32_t i = 0; i < mesh->surface_count; i++) {
+		if (mesh->surfaces[i]->lod_count > 0) {
+			return true;
+		}
+	}
+	if (mesh->shadow_mesh.is_valid() && mesh->shadow_mesh != p_mesh) {
+		return mesh_has_lods(mesh->shadow_mesh);
+	}
+	return false;
+}
+
 void MeshStorage::mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);

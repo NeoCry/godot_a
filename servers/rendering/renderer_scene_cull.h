@@ -330,6 +330,47 @@ public:
 	PagedArrayPool<InstanceData> instance_data_page_pool;
 	PagedArrayPool<InstanceVisibilityData> instance_visibility_data_page_pool;
 
+	// What static meshes have to share to cast their shadows through the same batch (see ShadowBatch).
+	struct ShadowBatchKey {
+		RID mesh;
+		RID material_override;
+		RID material_overlay;
+		Vector<RID> materials;
+		uint32_t layer_mask = 0;
+		float lod_bias = 1.0;
+		bool double_sided = false;
+		// Steps of a factor of sqrt(2) in scale, for meshes with LODs (see _shadow_batch_add()).
+		int scale_step = 0;
+		Vector3i cell;
+
+		bool operator==(const ShadowBatchKey &p_other) const {
+			return mesh == p_other.mesh && material_override == p_other.material_override && material_overlay == p_other.material_overlay && materials == p_other.materials && layer_mask == p_other.layer_mask && lod_bias == p_other.lod_bias && double_sided == p_other.double_sided && scale_step == p_other.scale_step && cell == p_other.cell;
+		}
+
+		real_t get_scale() const {
+			return Math::pow((real_t)2.0, (real_t)scale_step * (real_t)0.5);
+		}
+
+		static uint32_t hash(const ShadowBatchKey &p_key) {
+			uint32_t h = hash_murmur3_one_64(p_key.mesh.get_id());
+			h = hash_murmur3_one_64(p_key.material_override.get_id(), h);
+			h = hash_murmur3_one_64(p_key.material_overlay.get_id(), h);
+			for (const RID &material : p_key.materials) {
+				h = hash_murmur3_one_64(material.get_id(), h);
+			}
+			h = hash_murmur3_one_32(p_key.layer_mask, h);
+			h = hash_murmur3_one_float(p_key.lod_bias, h);
+			h = hash_murmur3_one_32(p_key.double_sided, h);
+			h = hash_murmur3_one_32(p_key.scale_step, h);
+			h = hash_murmur3_one_32(p_key.cell.x, h);
+			h = hash_murmur3_one_32(p_key.cell.y, h);
+			h = hash_murmur3_one_32(p_key.cell.z, h);
+			return hash_fmix32(h);
+		}
+	};
+
+	struct ShadowBatch;
+
 	struct Scenario {
 		enum IndexerType {
 			INDEXER_GEOMETRY, //for geometry
@@ -373,6 +414,14 @@ public:
 		// whether that was too much to keep track of.
 		LocalVector<AABB> shadow_static_dirty_aabbs;
 		bool shadow_static_dirty_all = false;
+
+		// The batches static meshes cast their shadows through (see ShadowBatch), those that lost
+		// instances lately, the geometry that turned static this frame, and whether batching was
+		// on the last time it was updated.
+		HashMap<ShadowBatchKey, ShadowBatch *, ShadowBatchKey> shadow_batches;
+		HashSet<ShadowBatch *> shadow_batches_shrunk;
+		LocalVector<Instance *> shadow_static_settled;
+		bool shadow_batching = false;
 
 		Scenario() {
 			indexers[INDEXER_GEOMETRY].set_index(INDEXER_GEOMETRY);
@@ -489,6 +538,11 @@ public:
 		bool shadow_static = false;
 		uint64_t shadow_static_frame = 0;
 		AABB shadow_static_aabb;
+		// The batch this static mesh belongs to, and its place in it (see ShadowBatch). On the
+		// instance that draws a batch, shadow_batch_owner is that batch instead.
+		ShadowBatch *shadow_batch = nullptr;
+		uint32_t shadow_batch_index = 0;
+		ShadowBatch *shadow_batch_owner = nullptr;
 		Scenario *scenario = nullptr;
 		SelfList<Instance> scenario_item;
 
@@ -646,11 +700,43 @@ public:
 	mutable SelfList<Instance>::List _instance_update_list;
 	void _instance_queue_update(Instance *p_instance, bool p_update_aabb, bool p_update_dependencies = false) const;
 
+	// Static meshes that share a mesh, materials and shadow settings, close to each other, whose
+	// shadows are cast by a MultiMesh of all of them instead of by each of them, once there are
+	// enough of them: the renderer culls its instances on the GPU for each shadow pass (see
+	// RenderingServer::multimesh_set_gpu_shadow_caster()), which saves drawing them one by one.
+	// Only on when the renderer supports that and rendering/lights_and_shadows/batch_static_shadow_casters
+	// is set (see _update_shadow_batches()).
+	//
+	// A mesh joins its batch when it turns static (see Instance::shadow_static), and leaves it as
+	// soon as anything about it changes. Its shadows are cast by the batch exactly while the
+	// batch draws it: whenever its instances change, the batch draws them again before anything
+	// is culled (see _shadow_batches_flush()). The batch counts as static itself, and leaves the
+	// caches of static objects to its instances: their shadows don't change for going through it.
+	struct ShadowBatch {
+		ShadowBatchKey key;
+		Scenario *scenario = nullptr;
+		LocalVector<Instance *> members;
+		// While there are enough members: the MultiMesh drawing them, and its instance.
+		RID multimesh;
+		RID instance;
+		SelfList<ShadowBatch> dirty_item;
+
+		ShadowBatch() :
+				dirty_item(this) {}
+	};
+
+	mutable SelfList<ShadowBatch>::List shadow_batch_dirty_list;
+	// Instances and MultiMeshes of batches that stopped, freed once nothing goes through the batches.
+	LocalVector<Pair<RID, RID>> shadow_batches_to_free;
+
 	struct InstanceGeometryData : public InstanceBaseData {
 		RenderGeometryInstance *geometry_instance = nullptr;
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
 		bool material_is_animated;
+		// Whether its materials read anything about the node they draw (see
+		// RendererMaterialStorage::material_uses_node_data()).
+		bool material_uses_node_data = false;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
 
@@ -1204,6 +1290,23 @@ public:
 	void _shadow_static_removed(Instance *p_instance) const;
 	void _shadow_static_mark_dirty(Scenario *p_scenario, const AABB &p_aabb) const;
 	void _update_shadow_static(Scenario *p_scenario);
+
+	// Batching of static meshes' shadows (see ShadowBatch).
+	static bool _instance_can_be_shadow_batched(const Instance *p_instance);
+	_FORCE_INLINE_ static bool _is_shadow_batched(const Instance *p_instance) {
+		return p_instance->shadow_batch != nullptr && p_instance->shadow_batch->instance.is_valid();
+	}
+	static void _shadow_batch_set_batched(Instance *p_member, bool p_batched);
+	void _shadow_batch_mark_dirty(ShadowBatch *p_batch) const;
+	void _shadow_batch_add(Scenario *p_scenario, Instance *p_instance);
+	void _shadow_batch_remove(Instance *p_instance) const;
+	void _shadow_batch_activate(ShadowBatch *p_batch);
+	void _shadow_batch_deactivate(ShadowBatch *p_batch);
+	void _shadow_batch_free(ShadowBatch *p_batch);
+	bool _shadow_batches_flush() const;
+	void _shadow_batches_clear(Scenario *p_scenario);
+	void _shadow_batches_free_stopped();
+	void _update_shadow_batches(Scenario *p_scenario);
 
 	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF);
 
