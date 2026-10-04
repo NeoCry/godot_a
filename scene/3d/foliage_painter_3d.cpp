@@ -30,6 +30,7 @@
 
 #include "foliage_painter_3d.h"
 
+#include "core/config/engine.h"
 #include "core/core_string_names.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -39,8 +40,8 @@
 #include "scene/resources/multimesh.h"
 
 void FoliagePainter3D::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_layers", "layers"), &FoliagePainter3D::set_layers);
-	ClassDB::bind_method(D_METHOD("get_layers"), &FoliagePainter3D::get_layers);
+	ClassDB::bind_method(D_METHOD("set_foliage_layers", "foliage_layers"), &FoliagePainter3D::set_foliage_layers);
+	ClassDB::bind_method(D_METHOD("get_foliage_layers"), &FoliagePainter3D::get_foliage_layers);
 
 	ClassDB::bind_method(D_METHOD("set_cell_size", "size"), &FoliagePainter3D::set_cell_size);
 	ClassDB::bind_method(D_METHOD("get_cell_size"), &FoliagePainter3D::get_cell_size);
@@ -61,7 +62,7 @@ void FoliagePainter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_get_cell_data"), &FoliagePainter3D::_get_cell_data);
 	ClassDB::bind_method(D_METHOD("_set_cell_data", "data"), &FoliagePainter3D::_set_cell_data);
 
-	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("FoliageLayer")), "set_layers", "get_layers");
+	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "foliage_layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("FoliageLayer")), "set_foliage_layers", "get_foliage_layers");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_culling"), "set_gpu_culling", "is_gpu_culling_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cell_size", PROPERTY_HINT_RANGE, "1,256,0.5,or_greater,suffix:m"), "set_cell_size", "get_cell_size");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "_cell_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_INTERNAL | PROPERTY_USAGE_STORAGE), "_set_cell_data", "_get_cell_data");
@@ -69,6 +70,16 @@ void FoliagePainter3D::_bind_methods() {
 	ADD_GROUP("Debug", "debug_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_show_cells"), "set_debug_show_cells", "is_debug_show_cells_enabled");
 }
+
+#ifndef DISABLE_DEPRECATED
+bool FoliagePainter3D::_set(const StringName &p_name, const Variant &p_value) {
+	if (p_name == "layers") { // Scenes saved before the property became foliage_layers.
+		set_foliage_layers(p_value);
+		return true;
+	}
+	return false;
+}
+#endif // DISABLE_DEPRECATED
 
 void FoliagePainter3D::_notification(int p_what) {
 	switch (p_what) {
@@ -245,20 +256,89 @@ void FoliagePainter3D::_sync_layer_cells(int p_layer) {
 	}
 }
 
-void FoliagePainter3D::_prune_layers_to_size() {
-	while ((int)layer_cells.size() > layers.size()) {
-		HashMap<Vector2i, FoliageCell> &cells = layer_cells[layer_cells.size() - 1];
-		for (KeyValue<Vector2i, FoliageCell> &kv : cells) {
-			for (MultiMeshInstance3D *node : kv.value.lod_nodes) {
-				if (node != nullptr) {
-					remove_child(node);
-					node->queue_free();
-				}
-			}
+void FoliagePainter3D::_free_cell_nodes(FoliageCell &p_cell) {
+	for (MultiMeshInstance3D *node : p_cell.lod_nodes) {
+		if (node != nullptr) {
+			remove_child(node);
+			node->queue_free();
 		}
-		layer_cells.remove_at(layer_cells.size() - 1);
+	}
+	p_cell.lod_nodes.clear();
+}
+
+void FoliagePainter3D::_remap_layer_cells(const TypedArray<FoliageLayer> &p_old_layers) {
+	LocalVector<HashMap<Vector2i, FoliageCell>> old_cells = std::move(layer_cells);
+	layer_cells.clear();
+	layer_cells.resize(layers.size());
+
+	LocalVector<bool> old_taken;
+	old_taken.resize(old_cells.size());
+	for (uint32_t i = 0; i < old_taken.size(); i++) {
+		old_taken[i] = false;
+	}
+	LocalVector<bool> new_filled;
+	new_filled.resize(layers.size());
+	for (uint32_t j = 0; j < new_filled.size(); j++) {
+		new_filled[j] = false;
 	}
 
+	// A layer that is still in the list keeps its instances wherever it moved
+	// to, and one that comes back (an undone removal) gets its own back.
+	for (int j = 0; j < layers.size(); j++) {
+		const Ref<FoliageLayer> layer = layers[j];
+		if (layer.is_null()) {
+			continue;
+		}
+		for (int i = 0; i < (int)old_cells.size() && i < p_old_layers.size(); i++) {
+			if (!old_taken[i] && Ref<FoliageLayer>(p_old_layers[i]) == layer) {
+				layer_cells[j] = std::move(old_cells[i]);
+				old_taken[i] = true;
+				new_filled[j] = true;
+				break;
+			}
+		}
+		if (new_filled[j]) {
+			continue;
+		}
+		for (uint32_t d = 0; d < detached_layers.size(); d++) {
+			if (detached_layers[d].layer == layer) {
+				layer_cells[j] = std::move(detached_layers[d].cells);
+				detached_layers.remove_at(d);
+				new_filled[j] = true;
+				break;
+			}
+		}
+	}
+
+	// A slot whose layer was swapped for another one (or one that was just
+	// created in an empty slot) keeps what was painted in it.
+	for (int j = 0; j < layers.size(); j++) {
+		if (!new_filled[j] && j < (int)old_cells.size() && !old_taken[j]) {
+			layer_cells[j] = std::move(old_cells[j]);
+			old_taken[j] = true;
+		}
+	}
+
+	// What is left belongs to layers that are gone from the list.
+	const bool keep_for_undo = Engine::get_singleton()->is_editor_hint();
+	for (uint32_t i = 0; i < old_cells.size(); i++) {
+		if (old_taken[i]) {
+			continue;
+		}
+		for (KeyValue<Vector2i, FoliageCell> &kv : old_cells[i]) {
+			_free_cell_nodes(kv.value);
+		}
+		const Ref<FoliageLayer> old_layer = (int)i < p_old_layers.size() ? Ref<FoliageLayer>(p_old_layers[i]) : Ref<FoliageLayer>();
+		if (keep_for_undo && old_layer.is_valid() && !old_cells[i].is_empty()) {
+			DetachedLayer detached;
+			detached.layer = old_layer;
+			detached.cells = std::move(old_cells[i]);
+			detached_layers.push_back(std::move(detached));
+		}
+	}
+}
+
+void FoliagePainter3D::_prune_gpu_layers_to_size() {
 	while ((int)gpu_layers.size() > layers.size()) {
 		GPULayer *gpu_layer = gpu_layers[gpu_layers.size() - 1];
 		if (gpu_layer != nullptr) {
@@ -317,7 +397,7 @@ void FoliagePainter3D::_refresh_layer_instance_count(int p_layer) {
 	layer->_set_display_instance_count(total);
 }
 
-void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
+void FoliagePainter3D::set_foliage_layers(const TypedArray<FoliageLayer> &p_layers) {
 	// Every non-null entry in `layers` is always connected to _on_layer_changed
 	// bound with its own index, so it can be resynced whenever the layer's
 	// own properties (mesh, visibility range, etc.) change in the Inspector.
@@ -328,6 +408,7 @@ void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
 		}
 	}
 
+	const TypedArray<FoliageLayer> old_layers = layers;
 	layers = p_layers;
 
 	for (int i = 0; i < layers.size(); i++) {
@@ -337,8 +418,8 @@ void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
 		}
 	}
 
-	_ensure_layer_cells_size();
-	_prune_layers_to_size();
+	_remap_layer_cells(old_layers);
+	_prune_gpu_layers_to_size();
 	for (int i = 0; i < layers.size(); i++) {
 		_sync_layer_cells(i);
 		_mark_gpu_layer_dirty(i);
@@ -348,7 +429,7 @@ void FoliagePainter3D::set_layers(const TypedArray<FoliageLayer> &p_layers) {
 	update_gizmos();
 }
 
-TypedArray<FoliageLayer> FoliagePainter3D::get_layers() const {
+TypedArray<FoliageLayer> FoliagePainter3D::get_foliage_layers() const {
 	return layers;
 }
 
@@ -418,12 +499,7 @@ void FoliagePainter3D::remove_instance(int p_layer, const Vector2i &p_cell, int 
 	if (transforms.is_empty()) {
 		// Free the now-empty cell instead of leaving permanent zero-instance
 		// MultiMeshInstance3D nodes behind.
-		for (MultiMeshInstance3D *node : cell->lod_nodes) {
-			if (node != nullptr) {
-				remove_child(node);
-				node->queue_free();
-			}
-		}
+		_free_cell_nodes(*cell);
 		layer_cells[p_layer].erase(p_cell);
 	}
 
@@ -807,12 +883,7 @@ Array FoliagePainter3D::_get_cell_data() const {
 void FoliagePainter3D::_set_cell_data(const Array &p_data) {
 	for (uint32_t li = 0; li < layer_cells.size(); li++) {
 		for (KeyValue<Vector2i, FoliageCell> &kv : layer_cells[li]) {
-			for (MultiMeshInstance3D *node : kv.value.lod_nodes) {
-				if (node != nullptr) {
-					remove_child(node);
-					node->queue_free();
-				}
-			}
+			_free_cell_nodes(kv.value);
 		}
 	}
 	layer_cells.clear();
@@ -858,13 +929,13 @@ PackedStringArray FoliagePainter3D::get_configuration_warnings() const {
 	PackedStringArray warnings = Node3D::get_configuration_warnings();
 
 	if (layers.is_empty()) {
-		warnings.push_back(RTR("No foliage layers configured. Add at least one layer with a Mesh, then use the foliage brush in the 3D viewport to paint instances."));
+		warnings.push_back(RTR("No foliage layers configured. Add at least one FoliageLayer with a Mesh, then use the foliage brush in the 3D viewport to paint instances."));
 	}
 
 	for (int i = 0; i < layers.size(); i++) {
 		Ref<FoliageLayer> layer = layers[i];
 		if (layer.is_valid() && !layer->has_any_mesh()) {
-			warnings.push_back(vformat(RTR("Layer %d (\"%s\") has no Mesh assigned on any of its LOD levels."), i, layer->get_layer_name()));
+			warnings.push_back(vformat(RTR("FoliageLayer %d (\"%s\") has no Mesh assigned on any of its LODs."), i, layer->get_layer_name()));
 		}
 		if (gpu_culling && layer.is_valid() && layer->get_lod_levels().size() > FoliageGPUCuller::MAX_LOD_LEVELS) {
 			warnings.push_back(vformat(RTR("GPU Culling only drives the first %d LOD levels of layer %d; the rest are not rendered."), FoliageGPUCuller::MAX_LOD_LEVELS, i));

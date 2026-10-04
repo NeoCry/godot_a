@@ -33,14 +33,15 @@
 #include "core/math/face3.h"
 #include "core/math/random_pcg.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 #include "editor/plugins/editor_plugin.h"
+#include "editor/scene/3d/foliage_painter_3d_inspector_plugin.h"
 #include "scene/3d/foliage_painter_3d.h"
 
-class Button;
-class ButtonGroup;
 class HBoxContainer;
 class MenuButton;
 class MeshInstance3D;
+class OptionButton;
 class SpinBox;
 class StandardMaterial3D;
 class Landscape3D;
@@ -48,17 +49,24 @@ class Landscape3D;
 // In-viewport brush tool for FoliagePainter3D: paints, erases, and single-place/
 // remove instances of one or more foliage layers directly onto the actual
 // triangle geometry of any MeshInstance3D under the cursor (no collision shapes
-// required). Modeled after GridMap's paint/erase workflow and Path3D's toolbar.
+// required). Laid out after Landscape3DEditorPlugin, and so after Unreal
+// Engine's foliage tools: the brushes are one list in the toolbar, holding
+// Shift turns a brush around (Paint into Erase, Place Single into Remove
+// Single), and the mouse wheel sizes the brush over the ground.
 class FoliagePainter3DEditorPlugin : public EditorPlugin {
 	GDCLASS(FoliagePainter3DEditorPlugin, EditorPlugin);
 
+public:
 	enum Mode {
+		// No brush: the viewport selects and moves things as usual.
+		MODE_SELECT,
 		MODE_PAINT,
 		MODE_ERASE,
 		MODE_PLACE_SINGLE,
 		MODE_REMOVE_SINGLE,
 	};
 
+private:
 	struct StrokeOp {
 		int layer = 0;
 		Vector2i cell;
@@ -69,22 +77,25 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 
 	FoliagePainter3D *painter = nullptr;
 
+	Ref<EditorInspectorPluginFoliagePainter3D> inspector_plugin;
+
 	// Toolbar.
 	HBoxContainer *topmenu_bar = nullptr;
-	HBoxContainer *toolbar = nullptr;
-	Ref<ButtonGroup> mode_button_group;
-	Button *mode_paint_button = nullptr;
-	Button *mode_erase_button = nullptr;
-	Button *mode_place_single_button = nullptr;
-	Button *mode_remove_single_button = nullptr;
+	OptionButton *mode_option = nullptr;
 	SpinBox *brush_radius_spin = nullptr;
 	SpinBox *brush_density_spin = nullptr;
-	MenuButton *layers_menu = nullptr;
+	MenuButton *instances_menu = nullptr;
 
-	Mode mode = MODE_PAINT;
+	Mode mode = MODE_SELECT;
+	// Shift is held: the brush does the opposite of its mode (see
+	// _get_effective_mode()).
+	bool inverted = false;
 	float brush_radius = 2.0;
 	float brush_density = 6.0;
-	Vector<bool> layer_active;
+	// The layers the brush leaves alone, by FoliageLayer rather than by index:
+	// a layer just added to the list is painted with right away, and taking a
+	// layer out or reordering them does not hand its choice to another one.
+	HashSet<ObjectID> inactive_layers;
 
 	// Brush cursor overlay (drawn directly through RenderingServer, like GridMap's cursor).
 	RID cursor_mesh;
@@ -94,9 +105,16 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 	// the material (and its RID) would be freed while the mesh surface still
 	// referenced it, leaving cursor_mesh pointing at a dangling material RID.
 	Ref<StandardMaterial3D> cursor_material;
+	// Where the cursor last was on the ground, to redraw it when the brush
+	// changes under a still mouse.
+	bool cursor_on_surface = false;
+	Vector3 cursor_position;
+	Vector3 cursor_normal;
 
 	// Active stroke (mouse held down).
 	bool stroke_active = false;
+	// What the stroke does, Shift included, as it started.
+	Mode stroke_mode = MODE_SELECT;
 	Vector<StrokeOp> stroke_ops;
 	uint64_t last_stamp_msec = 0;
 	Vector<MeshInstance3D *> paint_targets;
@@ -118,11 +136,23 @@ class FoliagePainter3DEditorPlugin : public EditorPlugin {
 	void _collect_mesh_instances(Node *p_node, Vector<MeshInstance3D *> &r_out) const;
 	void _collect_terrains(Node *p_node, Vector<Landscape3D *> &r_out) const;
 	bool _raycast(const Vector3 &p_from, const Vector3 &p_dir, float p_max_dist, Vector3 &r_position, Vector3 &r_normal);
+	bool _raycast_screen(Camera3D *p_camera, const Point2 &p_screen_pos, Vector3 &r_position, Vector3 &r_normal);
 
-	void _rebuild_layers_menu();
-	void _layer_menu_id_pressed(int p_id);
-	void _mode_pressed(int p_mode);
+	void _rebuild_instances_menu();
+	void _instances_menu_id_pressed(int p_id);
+
+	Mode _get_effective_mode() const;
+	void _set_mode(Mode p_mode);
+	void _mode_selected(int p_index);
+	void _set_inverted(bool p_inverted);
+
+	void _update_theme();
+	void _update_cursor_color();
+
 	void _set_brush_radius(double p_value);
+	// Grows or shrinks the brush by p_notches turns of the mouse wheel.
+	void _scale_brush_radius(bool p_grow, float p_notches);
+	void _radius_spin_gui_input(const Ref<InputEvent> &p_event);
 	void _set_brush_density(double p_value);
 
 	void _update_cursor(const Vector3 &p_position, const Vector3 &p_normal, bool p_visible);

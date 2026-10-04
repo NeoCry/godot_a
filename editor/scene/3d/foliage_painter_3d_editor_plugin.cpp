@@ -32,17 +32,20 @@
 
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
+#include "editor/editor_interface.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/landscape_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/physics/static_body_3d.h"
-#include "scene/3d/landscape_3d.h"
 #include "scene/gui/box_container.h"
-#include "scene/gui/button.h"
 #include "scene/gui/label.h"
+#include "scene/gui/line_edit.h"
 #include "scene/gui/menu_button.h"
+#include "scene/gui/option_button.h"
+#include "scene/gui/popup_menu.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/resources/material.h"
@@ -50,6 +53,26 @@
 #include "scene/scene_string_names.h"
 #include "servers/physics_3d/physics_server_3d.h"
 #include "servers/rendering/rendering_server.h"
+
+namespace {
+// The brushes the toolbar's list offers, in order, with the icon each is
+// shown with. Select, first, puts the brush away.
+struct ModeEntry {
+	FoliagePainter3DEditorPlugin::Mode mode;
+	const char *icon;
+};
+
+constexpr ModeEntry MODES[] = {
+	{ FoliagePainter3DEditorPlugin::MODE_SELECT, "ToolSelect" },
+	{ FoliagePainter3DEditorPlugin::MODE_PAINT, "FoliagePaint" },
+	{ FoliagePainter3DEditorPlugin::MODE_ERASE, "FoliageErase" },
+	{ FoliagePainter3DEditorPlugin::MODE_PLACE_SINGLE, "FoliagePlaceSingle" },
+	{ FoliagePainter3DEditorPlugin::MODE_REMOVE_SINGLE, "FoliageRemoveSingle" },
+};
+
+// How much one notch of the mouse wheel grows or shrinks the brush.
+constexpr float BRUSH_RADIUS_WHEEL_FACTOR = 1.1f;
+} // namespace
 
 void FoliagePainter3DEditorPlugin::_bind_methods() {
 }
@@ -65,11 +88,12 @@ void FoliagePainter3DEditorPlugin::edit(Object *p_object) {
 	face_cache.clear();
 	paint_targets.clear();
 
+	cursor_on_surface = false;
 	if (cursor_instance.is_valid()) {
 		RS::get_singleton()->instance_set_visible(cursor_instance, false);
 	}
 
-	_rebuild_layers_menu();
+	_rebuild_instances_menu();
 }
 
 void FoliagePainter3DEditorPlugin::make_visible(bool p_visible) {
@@ -81,59 +105,162 @@ void FoliagePainter3DEditorPlugin::make_visible(bool p_visible) {
 		painter = nullptr;
 		face_cache.clear();
 		paint_targets.clear();
+		cursor_on_surface = false;
 		if (cursor_instance.is_valid()) {
 			RS::get_singleton()->instance_set_visible(cursor_instance, false);
 		}
 	}
 }
 
-void FoliagePainter3DEditorPlugin::_mode_pressed(int p_mode) {
-	mode = (Mode)p_mode;
+FoliagePainter3DEditorPlugin::Mode FoliagePainter3DEditorPlugin::_get_effective_mode() const {
+	if (!inverted) {
+		return mode;
+	}
+	// Shift turns the brush around, as in Unreal Engine's foliage tools.
+	switch (mode) {
+		case MODE_PAINT:
+			return MODE_ERASE;
+		case MODE_ERASE:
+			return MODE_PAINT;
+		case MODE_PLACE_SINGLE:
+			return MODE_REMOVE_SINGLE;
+		case MODE_REMOVE_SINGLE:
+			return MODE_PLACE_SINGLE;
+		default:
+			return mode;
+	}
+}
+
+void FoliagePainter3DEditorPlugin::_set_mode(Mode p_mode) {
 	_end_stroke();
+	mode = p_mode;
+	mode_option->select(MAX(mode_option->get_item_index(mode), 0));
+
+	if (mode == MODE_SELECT) {
+		cursor_on_surface = false;
+		if (cursor_instance.is_valid()) {
+			RS::get_singleton()->instance_set_visible(cursor_instance, false);
+		}
+	}
+	_update_cursor_color();
+}
+
+void FoliagePainter3DEditorPlugin::_mode_selected(int p_index) {
+	_set_mode((Mode)mode_option->get_item_id(p_index));
+}
+
+void FoliagePainter3DEditorPlugin::_set_inverted(bool p_inverted) {
+	if (inverted == p_inverted) {
+		return;
+	}
+	inverted = p_inverted;
+	_update_cursor_color();
+}
+
+void FoliagePainter3DEditorPlugin::_update_theme() {
+	for (int i = 0; i < mode_option->get_item_count(); i++) {
+		mode_option->set_item_icon(i, topmenu_bar->get_editor_theme_icon(MODES[i].icon));
+	}
+	instances_menu->set_button_icon(topmenu_bar->get_editor_theme_icon(SNAME("FoliageLayer")));
+}
+
+void FoliagePainter3DEditorPlugin::_update_cursor_color() {
+	if (cursor_material.is_null()) {
+		return;
+	}
+	Color color;
+	switch (_get_effective_mode()) {
+		case MODE_ERASE:
+		case MODE_REMOVE_SINGLE:
+			// Taking away.
+			color = Color(1.0, 0.45, 0.35);
+			break;
+		default:
+			color = Color(0.45, 0.95, 0.55);
+			break;
+	}
+	color.a = 0.9;
+	cursor_material->set_albedo(color);
 }
 
 void FoliagePainter3DEditorPlugin::_set_brush_radius(double p_value) {
 	brush_radius = MAX(0.01f, (float)p_value);
+	if (cursor_on_surface) {
+		_update_cursor(cursor_position, cursor_normal, true);
+	}
+}
+
+void FoliagePainter3DEditorPlugin::_scale_brush_radius(bool p_grow, float p_notches) {
+	const float factor = Math::pow(BRUSH_RADIUS_WHEEL_FACTOR, MAX(p_notches, 0.0001f));
+	// At least a step of the field, which a small brush would otherwise round back to.
+	const float step = brush_radius_spin->get_step();
+	const float radius = p_grow ? MAX(brush_radius * factor, brush_radius + step) : MIN(brush_radius / factor, brush_radius - step);
+	brush_radius_spin->set_value(CLAMP(radius, (float)brush_radius_spin->get_min(), (float)brush_radius_spin->get_max()));
+}
+
+void FoliagePainter3DEditorPlugin::_radius_spin_gui_input(const Ref<InputEvent> &p_event) {
+	// The wheel over the field sizes the brush without having to click into it first.
+	const Ref<InputEventMouseButton> mb = p_event;
+	if (mb.is_null() || !mb->is_pressed() || brush_radius_spin->get_line_edit()->is_editing()) {
+		return;
+	}
+	if (mb->get_button_index() == MouseButton::WHEEL_UP || mb->get_button_index() == MouseButton::WHEEL_DOWN) {
+		_scale_brush_radius(mb->get_button_index() == MouseButton::WHEEL_UP, mb->get_factor());
+		brush_radius_spin->accept_event();
+	}
 }
 
 void FoliagePainter3DEditorPlugin::_set_brush_density(double p_value) {
 	brush_density = MAX(0.01f, (float)p_value);
 }
 
-void FoliagePainter3DEditorPlugin::_rebuild_layers_menu() {
-	PopupMenu *popup = layers_menu->get_popup();
+void FoliagePainter3DEditorPlugin::_rebuild_instances_menu() {
+	PopupMenu *popup = instances_menu->get_popup();
 	popup->clear();
 
 	if (painter == nullptr) {
-		layer_active.clear();
 		return;
 	}
 
-	// Preserve existing per-layer active flags (by index) so reopening the
-	// menu, or a layer being added elsewhere, doesn't reset the user's picks.
-	const Vector<bool> old_active = layer_active;
 	const int count = painter->get_layer_count();
-	layer_active.resize(count);
 	for (int i = 0; i < count; i++) {
-		layer_active.write[i] = (i < old_active.size()) ? old_active[i] : true;
 		Ref<FoliageLayer> layer = painter->get_layer(i);
-		const String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
-		const int instance_count = layer.is_valid() ? layer->get_instance_count() : 0;
-		popup->add_check_item(vformat("%s (%d)", name, instance_count), i);
-		popup->set_item_checked(popup->get_item_count() - 1, layer_active[i]);
+		if (layer.is_null()) {
+			continue;
+		}
+		const String name = !layer->get_layer_name().is_empty() ? layer->get_layer_name() : vformat("FoliageLayer %d", i);
+		popup->add_check_item(vformat("%s (%d)", name, layer->get_instance_count()), i);
+		const int idx = popup->get_item_count() - 1;
+		popup->set_item_checked(idx, !inactive_layers.has(layer->get_instance_id()));
+		if (!layer->has_any_mesh()) {
+			popup->set_item_tooltip(idx, TTR("This FoliageLayer has no Mesh on any of its LODs yet, so the brush skips it."));
+		}
+	}
+	if (popup->get_item_count() == 0) {
+		popup->add_item(TTR("No FoliageLayers yet: add one in the Inspector."));
+		popup->set_item_disabled(popup->get_item_count() - 1, true);
 	}
 }
 
-void FoliagePainter3DEditorPlugin::_layer_menu_id_pressed(int p_id) {
-	if (p_id < 0 || p_id >= layer_active.size()) {
+void FoliagePainter3DEditorPlugin::_instances_menu_id_pressed(int p_id) {
+	if (painter == nullptr || p_id < 0 || p_id >= painter->get_layer_count()) {
 		return;
 	}
-	layer_active.write[p_id] = !layer_active[p_id];
+	Ref<FoliageLayer> layer = painter->get_layer(p_id);
+	if (layer.is_null()) {
+		return;
+	}
+	const ObjectID id = layer->get_instance_id();
+	if (inactive_layers.has(id)) {
+		inactive_layers.erase(id);
+	} else {
+		inactive_layers.insert(id);
+	}
 
-	PopupMenu *popup = layers_menu->get_popup();
+	PopupMenu *popup = instances_menu->get_popup();
 	const int idx = popup->get_item_index(p_id);
 	if (idx >= 0) {
-		popup->set_item_checked(idx, layer_active[p_id]);
+		popup->set_item_checked(idx, !inactive_layers.has(id));
 	}
 }
 
@@ -142,12 +269,9 @@ Vector<int> FoliagePainter3DEditorPlugin::_get_active_layers() const {
 	if (painter == nullptr) {
 		return result;
 	}
-	for (int i = 0; i < layer_active.size() && i < painter->get_layer_count(); i++) {
-		if (!layer_active[i]) {
-			continue;
-		}
+	for (int i = 0; i < painter->get_layer_count(); i++) {
 		Ref<FoliageLayer> layer = painter->get_layer(i);
-		if (layer.is_valid() && layer->has_any_mesh()) {
+		if (layer.is_valid() && layer->has_any_mesh() && !inactive_layers.has(layer->get_instance_id())) {
 			result.push_back(i);
 		}
 	}
@@ -310,6 +434,15 @@ bool FoliagePainter3DEditorPlugin::_raycast(const Vector3 &p_from, const Vector3
 	return found;
 }
 
+bool FoliagePainter3DEditorPlugin::_raycast_screen(Camera3D *p_camera, const Point2 &p_screen_pos, Vector3 &r_position, Vector3 &r_normal) {
+	if (!stroke_active && paint_targets.is_empty() && paint_target_terrains.is_empty()) {
+		_refresh_paint_targets();
+	}
+	const Vector3 ray_from = p_camera->project_ray_origin(p_screen_pos);
+	const Vector3 ray_dir = p_camera->project_ray_normal(p_screen_pos);
+	return _raycast(ray_from, ray_dir, p_camera->get_far(), r_position, r_normal);
+}
+
 void FoliagePainter3DEditorPlugin::_ensure_cursor_instance() {
 	if (cursor_mesh.is_valid()) {
 		return;
@@ -338,15 +471,18 @@ void FoliagePainter3DEditorPlugin::_ensure_cursor_instance() {
 	cursor_material->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
 	cursor_material->set_transparency(StandardMaterial3D::TRANSPARENCY_ALPHA);
 	cursor_material->set_flag(StandardMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
-	cursor_material->set_albedo(Color(1.0, 0.85, 0.2, 0.9));
 	cursor_material->set_render_priority(Material::RENDER_PRIORITY_MAX);
+	_update_cursor_color();
 	RS::get_singleton()->mesh_surface_set_material(cursor_mesh, 0, cursor_material->get_rid());
 }
 
 void FoliagePainter3DEditorPlugin::_update_cursor(const Vector3 &p_position, const Vector3 &p_normal, bool p_visible) {
-	if (painter == nullptr) {
+	if (painter == nullptr || mode == MODE_SELECT) {
 		p_visible = false;
 	}
+	cursor_on_surface = p_visible;
+	cursor_position = p_position;
+	cursor_normal = p_normal;
 
 	_ensure_cursor_instance();
 
@@ -602,6 +738,7 @@ void FoliagePainter3DEditorPlugin::_remove_single(const Vector3 &p_position) {
 
 void FoliagePainter3DEditorPlugin::_begin_stroke() {
 	stroke_active = true;
+	stroke_mode = _get_effective_mode();
 	stroke_ops.clear();
 	face_cache.clear();
 	last_stamp_msec = 0;
@@ -611,7 +748,7 @@ void FoliagePainter3DEditorPlugin::_begin_stroke() {
 void FoliagePainter3DEditorPlugin::_end_stroke() {
 	if (stroke_active && !stroke_ops.is_empty() && painter != nullptr) {
 		EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
-		ur->create_action(mode == MODE_ERASE ? TTR("Erase Foliage") : TTR("Paint Foliage"));
+		ur->create_action(stroke_mode == MODE_ERASE ? TTR("Erase Foliage") : TTR("Paint Foliage"));
 		for (const StrokeOp &op : stroke_ops) {
 			if (op.is_insert) {
 				ur->add_do_method(painter, "insert_instance", op.layer, op.cell, op.index, op.transform);
@@ -649,15 +786,8 @@ void FoliagePainter3DEditorPlugin::_cancel_stroke() {
 }
 
 bool FoliagePainter3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Point2 &p_screen_pos, bool p_click) {
-	if (!stroke_active && paint_targets.is_empty()) {
-		_refresh_paint_targets();
-	}
-
-	const Vector3 ray_from = p_camera->project_ray_origin(p_screen_pos);
-	const Vector3 ray_dir = p_camera->project_ray_normal(p_screen_pos);
-
 	Vector3 hit_pos, hit_normal;
-	const bool hit = _raycast(ray_from, ray_dir, p_camera->get_far(), hit_pos, hit_normal);
+	const bool hit = _raycast_screen(p_camera, p_screen_pos, hit_pos, hit_normal);
 
 	_update_cursor(hit_pos, hit_normal, hit);
 
@@ -665,13 +795,16 @@ bool FoliagePainter3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Po
 		return false;
 	}
 
-	if (mode == MODE_PLACE_SINGLE) {
+	// A stroke keeps doing what it started as, even if Shift changes halfway.
+	const Mode effective_mode = stroke_active ? stroke_mode : _get_effective_mode();
+
+	if (effective_mode == MODE_PLACE_SINGLE) {
 		if (p_click) {
 			_place_single(hit_pos, hit_normal);
 		}
 		return true;
 	}
-	if (mode == MODE_REMOVE_SINGLE) {
+	if (effective_mode == MODE_REMOVE_SINGLE) {
 		if (p_click) {
 			_remove_single(hit_pos);
 		}
@@ -689,9 +822,9 @@ bool FoliagePainter3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Po
 	}
 	last_stamp_msec = now;
 
-	if (mode == MODE_PAINT) {
+	if (effective_mode == MODE_PAINT) {
 		_stamp_paint(hit_pos, hit_normal);
-	} else if (mode == MODE_ERASE) {
+	} else if (effective_mode == MODE_ERASE) {
 		_stamp_erase(hit_pos);
 	}
 
@@ -699,21 +832,50 @@ bool FoliagePainter3DEditorPlugin::_do_input_action(Camera3D *p_camera, const Po
 }
 
 EditorPlugin::AfterGUIInput FoliagePainter3DEditorPlugin::forward_3d_gui_input(Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	if (painter == nullptr || !painter->is_inside_tree()) {
+	if (painter == nullptr || !painter->is_inside_tree() || mode == MODE_SELECT) {
 		return EditorPlugin::AFTER_GUI_INPUT_PASS;
 	}
 
 	Ref<InputEventKey> k = p_event;
+	if (k.is_valid() && k->get_keycode() == Key::SHIFT) {
+		// Shown on the cursor as soon as it is held, before anything is painted.
+		_set_inverted(k->is_pressed());
+		return EditorPlugin::AFTER_GUI_INPUT_PASS;
+	}
 	if (k.is_valid() && k->is_pressed() && !k->is_echo() && k->get_keycode() == Key::ESCAPE && stroke_active) {
 		_cancel_stroke();
 		_update_cursor(Vector3(), Vector3(0, 1, 0), false);
 		return EditorPlugin::AFTER_GUI_INPUT_STOP;
 	}
 
+	Ref<InputEventWithModifiers> with_modifiers = p_event;
+	if (with_modifiers.is_valid()) {
+		_set_inverted(with_modifiers->is_shift_pressed());
+	}
+
 	Ref<InputEventMouseButton> mb = p_event;
+	if (mb.is_valid() && (mb->get_button_index() == MouseButton::WHEEL_UP || mb->get_button_index() == MouseButton::WHEEL_DOWN)) {
+		// Over the ground, the wheel sizes the brush. Ctrl (or Alt) and the
+		// wheel still zoom (or change the field of view), as does the wheel
+		// anywhere else, and while looking around with the right or middle
+		// button held.
+		const bool navigating = mb->get_button_mask().has_flag(MouseButtonMask::RIGHT) || mb->get_button_mask().has_flag(MouseButtonMask::MIDDLE);
+		if (!mb->is_pressed() || navigating || mb->is_command_or_control_pressed() || mb->is_alt_pressed() || mb->is_meta_pressed()) {
+			return EditorPlugin::AFTER_GUI_INPUT_PASS;
+		}
+		Vector3 hit_pos, hit_normal;
+		if (!_raycast_screen(p_camera, mb->get_position(), hit_pos, hit_normal)) {
+			return EditorPlugin::AFTER_GUI_INPUT_PASS;
+		}
+		_scale_brush_radius(mb->get_button_index() == MouseButton::WHEEL_UP, mb->get_factor());
+		_update_cursor(hit_pos, hit_normal, true);
+		return EditorPlugin::AFTER_GUI_INPUT_STOP;
+	}
+
 	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
 		if (mb->is_pressed()) {
-			if (mode == MODE_PAINT || mode == MODE_ERASE) {
+			const Mode effective_mode = _get_effective_mode();
+			if (effective_mode == MODE_PAINT || effective_mode == MODE_ERASE) {
 				_begin_stroke();
 			} else {
 				_refresh_paint_targets();
@@ -743,84 +905,70 @@ EditorPlugin::AfterGUIInput FoliagePainter3DEditorPlugin::forward_3d_gui_input(C
 }
 
 FoliagePainter3DEditorPlugin::FoliagePainter3DEditorPlugin() {
+	// The LODs of a FoliageLayer are edited in a window of their own, opened
+	// from the inspector (see EditorInspectorPluginFoliagePainter3D).
+	FoliageLODsDialog *lods_dialog = memnew(FoliageLODsDialog);
+	EditorInterface::get_singleton()->get_base_control()->add_child(lods_dialog);
+
+	inspector_plugin.instantiate();
+	inspector_plugin->set_lods_dialog(lods_dialog);
+	add_inspector_plugin(inspector_plugin);
+
 	topmenu_bar = memnew(HBoxContainer);
 	topmenu_bar->hide();
+	topmenu_bar->connect(SceneStringName(theme_changed), callable_mp(this, &FoliagePainter3DEditorPlugin::_update_theme));
 
-	toolbar = memnew(HBoxContainer);
-	topmenu_bar->add_child(toolbar);
+	// One list of brushes, as Unreal Engine's foliage tools have.
+	topmenu_bar->add_child(memnew(Label(TTR("Brush:"))));
+	mode_option = memnew(OptionButton);
+	mode_option->set_flat(true);
+	mode_option->set_tooltip_text(TTR("Foliage brush. Select puts the brush away.\nHold Shift to turn Paint into Erase, and Place Single into Remove Single (and back).\nThe mouse wheel over the ground sizes the brush; Ctrl + wheel zooms."));
+	const String mode_names[] = { TTR("Select"), TTR("Paint"), TTR("Erase"), TTR("Place Single"), TTR("Remove Single") };
+	for (int i = 0; i < (int)std_size(MODES); i++) {
+		mode_option->add_item(mode_names[i], MODES[i].mode);
+	}
+	mode_option->set_item_tooltip(0, TTR("No brush: select and move things in the viewport as usual."));
+	mode_option->set_item_tooltip(1, TTR("Paint instances of the FoliageInstances chosen in the toolbar by clicking or dragging over a surface."));
+	mode_option->set_item_tooltip(2, TTR("Erase instances of the chosen FoliageInstances within the brush."));
+	mode_option->set_item_tooltip(3, TTR("Insert a single instance per click, at the clicked point."));
+	mode_option->set_item_tooltip(4, TTR("Delete the single instance closest to the clicked point (within the brush) per click."));
+	mode_option->connect(SceneStringName(item_selected), callable_mp(this, &FoliagePainter3DEditorPlugin::_mode_selected));
+	topmenu_bar->add_child(mode_option);
 
-	mode_button_group.instantiate();
+	topmenu_bar->add_child(memnew(VSeparator));
 
-	mode_paint_button = memnew(Button);
-	mode_paint_button->set_toggle_mode(true);
-	mode_paint_button->set_button_group(mode_button_group);
-	mode_paint_button->set_pressed(true);
-	mode_paint_button->set_text(TTR("Paint"));
-	mode_paint_button->set_tooltip_text(TTR("Paint foliage instances by clicking or dragging over a mesh surface."));
-	toolbar->add_child(mode_paint_button);
-	mode_paint_button->connect(SceneStringName(pressed), callable_mp(this, &FoliagePainter3DEditorPlugin::_mode_pressed).bind((int)MODE_PAINT));
-
-	mode_erase_button = memnew(Button);
-	mode_erase_button->set_toggle_mode(true);
-	mode_erase_button->set_button_group(mode_button_group);
-	mode_erase_button->set_text(TTR("Erase"));
-	mode_erase_button->set_tooltip_text(TTR("Erase foliage instances of the active layers within the brush."));
-	toolbar->add_child(mode_erase_button);
-	mode_erase_button->connect(SceneStringName(pressed), callable_mp(this, &FoliagePainter3DEditorPlugin::_mode_pressed).bind((int)MODE_ERASE));
-
-	mode_place_single_button = memnew(Button);
-	mode_place_single_button->set_toggle_mode(true);
-	mode_place_single_button->set_button_group(mode_button_group);
-	mode_place_single_button->set_text(TTR("Place Single"));
-	mode_place_single_button->set_tooltip_text(TTR("Insert a single foliage instance per click."));
-	toolbar->add_child(mode_place_single_button);
-	mode_place_single_button->connect(SceneStringName(pressed), callable_mp(this, &FoliagePainter3DEditorPlugin::_mode_pressed).bind((int)MODE_PLACE_SINGLE));
-
-	mode_remove_single_button = memnew(Button);
-	mode_remove_single_button->set_toggle_mode(true);
-	mode_remove_single_button->set_button_group(mode_button_group);
-	mode_remove_single_button->set_text(TTR("Remove Single"));
-	mode_remove_single_button->set_tooltip_text(TTR("Delete the single closest foliage instance per click."));
-	toolbar->add_child(mode_remove_single_button);
-	mode_remove_single_button->connect(SceneStringName(pressed), callable_mp(this, &FoliagePainter3DEditorPlugin::_mode_pressed).bind((int)MODE_REMOVE_SINGLE));
-
-	toolbar->add_child(memnew(VSeparator));
-
-	Label *radius_label = memnew(Label);
-	radius_label->set_text(TTR("Radius:"));
-	toolbar->add_child(radius_label);
-
+	topmenu_bar->add_child(memnew(Label(TTR("Radius:"))));
 	brush_radius_spin = memnew(SpinBox);
 	brush_radius_spin->set_min(0.05);
 	brush_radius_spin->set_max(1000.0);
 	brush_radius_spin->set_step(0.05);
 	brush_radius_spin->set_value(brush_radius);
-	brush_radius_spin->set_tooltip_text(TTR("Brush radius, in meters."));
-	toolbar->add_child(brush_radius_spin);
+	brush_radius_spin->set_suffix("m");
+	brush_radius_spin->set_tooltip_text(TTR("Brush radius, in meters. Turn the mouse wheel over the ground, or over this field, to change it."));
+	topmenu_bar->add_child(brush_radius_spin);
 	brush_radius_spin->connect(SceneStringName(value_changed), callable_mp(this, &FoliagePainter3DEditorPlugin::_set_brush_radius));
+	brush_radius_spin->connect(SceneStringName(gui_input), callable_mp(this, &FoliagePainter3DEditorPlugin::_radius_spin_gui_input));
 
-	Label *density_label = memnew(Label);
-	density_label->set_text(TTR("Density:"));
-	toolbar->add_child(density_label);
-
+	topmenu_bar->add_child(memnew(Label(TTR("Density:"))));
 	brush_density_spin = memnew(SpinBox);
 	brush_density_spin->set_min(0.1);
 	brush_density_spin->set_max(200.0);
 	brush_density_spin->set_step(0.1);
 	brush_density_spin->set_value(brush_density);
 	brush_density_spin->set_tooltip_text(TTR("Number of instances placed per paint stamp."));
-	toolbar->add_child(brush_density_spin);
+	topmenu_bar->add_child(brush_density_spin);
 	brush_density_spin->connect(SceneStringName(value_changed), callable_mp(this, &FoliagePainter3DEditorPlugin::_set_brush_density));
 
-	toolbar->add_child(memnew(VSeparator));
+	topmenu_bar->add_child(memnew(VSeparator));
 
-	layers_menu = memnew(MenuButton);
-	layers_menu->set_text(TTR("Layers"));
-	layers_menu->set_tooltip_text(TTR("Choose which foliage layers this brush affects."));
-	layers_menu->get_popup()->set_hide_on_checkable_item_selection(false);
-	layers_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &FoliagePainter3DEditorPlugin::_layer_menu_id_pressed));
-	layers_menu->connect("about_to_popup", callable_mp(this, &FoliagePainter3DEditorPlugin::_rebuild_layers_menu));
-	toolbar->add_child(layers_menu);
+	instances_menu = memnew(MenuButton);
+	instances_menu->set_flat(false);
+	instances_menu->set_text(TTR("FoliageInstances"));
+	instances_menu->set_tooltip_text(TTR("Choose which FoliageLayers this brush paints and erases, with how many instances each has."));
+	instances_menu->get_popup()->set_hide_on_checkable_item_selection(false);
+	instances_menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &FoliagePainter3DEditorPlugin::_instances_menu_id_pressed));
+	instances_menu->connect("about_to_popup", callable_mp(this, &FoliagePainter3DEditorPlugin::_rebuild_instances_menu));
+	topmenu_bar->add_child(instances_menu);
 
 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
 }

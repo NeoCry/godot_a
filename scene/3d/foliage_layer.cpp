@@ -246,10 +246,11 @@ void FoliageLayer::_set_display_instance_count(int p_count) {
 	if (instance_count == p_count) {
 		return;
 	}
+	// Not emit_changed(), nor notify_property_list_changed(): this is derived
+	// data owned by FoliagePainter3D, not saved here, and it changes with every
+	// stamp of the brush. An open Inspector picks the new value up on its own
+	// periodic refresh, without rebuilding the layer's whole property list.
 	instance_count = p_count;
-	// Refreshes an open Inspector without marking the resource changed/dirty
-	// (this is derived data owned by FoliagePainter3D, not saved here).
-	notify_property_list_changed();
 }
 
 FoliageLayer::FoliageLayer() {
