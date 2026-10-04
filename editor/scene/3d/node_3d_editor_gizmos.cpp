@@ -72,6 +72,7 @@ void EditorNode3DGizmo::clear() {
 	billboard_handle = false;
 	collision_segments.clear();
 	collision_meshes.clear();
+	collision_mesh_transforms.clear();
 	collision_meshes_are_snap_source = false;
 	instances.clear();
 	handles.clear();
@@ -268,11 +269,9 @@ void EditorNode3DGizmo::_update_bvh() {
 		aabb.expand_to(transform.xform(segment_end));
 	}
 
-	if (!collision_meshes.is_empty()) {
-		for (Ref<TriangleMesh> collision_mesh : collision_meshes) {
-			if (collision_mesh.is_valid()) {
-				aabb.merge_with(transform.xform(collision_mesh->get_aabb()));
-			}
+	for (uint32_t i = 0; i < collision_meshes.size(); i++) {
+		if (collision_meshes[i].is_valid()) {
+			aabb.merge_with((transform * collision_mesh_transforms[i]).xform(collision_meshes[i]->get_aabb()));
 		}
 	}
 
@@ -385,7 +384,12 @@ void EditorNode3DGizmo::add_unscaled_billboard(const Ref<Material> &p_material, 
 }
 
 void EditorNode3DGizmo::add_collision_triangles(const Ref<TriangleMesh> &p_tmesh) {
+	add_transformed_collision_triangles(p_tmesh, Transform3D());
+}
+
+void EditorNode3DGizmo::add_transformed_collision_triangles(const Ref<TriangleMesh> &p_tmesh, const Transform3D &p_xform) {
 	collision_meshes.push_back(p_tmesh);
+	collision_mesh_transforms.push_back(p_xform);
 }
 
 void EditorNode3DGizmo::add_collision_segments(const Vector<Vector3> &p_lines) {
@@ -555,8 +559,13 @@ bool EditorNode3DGizmo::intersect_frustum(const Camera3D *p_camera, const Vector
 		}
 	}
 
-	if (!collision_meshes.is_empty()) {
-		Transform3D t = spatial_node->get_global_transform();
+	for (uint32_t m = 0; m < collision_meshes.size(); m++) {
+		const Ref<TriangleMesh> &collision_mesh = collision_meshes[m];
+		if (collision_mesh.is_null()) {
+			continue;
+		}
+
+		Transform3D t = spatial_node->get_global_transform() * collision_mesh_transforms[m];
 
 		Vector3 mesh_scale = t.get_basis().get_scale();
 		t.orthonormalize();
@@ -573,12 +582,8 @@ bool EditorNode3DGizmo::intersect_frustum(const Camera3D *p_camera, const Vector
 
 		Vector<Vector3> convex_points = Geometry3D::compute_convex_mesh_points(transformed_frustum.ptr(), plane_count);
 
-		for (Ref<TriangleMesh> collision_mesh : collision_meshes) {
-			if (collision_mesh.is_valid()) {
-				if (collision_mesh->inside_convex_shape(transformed_frustum.ptr(), plane_count, convex_points.ptr(), convex_points.size(), mesh_scale)) {
-					return true;
-				}
-			}
+		if (collision_mesh->inside_convex_shape(transformed_frustum.ptr(), plane_count, convex_points.ptr(), convex_points.size(), mesh_scale)) {
+			return true;
 		}
 	}
 
@@ -754,19 +759,38 @@ bool EditorNode3DGizmo::intersect_ray(Camera3D *p_camera, const Point2 &p_point,
 			gt.set_look_at(gt.origin, gt.origin - p_camera->get_transform().basis.get_column(2), p_camera->get_transform().basis.get_column(1));
 		}
 
-		Transform3D ai = gt.affine_inverse();
-		Vector3 ray_from = ai.xform(p_camera->project_ray_origin(p_point));
-		Vector3 ray_dir = ai.basis.xform(p_camera->project_ray_normal(p_point)).normalized();
-		Vector3 rpos, rnorm;
+		const Vector3 camera_ray_from = p_camera->project_ray_origin(p_point);
+		const Vector3 camera_ray_dir = p_camera->project_ray_normal(p_point);
+		bool found = false;
+		real_t closest_distance = 0;
 
-		for (Ref<TriangleMesh> collision_mesh : collision_meshes) {
-			if (collision_mesh.is_valid()) {
-				if (collision_mesh->intersect_ray(ray_from, ray_dir, rpos, rnorm)) {
-					r_pos = gt.xform(rpos);
-					r_normal = gt.basis.xform(rnorm).normalized();
-					return true;
+		// The closest hit, as the meshes may be in front of one another.
+		for (uint32_t m = 0; m < collision_meshes.size(); m++) {
+			const Ref<TriangleMesh> &collision_mesh = collision_meshes[m];
+			if (collision_mesh.is_null()) {
+				continue;
+			}
+
+			const Transform3D mesh_gt = gt * collision_mesh_transforms[m];
+			const Transform3D ai = mesh_gt.affine_inverse();
+			const Vector3 ray_from = ai.xform(camera_ray_from);
+			const Vector3 ray_dir = ai.basis.xform(camera_ray_dir).normalized();
+			Vector3 rpos, rnorm;
+
+			if (collision_mesh->intersect_ray(ray_from, ray_dir, rpos, rnorm)) {
+				const Vector3 pos = mesh_gt.xform(rpos);
+				const real_t distance = camera_ray_from.distance_to(pos);
+				if (!found || distance < closest_distance) {
+					found = true;
+					closest_distance = distance;
+					r_pos = pos;
+					r_normal = mesh_gt.basis.inverse().transposed().xform(rnorm).normalized();
 				}
 			}
+		}
+
+		if (found) {
+			return true;
 		}
 	}
 

@@ -239,6 +239,7 @@
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/ccd_ik_3d.h"
 #include "scene/3d/chain_ik_3d.h"
+#include "scene/3d/cluster_3d.h"
 #include "scene/3d/convert_transform_modifier_3d.h"
 #include "scene/3d/copy_transform_modifier_3d.h"
 #include "scene/3d/cpu_particles_3d.h"
@@ -784,6 +785,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(ShapeCast3D);
 #endif // PHYSICS_3D_DISABLED
 	GDREGISTER_CLASS(MultiMeshInstance3D);
+	GDREGISTER_CLASS(Cluster3D);
 	GDREGISTER_CLASS(FoliageLODLevel);
 	GDREGISTER_CLASS(FoliageSpawner3D);
 	GDREGISTER_CLASS(FoliageLayer);
@@ -1132,6 +1134,7 @@ void register_scene_types() {
 	// 3D nodes that support navmesh baking need to server register their source geometry parsers.
 	MeshInstance3D::navmesh_parse_init();
 	MultiMeshInstance3D::navmesh_parse_init();
+	Cluster3D::navmesh_parse_init();
 	NavigationObstacle3D::navmesh_parse_init();
 #ifndef PHYSICS_3D_DISABLED
 	StaticBody3D::navmesh_parse_init();

@@ -94,6 +94,7 @@
 #include "editor/scene/2d/sprite_2d_editor_plugin.h"
 #include "editor/scene/3d/bone_map_editor_plugin.h"
 #include "editor/scene/3d/camera_3d_editor_plugin.h"
+#include "editor/scene/3d/cluster_3d_editor_plugin.h"
 #include "editor/scene/3d/foliage_painter_3d_editor_plugin.h"
 #include "editor/scene/3d/gpu_particles_collision_sdf_editor_plugin.h"
 #include "editor/scene/3d/landscape_3d_editor_plugin.h"
@@ -295,6 +296,7 @@ void register_editor_types() {
 	EditorPlugins::add_by_type<OccluderInstance3DEditorPlugin>();
 	EditorPlugins::add_by_type<MultiMeshEditorPlugin>();
 	EditorPlugins::add_by_type<Path3DEditorPlugin>();
+	EditorPlugins::add_by_type<Cluster3DEditorPlugin>();
 	EditorPlugins::add_by_type<Polygon3DEditorPlugin>();
 	EditorPlugins::add_by_type<Skeleton3DEditorPlugin>();
 	EditorPlugins::add_by_type<Landscape3DEditorPlugin>();

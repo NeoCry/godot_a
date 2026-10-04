@@ -130,6 +130,7 @@ RID VisualInstance3D::get_instance() const {
 void VisualInstance3D::set_layer_mask(uint32_t p_mask) {
 	layers = p_mask;
 	RenderingServer::get_singleton()->instance_set_layer_mask(instance, p_mask);
+	_instance_settings_changed();
 }
 
 uint32_t VisualInstance3D::get_layer_mask() const {
@@ -157,6 +158,7 @@ bool VisualInstance3D::get_layer_mask_value(int p_layer_number) const {
 void VisualInstance3D::set_sorting_offset(float p_offset) {
 	sorting_offset = p_offset;
 	RenderingServer::get_singleton()->instance_set_pivot_data(instance, sorting_offset, sorting_use_aabb_center);
+	_instance_settings_changed();
 }
 
 float VisualInstance3D::get_sorting_offset() const {
@@ -166,6 +168,7 @@ float VisualInstance3D::get_sorting_offset() const {
 void VisualInstance3D::set_sorting_use_aabb_center(bool p_enabled) {
 	sorting_use_aabb_center = p_enabled;
 	RenderingServer::get_singleton()->instance_set_pivot_data(instance, sorting_offset, sorting_use_aabb_center);
+	_instance_settings_changed();
 }
 
 bool VisualInstance3D::is_sorting_use_aabb_center() const {
@@ -229,6 +232,7 @@ void GeometryInstance3D::set_material_override(const Ref<Material> &p_material) 
 		material_override->connect(CoreStringName(property_list_changed), callable_mp((Object *)this, &Object::notify_property_list_changed));
 	}
 	RS::get_singleton()->instance_geometry_set_material_override(get_instance(), p_material.is_valid() ? p_material->get_rid() : RID());
+	_instance_settings_changed();
 }
 
 Ref<Material> GeometryInstance3D::get_material_override() const {
@@ -238,6 +242,7 @@ Ref<Material> GeometryInstance3D::get_material_override() const {
 void GeometryInstance3D::set_material_overlay(const Ref<Material> &p_material) {
 	material_overlay = p_material;
 	RS::get_singleton()->instance_geometry_set_material_overlay(get_instance(), p_material.is_valid() ? p_material->get_rid() : RID());
+	_instance_settings_changed();
 }
 
 Ref<Material> GeometryInstance3D::get_material_overlay() const {
@@ -247,6 +252,7 @@ Ref<Material> GeometryInstance3D::get_material_overlay() const {
 void GeometryInstance3D::set_transparency(float p_transparency) {
 	transparency = CLAMP(p_transparency, 0.0f, 1.0f);
 	RS::get_singleton()->instance_geometry_set_transparency(get_instance(), transparency);
+	_instance_settings_changed();
 	update_configuration_warnings();
 }
 
@@ -257,6 +263,7 @@ float GeometryInstance3D::get_transparency() const {
 void GeometryInstance3D::set_visibility_range_begin(float p_dist) {
 	visibility_range_begin = p_dist;
 	RS::get_singleton()->instance_geometry_set_visibility_range(get_instance(), visibility_range_begin, visibility_range_end, visibility_range_begin_margin, visibility_range_end_margin, (RSE::VisibilityRangeFadeMode)visibility_range_fade_mode);
+	_instance_settings_changed();
 	update_configuration_warnings();
 }
 
@@ -267,6 +274,7 @@ float GeometryInstance3D::get_visibility_range_begin() const {
 void GeometryInstance3D::set_visibility_range_end(float p_dist) {
 	visibility_range_end = p_dist;
 	RS::get_singleton()->instance_geometry_set_visibility_range(get_instance(), visibility_range_begin, visibility_range_end, visibility_range_begin_margin, visibility_range_end_margin, (RSE::VisibilityRangeFadeMode)visibility_range_fade_mode);
+	_instance_settings_changed();
 	update_configuration_warnings();
 }
 
@@ -277,6 +285,7 @@ float GeometryInstance3D::get_visibility_range_end() const {
 void GeometryInstance3D::set_visibility_range_begin_margin(float p_dist) {
 	visibility_range_begin_margin = p_dist;
 	RS::get_singleton()->instance_geometry_set_visibility_range(get_instance(), visibility_range_begin, visibility_range_end, visibility_range_begin_margin, visibility_range_end_margin, (RSE::VisibilityRangeFadeMode)visibility_range_fade_mode);
+	_instance_settings_changed();
 	update_configuration_warnings();
 }
 
@@ -287,6 +296,7 @@ float GeometryInstance3D::get_visibility_range_begin_margin() const {
 void GeometryInstance3D::set_visibility_range_end_margin(float p_dist) {
 	visibility_range_end_margin = p_dist;
 	RS::get_singleton()->instance_geometry_set_visibility_range(get_instance(), visibility_range_begin, visibility_range_end, visibility_range_begin_margin, visibility_range_end_margin, (RSE::VisibilityRangeFadeMode)visibility_range_fade_mode);
+	_instance_settings_changed();
 	update_configuration_warnings();
 }
 
@@ -297,6 +307,7 @@ float GeometryInstance3D::get_visibility_range_end_margin() const {
 void GeometryInstance3D::set_visibility_range_fade_mode(VisibilityRangeFadeMode p_mode) {
 	visibility_range_fade_mode = p_mode;
 	RS::get_singleton()->instance_geometry_set_visibility_range(get_instance(), visibility_range_begin, visibility_range_end, visibility_range_begin_margin, visibility_range_end_margin, (RSE::VisibilityRangeFadeMode)visibility_range_fade_mode);
+	_instance_settings_changed();
 	update_configuration_warnings();
 }
 
@@ -379,6 +390,7 @@ void GeometryInstance3D::set_cast_shadows_setting(ShadowCastingSetting p_shadow_
 	shadow_casting_setting = p_shadow_casting_setting;
 
 	RS::get_singleton()->instance_geometry_set_cast_shadows_setting(get_instance(), (RSE::ShadowCastingSetting)p_shadow_casting_setting);
+	_instance_settings_changed();
 }
 
 GeometryInstance3D::ShadowCastingSetting GeometryInstance3D::get_cast_shadows_setting() const {
@@ -389,6 +401,7 @@ void GeometryInstance3D::set_extra_cull_margin(float p_margin) {
 	ERR_FAIL_COND(p_margin < 0);
 	extra_cull_margin = p_margin;
 	RS::get_singleton()->instance_set_extra_visibility_margin(get_instance(), extra_cull_margin);
+	_instance_settings_changed();
 }
 
 float GeometryInstance3D::get_extra_cull_margin() const {
@@ -399,6 +412,7 @@ void GeometryInstance3D::set_lod_bias(float p_bias) {
 	ERR_FAIL_COND(p_bias < 0.0);
 	lod_bias = p_bias;
 	RS::get_singleton()->instance_geometry_set_lod_bias(get_instance(), lod_bias);
+	_instance_settings_changed();
 }
 
 float GeometryInstance3D::get_lod_bias() const {
@@ -419,6 +433,7 @@ void GeometryInstance3D::set_instance_shader_parameter(const StringName &p_name,
 			RS::get_singleton()->instance_geometry_set_shader_parameter(get_instance(), p_name, p_value);
 		}
 	}
+	_instance_settings_changed();
 }
 
 Variant GeometryInstance3D::get_instance_shader_parameter(const StringName &p_name) const {
@@ -431,6 +446,7 @@ void GeometryInstance3D::set_custom_aabb(AABB p_aabb) {
 	}
 	custom_aabb = p_aabb;
 	RS::get_singleton()->instance_set_custom_aabb(get_instance(), custom_aabb);
+	_instance_settings_changed();
 	update_gizmos();
 }
 
@@ -499,6 +515,7 @@ void GeometryInstance3D::set_gi_mode(GIMode p_mode) {
 	}
 
 	gi_mode = p_mode;
+	_instance_settings_changed();
 }
 
 GeometryInstance3D::GIMode GeometryInstance3D::get_gi_mode() const {
@@ -508,6 +525,7 @@ GeometryInstance3D::GIMode GeometryInstance3D::get_gi_mode() const {
 void GeometryInstance3D::set_ignore_occlusion_culling(bool p_enabled) {
 	ignore_occlusion_culling = p_enabled;
 	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RSE::INSTANCE_FLAG_IGNORE_OCCLUSION_CULLING, ignore_occlusion_culling);
+	_instance_settings_changed();
 }
 
 bool GeometryInstance3D::is_ignoring_occlusion_culling() {
@@ -517,6 +535,7 @@ bool GeometryInstance3D::is_ignoring_occlusion_culling() {
 void GeometryInstance3D::set_virtual_texture_draw_layers(uint32_t p_layers) {
 	virtual_texture_draw_layers = p_layers;
 	RS::get_singleton()->instance_geometry_set_virtual_texture_layers(get_instance(), virtual_texture_draw_layers, virtual_texture_draw_in_main_pass);
+	_instance_settings_changed();
 }
 
 uint32_t GeometryInstance3D::get_virtual_texture_draw_layers() const {
@@ -526,6 +545,7 @@ uint32_t GeometryInstance3D::get_virtual_texture_draw_layers() const {
 void GeometryInstance3D::set_virtual_texture_draw_in_main_pass(bool p_enabled) {
 	virtual_texture_draw_in_main_pass = p_enabled;
 	RS::get_singleton()->instance_geometry_set_virtual_texture_layers(get_instance(), virtual_texture_draw_layers, virtual_texture_draw_in_main_pass);
+	_instance_settings_changed();
 }
 
 bool GeometryInstance3D::is_virtual_texture_draw_in_main_pass_enabled() const {
@@ -535,6 +555,7 @@ bool GeometryInstance3D::is_virtual_texture_draw_in_main_pass_enabled() const {
 void GeometryInstance3D::set_ignore_screen_space_shadows(bool p_enabled) {
 	ignore_screen_space_shadows = p_enabled;
 	RS::get_singleton()->instance_geometry_set_flag(get_instance(), RSE::INSTANCE_FLAG_IGNORE_SCREEN_SPACE_SHADOWS, ignore_screen_space_shadows);
+	_instance_settings_changed();
 }
 
 bool GeometryInstance3D::is_ignoring_screen_space_shadows() const {
