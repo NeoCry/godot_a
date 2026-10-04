@@ -1898,7 +1898,8 @@ bool EditorFileSystem::_find_file(const String &p_file, EditorFileSystemDirector
 	const String file_lower = file.to_lower();
 	path.resize(path.size() - 1);
 
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	// The paths of the directories are in res://.
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_RESOURCES);
 	EditorFileSystemDirectory *fs = filesystem;
 
 	for (const String &path_bit : path) {
