@@ -73,6 +73,8 @@ public:
 	virtual RID mesh_surface_get_index_buffer_rd_rid(RID p_mesh, int p_surface) const = 0;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const = 0;
+	// Whether any surface of the mesh, or of the mesh it casts shadows with, has LODs.
+	virtual bool mesh_has_lods(RID p_mesh) const { return false; }
 
 	virtual void mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) = 0;
 	virtual AABB mesh_get_custom_aabb(RID p_mesh) const = 0;
@@ -167,6 +169,13 @@ public:
 	virtual int multimesh_get_visible_instances(RID p_multimesh) const;
 
 	virtual AABB multimesh_get_aabb(RID p_multimesh);
+
+	// A MultiMesh drawn only in shadow passes, where its instances are culled one by one on the GPU
+	// for each pass, and only those whose distance to the camera is within the given range drawn
+	// (when p_range_end is above 0). Only supported by renderers that cull them (see
+	// RendererSceneRender::is_gpu_shadow_caster_supported()).
+	virtual void multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin, float p_range_end) {}
+	virtual bool multimesh_is_gpu_shadow_caster(RID p_multimesh, float *r_range_begin = nullptr, float *r_range_end = nullptr) const { return false; }
 
 	virtual RID _multimesh_allocate() = 0;
 	virtual void _multimesh_initialize(RID p_rid) = 0;

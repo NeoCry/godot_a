@@ -3335,6 +3335,13 @@
 			The framerate-independent update speed when representing dynamic object lighting from [LightmapProbe]s. Higher values make dynamic object lighting update faster. Higher values can prevent fast-moving objects from having "outdated" indirect lighting displayed on them, at the cost of possible flickering when an object moves from a bright area to a shaded area.
 			[b]Note:[/b] This property is only read when the project starts. To adjust the BVH build quality at runtime, use [method RenderingServer.lightmap_set_probe_capture_update_speed].
 		</member>
+		<member name="rendering/lights_and_shadows/batch_static_shadow_casters" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], [MeshInstance3D]s that haven't moved or changed for a while cast their shadows in batches: those that share a mesh, materials and shadow settings and sit in the same cell of a 128-unit grid have their shadows drawn as one [MultiMesh], whose instances are culled on the GPU for each shadow pass (see [method RenderingServer.multimesh_set_gpu_shadow_caster]). A batch only forms once at least 4 meshes can share it, and a mesh leaves it as soon as it moves or changes in any way, until it hasn't changed for a while again.
+			This saves CPU time rather than draw calls: the renderer already draws the copies of a mesh found in a shadow pass with one instanced draw call, but it culls, sorts and uploads each of them first, for each split and each shadowed [OmniLight3D] or [SpotLight3D], which a batch doesn't. It pays off most with many copies of the same meshes spread over the scene, and costs a compute dispatch and a draw call per batch and pass. With [member DirectionalLight3D.directional_shadow_cache_splits], static meshes are rarely drawn into the splits at all, which leaves little to save there.
+			Meshes are left out if they are skinned, have blend shapes, use materials animated with [code]TIME[/code], instance shader parameters, [member GeometryInstance3D.custom_aabb], [member GeometryInstance3D.extra_cull_margin], visibility ranges, [member GeometryInstance3D.transparency] or a negative scale, or if any of their materials reads [code]MODEL_MATRIX[/code], [code]MODEL_NORMAL_MATRIX[/code], [code]NODE_POSITION_WORLD[/code], [code]NODE_POSITION_VIEW[/code], [code]INSTANCE_ID[/code] or [code]INSTANCE_CUSTOM[/code], which read differently when drawn as an instance of a [MultiMesh] (this includes [BaseMaterial3D]s using billboards, world triplanar mapping or object dither distance fade).
+			The mesh LOD of a batch's shadows is picked from the batch's bounds and scale rather than from each mesh's. Meshes that have LODs are therefore batched in a 32-unit grid instead, and only with meshes of about the same scale, but their shadows may still use more detailed LODs near the camera than they otherwise would.
+			[b]Note:[/b] Only supported by the Forward+ renderer. Can be changed at runtime.
+		</member>
 		<member name="rendering/lights_and_shadows/contact_shadow/enabled" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], screen-space contact shadows are enabled. These catch small-scale shadows that shadow maps miss, such as foliage, crevices, and the contact points where objects meet surfaces. Contact shadows are also cast by objects that have their [member GeometryInstance3D.cast_shadow] property set to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF], which can be useful for performance reasons.
 			[b]Note:[/b] Only objects visible on screen can cast screen-space contact shadows. Objects outside the viewport, occluded by other geometry, or using the [member GeometryInstance3D.cast_shadow] property set to [constant GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY] will not contribute.
@@ -3352,6 +3359,13 @@
 		</member>
 		<member name="rendering/lights_and_shadows/directional_shadow/16_bits" type="bool" setter="" getter="" default="true">
 			Use 16 bits for the directional shadow depth map. Enabling this results in shadows having less precision and may result in shadow acne, but can lead to performance improvements on some devices.
+		</member>
+		<member name="rendering/lights_and_shadows/directional_shadow/cache_size" type="int" setter="" getter="" default="2048">
+			The size in pixels of the shadow atlas that holds the far cascade of [DirectionalLight3D]s with [member DirectionalLight3D.directional_shadow_cache_enabled] set to [code]true[/code]. Each of those lights gets an equal share of it. Higher values give sharper distant shadows, at the cost of memory and of the time it takes to draw the parts of it that are drawn every frame.
+			[b]Note:[/b] This property is only read when the project starts.
+		</member>
+		<member name="rendering/lights_and_shadows/directional_shadow/cache_size.mobile" type="int" setter="" getter="" default="1024">
+			Lower-end override for [member rendering/lights_and_shadows/directional_shadow/cache_size] on mobile devices, due to performance concerns or driver support.
 		</member>
 		<member name="rendering/lights_and_shadows/directional_shadow/size" type="int" setter="" getter="" default="4096">
 			The directional shadow's size in pixels. Higher values will result in sharper shadows, at the cost of performance. The value is rounded up to the nearest power of 2.

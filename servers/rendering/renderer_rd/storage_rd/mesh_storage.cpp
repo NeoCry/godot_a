@@ -722,6 +722,20 @@ int MeshStorage::mesh_get_surface_count(RID p_mesh) const {
 	return mesh->surface_count;
 }
 
+bool MeshStorage::mesh_has_lods(RID p_mesh) const {
+	const Mesh *mesh = mesh_owner.get_or_null(p_mesh);
+	ERR_FAIL_NULL_V(mesh, false);
+	for (uint32_t i = 0; i < mesh->surface_count; i++) {
+		if (mesh->surfaces[i]->lod_count > 0) {
+			return true;
+		}
+	}
+	if (mesh->shadow_mesh.is_valid() && mesh->shadow_mesh != p_mesh) {
+		return mesh_has_lods(mesh->shadow_mesh);
+	}
+	return false;
+}
+
 void MeshStorage::mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL(mesh);
@@ -2185,6 +2199,30 @@ void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_
 			multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_AABB);
 		}
 	}
+}
+
+void MeshStorage::multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin, float p_range_end) {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	if (multimesh->gpu_shadow_caster == p_enable && multimesh->gpu_shadow_caster_range_begin == p_range_begin && multimesh->gpu_shadow_caster_range_end == p_range_end) {
+		return;
+	}
+	multimesh->gpu_shadow_caster = p_enable;
+	multimesh->gpu_shadow_caster_range_begin = p_range_begin;
+	multimesh->gpu_shadow_caster_range_end = p_range_end;
+	multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MULTIMESH);
+}
+
+bool MeshStorage::multimesh_is_gpu_shadow_caster(RID p_multimesh, float *r_range_begin, float *r_range_end) const {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, false);
+	if (r_range_begin) {
+		*r_range_begin = multimesh->gpu_shadow_caster_range_begin;
+	}
+	if (r_range_end) {
+		*r_range_end = multimesh->gpu_shadow_caster_range_end;
+	}
+	return multimesh->gpu_shadow_caster;
 }
 
 RID MeshStorage::_multimesh_get_command_buffer_rd_rid(RID p_multimesh) const {

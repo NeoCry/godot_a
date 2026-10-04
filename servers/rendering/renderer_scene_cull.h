@@ -281,6 +281,7 @@ public:
 			FLAG_GEOM_PROJECTOR_SOFTSHADOW_DIRTY = (1 << 23),
 			FLAG_IGNORE_ALL_CULLING = (1 << 24),
 			FLAG_USES_DYNAMIC_GI = (1 << 25),
+			FLAG_SHADOW_STATIC = (1 << 26), // See Instance::shadow_static.
 		};
 
 		uint32_t flags = 0;
@@ -329,6 +330,47 @@ public:
 	PagedArrayPool<InstanceData> instance_data_page_pool;
 	PagedArrayPool<InstanceVisibilityData> instance_visibility_data_page_pool;
 
+	// What static meshes have to share to cast their shadows through the same batch (see ShadowBatch).
+	struct ShadowBatchKey {
+		RID mesh;
+		RID material_override;
+		RID material_overlay;
+		Vector<RID> materials;
+		uint32_t layer_mask = 0;
+		float lod_bias = 1.0;
+		bool double_sided = false;
+		// Steps of a factor of sqrt(2) in scale, for meshes with LODs (see _shadow_batch_add()).
+		int scale_step = 0;
+		Vector3i cell;
+
+		bool operator==(const ShadowBatchKey &p_other) const {
+			return mesh == p_other.mesh && material_override == p_other.material_override && material_overlay == p_other.material_overlay && materials == p_other.materials && layer_mask == p_other.layer_mask && lod_bias == p_other.lod_bias && double_sided == p_other.double_sided && scale_step == p_other.scale_step && cell == p_other.cell;
+		}
+
+		real_t get_scale() const {
+			return Math::pow((real_t)2.0, (real_t)scale_step * (real_t)0.5);
+		}
+
+		static uint32_t hash(const ShadowBatchKey &p_key) {
+			uint32_t h = hash_murmur3_one_64(p_key.mesh.get_id());
+			h = hash_murmur3_one_64(p_key.material_override.get_id(), h);
+			h = hash_murmur3_one_64(p_key.material_overlay.get_id(), h);
+			for (const RID &material : p_key.materials) {
+				h = hash_murmur3_one_64(material.get_id(), h);
+			}
+			h = hash_murmur3_one_32(p_key.layer_mask, h);
+			h = hash_murmur3_one_float(p_key.lod_bias, h);
+			h = hash_murmur3_one_32(p_key.double_sided, h);
+			h = hash_murmur3_one_32(p_key.scale_step, h);
+			h = hash_murmur3_one_32(p_key.cell.x, h);
+			h = hash_murmur3_one_32(p_key.cell.y, h);
+			h = hash_murmur3_one_32(p_key.cell.z, h);
+			return hash_fmix32(h);
+		}
+	};
+
+	struct ShadowBatch;
+
 	struct Scenario {
 		enum IndexerType {
 			INDEXER_GEOMETRY, //for geometry
@@ -364,6 +406,22 @@ public:
 
 		// Geometry that draws into runtime virtual textures (see instance_geometry_set_virtual_texture_layers()).
 		HashSet<Instance *> virtual_texture_writers;
+
+		// Geometry that changed lately, and may cast its shadows into the caches of static objects
+		// once it hasn't changed for a while (see _update_shadow_static()).
+		HashSet<Instance *> shadow_static_pending;
+		// Where what is in those caches changed since a main view last drew this scenario, and
+		// whether that was too much to keep track of.
+		LocalVector<AABB> shadow_static_dirty_aabbs;
+		bool shadow_static_dirty_all = false;
+
+		// The batches static meshes cast their shadows through (see ShadowBatch), those that lost
+		// instances lately, the geometry that turned static this frame, and whether batching was
+		// on the last time it was updated.
+		HashMap<ShadowBatchKey, ShadowBatch *, ShadowBatchKey> shadow_batches;
+		HashSet<ShadowBatch *> shadow_batches_shrunk;
+		LocalVector<Instance *> shadow_static_settled;
+		bool shadow_batching = false;
 
 		Scenario() {
 			indexers[INDEXER_GEOMETRY].set_index(INDEXER_GEOMETRY);
@@ -474,6 +532,17 @@ public:
 		// The runtime virtual textures this draws into, and whether it is drawn by cameras as well.
 		uint32_t virtual_texture_layers = 0;
 		bool virtual_texture_main_pass = true;
+		// Whether this casts its shadows into the caches of static objects that directional lights
+		// keep for their splits (see _update_shadow_static()): it hasn't changed for a while, and
+		// nothing about it changes on its own. shadow_static_aabb is where it was drawn into them.
+		bool shadow_static = false;
+		uint64_t shadow_static_frame = 0;
+		AABB shadow_static_aabb;
+		// The batch this static mesh belongs to, and its place in it (see ShadowBatch). On the
+		// instance that draws a batch, shadow_batch_owner is that batch instead.
+		ShadowBatch *shadow_batch = nullptr;
+		uint32_t shadow_batch_index = 0;
+		ShadowBatch *shadow_batch_owner = nullptr;
 		Scenario *scenario = nullptr;
 		SelfList<Instance> scenario_item;
 
@@ -631,11 +700,43 @@ public:
 	mutable SelfList<Instance>::List _instance_update_list;
 	void _instance_queue_update(Instance *p_instance, bool p_update_aabb, bool p_update_dependencies = false) const;
 
+	// Static meshes that share a mesh, materials and shadow settings, close to each other, whose
+	// shadows are cast by a MultiMesh of all of them instead of by each of them, once there are
+	// enough of them: the renderer culls its instances on the GPU for each shadow pass (see
+	// RenderingServer::multimesh_set_gpu_shadow_caster()), which saves drawing them one by one.
+	// Only on when the renderer supports that and rendering/lights_and_shadows/batch_static_shadow_casters
+	// is set (see _update_shadow_batches()).
+	//
+	// A mesh joins its batch when it turns static (see Instance::shadow_static), and leaves it as
+	// soon as anything about it changes. Its shadows are cast by the batch exactly while the
+	// batch draws it: whenever its instances change, the batch draws them again before anything
+	// is culled (see _shadow_batches_flush()). The batch counts as static itself, and leaves the
+	// caches of static objects to its instances: their shadows don't change for going through it.
+	struct ShadowBatch {
+		ShadowBatchKey key;
+		Scenario *scenario = nullptr;
+		LocalVector<Instance *> members;
+		// While there are enough members: the MultiMesh drawing them, and its instance.
+		RID multimesh;
+		RID instance;
+		SelfList<ShadowBatch> dirty_item;
+
+		ShadowBatch() :
+				dirty_item(this) {}
+	};
+
+	mutable SelfList<ShadowBatch>::List shadow_batch_dirty_list;
+	// Instances and MultiMeshes of batches that stopped, freed once nothing goes through the batches.
+	LocalVector<Pair<RID, RID>> shadow_batches_to_free;
+
 	struct InstanceGeometryData : public InstanceBaseData {
 		RenderGeometryInstance *geometry_instance = nullptr;
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
 		bool material_is_animated;
+		// Whether its materials read anything about the node they draw (see
+		// RendererMaterialStorage::material_uses_node_data()).
+		bool material_uses_node_data = false;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
 
@@ -702,9 +803,8 @@ public:
 	SelfList<InstanceVisibilityNotifierData>::List visible_notifier_list;
 
 	// A single directional shadow cascade's light-space fit, computed by
-	// _light_instance_setup_directional_shadow(). Used both for the live cascades (transient,
-	// rebuilt every frame in Cull::Shadow) and for the cached far cascade (persisted across frames
-	// on InstanceLightData, since it is only rebuilt every few frames).
+	// _light_instance_setup_directional_shadow() for the live cascades and by
+	// _update_directional_shadow_cache() for the cached far cascade.
 	struct DirectionalShadowCascadeData {
 		Frustum frustum;
 		Projection projection;
@@ -733,12 +833,39 @@ public:
 		uint32_t max_sdfgi_cascade = 2;
 		uint32_t cull_mask = 0xFFFFFFFF;
 
-		// Cached far cascade state. Persists across frames (unlike Cull::Shadow, which is rebuilt
-		// every frame) since it is only recomputed every shadow_cache_update_interval frames.
-		DirectionalShadowCascadeData cached_shadow_cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES];
-		bool cached_shadow_valid[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES] = {};
-		uint64_t cached_shadow_next_refresh_frame[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES] = {};
-		Vector3 cached_shadow_light_direction;
+		// Cached far cascade: where its tile sits in light space, which is what lets what the tile
+		// holds be kept from frame to frame (see _update_directional_shadow_cache()).
+		struct ShadowCache {
+			bool valid = false;
+			uint64_t last_update_frame = UINT64_MAX;
+			uint64_t atlas_generation = 0;
+			int tile = -1;
+			Size2i tile_size;
+			// A split's cache: the size of the split, which sits in the tile.
+			Size2i split_size;
+			// The light's basis when the tile was drawn whole: the axes of its texel grid.
+			Basis basis;
+			real_t margin = 0.0;
+			real_t pancake_size = 0.0;
+			real_t soft_shadow_tan = 0.0;
+			// Receivers are covered up to `extent` from the center of the tile, in every direction.
+			// Soft shadows look for blockers up to `soft_shadow_expand` further out, so the tile is
+			// `extent + soft_shadow_expand` wide from its center in X and Y.
+			real_t extent = 0.0;
+			real_t soft_shadow_expand = 0.0;
+			// The tile's first texel and its far plane, on grids of texels in X and Y and of depth
+			// steps (SHADOW_CACHE_DEPTH_STEPS of them over its depth range) in Z.
+			int64_t grid_x = 0;
+			int64_t grid_y = 0;
+			int64_t grid_z = 0;
+			// First row of the band of rows to draw again next.
+			int refresh_row = 0;
+		} shadow_cache;
+
+		// The caches of static objects of the splits (see _update_directional_split_cache()), and
+		// the frame they were last used in.
+		ShadowCache split_caches[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
+		uint64_t split_cache_frame = UINT64_MAX;
 
 	private:
 		// Instead of a single dirty flag, we maintain a count
@@ -931,7 +1058,8 @@ public:
 
 		struct DirectionalShadow {
 			PagedArray<RenderGeometryInstance *> cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
-			PagedArray<RenderGeometryInstance *> cached_cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES];
+			PagedArray<RenderGeometryInstance *> cached_cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
+			PagedArray<RenderGeometryInstance *> split_cache_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
 		} directional_shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
 
 		PagedArray<RenderGeometryInstance *> sdfgi_region_geometry_instances[SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE];
@@ -951,8 +1079,11 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].clear();
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].clear();
+				}
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
+					directional_shadows[i].split_cache_geometry_instances[j].clear();
 				}
 			}
 
@@ -979,8 +1110,11 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].reset();
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].reset();
+				}
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
+					directional_shadows[i].split_cache_geometry_instances[j].reset();
 				}
 			}
 
@@ -1008,8 +1142,11 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].merge_unordered(p_cull_result.directional_shadows[i].cascade_geometry_instances[j]);
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].merge_unordered(p_cull_result.directional_shadows[i].cached_cascade_geometry_instances[j]);
+				}
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
+					directional_shadows[i].split_cache_geometry_instances[j].merge_unordered(p_cull_result.directional_shadows[i].split_cache_geometry_instances[j]);
 				}
 			}
 
@@ -1036,8 +1173,11 @@ public:
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
 				}
-				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES; j++) {
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
 					directional_shadows[i].cached_cascade_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
+				}
+				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS; j++) {
+					directional_shadows[i].split_cache_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
 				}
 			}
 
@@ -1140,7 +1280,33 @@ public:
 	// Records a box that SDFGI has to voxelize again, because a dynamic GI object was or now is there.
 	void _sdfgi_mark_dirty(Scenario *p_scenario, const AABB &p_aabb) const;
 
-	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh);
+	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh, int p_shadow_cache_tile, int p_split_cache_tile);
+	void _update_directional_shadow_cache(int p_shadow_index, Instance *p_instance, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, real_t p_near, real_t p_far, int p_tile, bool p_allow_update);
+	void _update_directional_split_cache(int p_shadow_index, int p_split, Instance *p_instance, const Transform3D &p_light_transform, const Vector3 *p_endpoints, const Vector3 &p_center, real_t p_radius, real_t p_pancake_size, real_t p_soft_shadow_tan, const Transform3D &p_cam_transform, int p_tile);
+
+	// Shadow caching of static objects (see Instance::shadow_static).
+	static bool _instance_can_be_shadow_static(const Instance *p_instance);
+	void _shadow_static_changed(Instance *p_instance) const;
+	void _shadow_static_removed(Instance *p_instance) const;
+	void _shadow_static_mark_dirty(Scenario *p_scenario, const AABB &p_aabb) const;
+	void _update_shadow_static(Scenario *p_scenario);
+
+	// Batching of static meshes' shadows (see ShadowBatch).
+	static bool _instance_can_be_shadow_batched(const Instance *p_instance);
+	_FORCE_INLINE_ static bool _is_shadow_batched(const Instance *p_instance) {
+		return p_instance->shadow_batch != nullptr && p_instance->shadow_batch->instance.is_valid();
+	}
+	static void _shadow_batch_set_batched(Instance *p_member, bool p_batched);
+	void _shadow_batch_mark_dirty(ShadowBatch *p_batch) const;
+	void _shadow_batch_add(Scenario *p_scenario, Instance *p_instance);
+	void _shadow_batch_remove(Instance *p_instance) const;
+	void _shadow_batch_activate(ShadowBatch *p_batch);
+	void _shadow_batch_deactivate(ShadowBatch *p_batch);
+	void _shadow_batch_free(ShadowBatch *p_batch);
+	bool _shadow_batches_flush() const;
+	void _shadow_batches_clear(Scenario *p_scenario);
+	void _shadow_batches_free_stopped();
+	void _update_shadow_batches(Scenario *p_scenario);
 
 	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF);
 
@@ -1163,17 +1329,25 @@ public:
 				real_t range_begin;
 				Vector2 uv_scale;
 
+				// Drawn from the split's cache of static objects: only what isn't static is culled for it.
+				bool split_cached;
+
 			} cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES]; //max 4 cascades
 			uint32_t cascade_count;
 
-			// Per-frame scratch copy of the light's cached far cascade(s), refreshed from
-			// InstanceLightData::cached_shadow_cascades in _light_instance_setup_directional_shadow().
-			// `cached_cascade_refresh_mask` bit k is set only on the frames where cached_cascades[k] is
-			// actually being redrawn (culling/GPU work); it is skipped on every other frame, which is
-			// the entire point of the cache.
+			// The regions of the splits' caches of static objects drawn this frame, culled against
+			// these, for static objects only. See _update_directional_split_cache().
+			Frustum split_cache_region_frustums[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES][RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
+			uint32_t split_cache_region_count[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
+
+			// The light's cached far cascade, as sampled this frame, and the regions of its tile
+			// that are drawn this frame (most frames, only a band of rows), each culled on its own
+			// against cached_region_frustums. See _update_directional_shadow_cache().
 			DirectionalShadowCascadeData cached_cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES];
 			uint32_t cached_cascade_count;
-			uint32_t cached_cascade_refresh_mask;
+			Frustum cached_region_frustums[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
+			uint32_t cached_region_count;
+			InstanceLightData *light_data;
 
 		} shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
 

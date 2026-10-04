@@ -36,6 +36,8 @@
 #include "core/templates/local_vector.h"
 
 class Camera3D;
+class Mesh;
+class MultiMeshInstance3D;
 class Node3D;
 
 // Every RenderingDevice object the culling passes need. Split out of
@@ -125,6 +127,19 @@ public:
 	// True if this build can run the GPU path at all (RenderingDevice backends
 	// only; the GL Compatibility renderer cannot draw indirect MultiMeshes).
 	static bool is_supported();
+
+	// True if shadows can come from a MultiMesh of every instance whose
+	// instances the renderer culls on the GPU for each shadow pass (see
+	// create_shadow_caster()), rather than from the instances culled for the
+	// camera: those leave out whatever is behind the camera or hidden behind
+	// something, which still casts shadows into view.
+	static bool are_shadow_casters_supported();
+
+	// A node that casts the shadows of every one of these instances, drawn
+	// with p_mesh, at distances from the camera between p_range_begin and
+	// p_range_end (when above 0), and draws nothing else (see
+	// RenderingServer::multimesh_set_gpu_shadow_caster()).
+	static MultiMeshInstance3D *create_shadow_caster(const LocalVector<Transform3D> &p_transforms, const Ref<Mesh> &p_mesh, const AABB &p_custom_aabb, float p_range_begin, float p_range_end);
 
 	// The camera this node's foliage should be culled against.
 	//

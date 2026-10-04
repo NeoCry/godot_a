@@ -275,6 +275,7 @@ public:
 		bool uses_world_coordinates = false;
 		bool uses_screen_texture_mipmaps = false;
 		bool uses_z_clip_scale = false;
+		bool reads_node_data = false;
 		RSE::CullMode cull_mode = RSE::CULL_MODE_DISABLED;
 
 		bool stencil_enabled = false;
@@ -310,6 +311,7 @@ public:
 
 		virtual bool is_animated() const;
 		virtual bool casts_shadows() const;
+		virtual bool uses_node_data() const { return reads_node_data; }
 		virtual RenderingServerTypes::ShaderNativeSourceCode get_native_source_code() const;
 		virtual Pair<ShaderRD *, RID> get_native_shader_and_version() const;
 		uint16_t _get_shader_version(PipelineVersion p_pipeline_version, uint32_t p_color_pass_flags, bool p_ubershader) const;

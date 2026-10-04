@@ -2250,6 +2250,11 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const 
 	for (int i = 0; i < (int)p_render_data->instances->size(); i++) {
 		GeometryInstanceForwardMobile *inst = static_cast<GeometryInstanceForwardMobile *>((*p_render_data->instances)[i]);
 
+		if (p_pass_mode != PASS_MODE_SHADOW && p_pass_mode != PASS_MODE_SHADOW_DP && inst->data->base_type == RSE::INSTANCE_MULTIMESH && RendererRD::MeshStorage::get_singleton()->multimesh_is_gpu_shadow_caster(inst->data->base)) {
+			// Only drawn in shadow passes, where this renderer draws all of its instances.
+			continue;
+		}
+
 		Vector3 center = inst->transform.origin;
 		if (p_render_data->scene_data->cam_orthogonal) {
 			if (inst->use_aabb_center) {

@@ -77,6 +77,9 @@ class FoliagePainter3D : public Node3D {
 	struct GPULayer {
 		LocalVector<Ref<MultiMesh>> lod_multimeshes;
 		LocalVector<MultiMeshInstance3D *> lod_nodes;
+		// Nodes that cast the shadows of all of the layer's instances instead of lod_nodes, when
+		// the renderer culls them for each shadow pass (see FoliageGPUCuller::create_shadow_caster()).
+		LocalVector<MultiMeshInstance3D *> shadow_nodes;
 		FoliageGPUCuller *culler = nullptr;
 		// Set when the layer's instances change, so that a whole brush stroke
 		// costs one buffer rebuild per frame instead of one per stamp.
