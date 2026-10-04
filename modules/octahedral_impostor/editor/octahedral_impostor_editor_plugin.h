@@ -51,9 +51,9 @@ class SubViewportContainer;
 class TextureRect;
 class Timer;
 
-// Settings of the bake of octahedral impostors, with a preview of the result, then the bake of
-// each source (nodes of the edited scene or scene files) and the setup of the impostors as far
-// levels of detail of the nodes.
+// Settings of the bake of octahedral impostors or billboards, with a preview of the result, then
+// the bake of each source (nodes of the edited scene or scene files) and the setup of the results
+// as far levels of detail of the nodes.
 class OctahedralImpostorDialog : public ConfirmationDialog {
 	GDCLASS(OctahedralImpostorDialog, ConfirmationDialog);
 
@@ -74,8 +74,16 @@ class OctahedralImpostorDialog : public ConfirmationDialog {
 	Node3D *scene_instance = nullptr; // Instance of the first scene file, for the preview.
 
 	Label *source_label = nullptr;
+	OptionButton *type_option = nullptr;
+	Label *layout_label = nullptr;
 	OptionButton *layout_option = nullptr;
+	Label *frames_label = nullptr;
 	SpinBox *frames_spin = nullptr;
+	Label *billboard_mode_label = nullptr;
+	OptionButton *billboard_mode_option = nullptr;
+	Label *cross_planes_label = nullptr;
+	SpinBox *cross_planes_spin = nullptr;
+	Label *atlas_size_label = nullptr;
 	OptionButton *atlas_size_option = nullptr;
 	OptionButton *supersampling_option = nullptr;
 	CheckBox *orm_check = nullptr;
@@ -103,12 +111,15 @@ class OctahedralImpostorDialog : public ConfirmationDialog {
 	bool lod_distance_edited = false;
 
 	bool _is_batch() const;
+	bool _is_billboard() const;
 	Node3D *_get_source_node(int p_index);
 	void _free_scene_instance();
-	String _get_default_path(const Source &p_source, bool p_directory) const;
+	String _get_default_path(const Source &p_source, bool p_directory, bool p_billboard) const;
 	Ref<OctahedralImpostorBaker> _create_baker() const;
-	void _open(const Vector<Source> &p_sources);
+	void _open(const Vector<Source> &p_sources, int p_type);
 
+	void _type_changed(int p_type);
+	void _update_type_settings();
 	void _settings_changed(int p_value = 0);
 	void _lod_distance_changed(double p_value);
 	void _add_to_scene_toggled(bool p_pressed);
@@ -128,8 +139,9 @@ protected:
 	void _notification(int p_what);
 
 public:
-	void popup_for_nodes(const Vector<Node3D *> &p_nodes);
-	void popup_for_scenes(const Vector<String> &p_paths);
+	// p_type is an OctahedralImpostorBaker::Type.
+	void popup_for_nodes(const Vector<Node3D *> &p_nodes, int p_type);
+	void popup_for_scenes(const Vector<String> &p_paths, int p_type);
 
 	OctahedralImpostorDialog();
 	~OctahedralImpostorDialog();
@@ -141,8 +153,8 @@ class OctahedralImpostorContextMenuPlugin : public EditorContextMenuPlugin {
 	OctahedralImpostorDialog *dialog = nullptr;
 	bool filesystem = false;
 
-	void _scene_tree_option(const Dictionary &p_data);
-	void _filesystem_option(const Dictionary &p_data);
+	void _scene_tree_option(const Dictionary &p_data, int p_type);
+	void _filesystem_option(const Dictionary &p_data, int p_type);
 
 public:
 	using EditorContextMenuPlugin::get_options;

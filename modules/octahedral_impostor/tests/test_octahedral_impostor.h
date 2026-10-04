@@ -229,6 +229,97 @@ TEST_CASE("[OctahedralImpostor][Editor] Frame size") {
 	CHECK(baker->get_baked_atlas_size() == 2016);
 	CHECK(baker->get_frame_size() % 4 == 0);
 }
+
+TEST_CASE("[OctahedralImpostor][Editor] Billboard settings") {
+	Ref<OctahedralImpostorBaker> baker;
+	baker.instantiate();
+	CHECK(baker->get_type() == OctahedralImpostorBaker::TYPE_OCTAHEDRAL_IMPOSTOR);
+	baker->set_type(OctahedralImpostorBaker::TYPE_BILLBOARD);
+	CHECK(baker->get_type() == OctahedralImpostorBaker::TYPE_BILLBOARD);
+	baker->set_billboard_mode(OctahedralImpostorBaker::BILLBOARD_CROSS);
+	CHECK(baker->get_billboard_mode() == OctahedralImpostorBaker::BILLBOARD_CROSS);
+	baker->set_cross_planes(100);
+	CHECK(baker->get_cross_planes() == OctahedralImpostorBaker::MAX_CROSS_PLANES);
+	baker->set_cross_planes(0);
+	CHECK(baker->get_cross_planes() == OctahedralImpostorBaker::MIN_CROSS_PLANES);
+}
+
+TEST_CASE("[OctahedralImpostor][Editor] Billboard views") {
+	Node3D *root = memnew(Node3D);
+	// A tall box, off the origin of the node.
+	root->add_child(_make_box(Vector3(1, 2, 0.5), Vector3(1, 4, 2)));
+	const LocalVector<OctahedralImpostorBaker::Geometry> geometry = OctahedralImpostorBaker::collect_geometry(root);
+
+	SUBCASE("Turned toward the camera") {
+		LocalVector<OctahedralImpostorBaker::View> views;
+		Size2i atlas_size;
+		real_t texel = 0.0;
+		REQUIRE(OctahedralImpostorBaker::compute_billboard_views(geometry, OctahedralImpostorBaker::BILLBOARD_FIXED_Y, 2, 512, views, atlas_size, texel));
+		REQUIRE(views.size() == 1);
+		const OctahedralImpostorBaker::View &view = views[0];
+		// The view from the front (+Z), centered on the geometry, on the plane through the origin.
+		CHECK(view.basis.get_column(2).is_equal_approx(Vector3(0, 0, 1)));
+		CHECK(view.basis.get_column(1).is_equal_approx(Vector3(0, 1, 0)));
+		CHECK(view.center.is_equal_approx(Vector3(1, 2, 0)));
+		// The textures fit the shape: the longest side is the size, in blocks of 4 pixels.
+		CHECK(atlas_size.y == 512);
+		CHECK(atlas_size.x < 256);
+		CHECK(atlas_size.x % 4 == 0);
+		CHECK(view.rect == Rect2i(Point2i(), atlas_size));
+		// The view contains the geometry with a border.
+		const Size2 world_size = Size2(view.rect.size) * texel;
+		CHECK(world_size.x > 1.0);
+		CHECK(world_size.y > 4.0);
+		CHECK(world_size.x - 1.0 < 20.0 * texel);
+		CHECK(world_size.y - 4.0 < 20.0 * texel);
+	}
+
+	SUBCASE("Crossed planes") {
+		LocalVector<OctahedralImpostorBaker::View> views;
+		Size2i atlas_size;
+		real_t texel = 0.0;
+		REQUIRE(OctahedralImpostorBaker::compute_billboard_views(geometry, OctahedralImpostorBaker::BILLBOARD_CROSS, 3, 1024, views, atlas_size, texel));
+		REQUIRE(views.size() == 3);
+		CHECK(MAX(atlas_size.x, atlas_size.y) == 1024);
+		int width = 0;
+		for (uint32_t i = 0; i < views.size(); i++) {
+			const OctahedralImpostorBaker::View &view = views[i];
+			// Side by side, vertical planes at equal angles.
+			CHECK(view.rect.position == Point2i(width, 0));
+			CHECK(view.rect.size.y == atlas_size.y);
+			width += view.rect.size.x;
+			const Vector3 direction = view.basis.get_column(2);
+			CHECK(Math::is_zero_approx(direction.y));
+			CHECK(direction.angle_to(Vector3(0, 0, 1)) == doctest::Approx(Math::PI * i / 3.0));
+			// Through the vertical axis of the geometry.
+			CHECK(view.center.y == doctest::Approx(2.0));
+			CHECK(Math::is_zero_approx((view.center - Vector3(1, 2, 0.5)).dot(direction)));
+		}
+		CHECK(width == atlas_size.x);
+		// The front view is as wide as the box, the side view as deep.
+		CHECK(views[0].rect.size.x < views[1].rect.size.x);
+	}
+
+	memdelete(root);
+}
+
+TEST_CASE("[OctahedralImpostor][Editor] Baked billboards are skipped") {
+	Node3D *root = memnew(Node3D);
+	MeshInstance3D *box = _make_box(Vector3(), Vector3(1, 1, 1));
+	root->add_child(box);
+	MeshInstance3D *billboard = memnew(MeshInstance3D);
+	Ref<QuadMesh> quad;
+	quad.instantiate();
+	quad->set_meta("_baked_billboard", true);
+	billboard->set_mesh(quad);
+	root->add_child(billboard);
+
+	const LocalVector<OctahedralImpostorBaker::Geometry> geometry = OctahedralImpostorBaker::collect_geometry(root);
+	REQUIRE(geometry.size() == 1);
+	CHECK(geometry[0].node == box->get_instance_id());
+
+	memdelete(root);
+}
 #endif
 
 } // namespace TestOctahedralImpostor

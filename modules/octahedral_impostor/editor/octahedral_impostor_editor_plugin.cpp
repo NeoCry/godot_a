@@ -67,10 +67,20 @@
 #include "scene/resources/packed_scene.h"
 #include "servers/rendering/rendering_server.h"
 
-static const int atlas_sizes[] = { 512, 1024, 2048, 4096, 8192 };
+static const int atlas_sizes[] = { 256, 512, 1024, 2048, 4096, 8192 };
 static const int supersampling_factors[] = { 1, 2, 4 };
 // Largest atlas of the preview, which bakes again at each change of the settings.
 static const int PREVIEW_ATLAS_SIZE = 1024;
+
+// Size on screen of the objects replaced by billboards: they're flat, unlike the objects.
+static const int BILLBOARD_LOD_PIXELS = 128;
+
+// The distance at which a size is shown at about the size of a pixel of a 1080p screen, with a
+// vertical field of view of 75 degrees.
+static float _get_lod_distance(float p_pixel_size) {
+	const float pixel_angle = 2.0 * Math::tan(Math::deg_to_rad(75.0 / 2.0)) / 1080.0;
+	return p_pixel_size / pixel_angle;
+}
 
 static Node3D *_instantiate_scene(const String &p_path) {
 	const Ref<PackedScene> scene = ResourceLoader::load(p_path, "PackedScene");
@@ -109,6 +119,10 @@ bool OctahedralImpostorDialog::_is_batch() const {
 	return sources.size() > 1;
 }
 
+bool OctahedralImpostorDialog::_is_billboard() const {
+	return type_option->get_selected_id() == OctahedralImpostorBaker::TYPE_BILLBOARD;
+}
+
 Node3D *OctahedralImpostorDialog::_get_source_node(int p_index) {
 	ERR_FAIL_INDEX_V(p_index, sources.size(), nullptr);
 	const Source &source = sources[p_index];
@@ -131,7 +145,7 @@ void OctahedralImpostorDialog::_free_scene_instance() {
 	}
 }
 
-String OctahedralImpostorDialog::_get_default_path(const Source &p_source, bool p_directory) const {
+String OctahedralImpostorDialog::_get_default_path(const Source &p_source, bool p_directory, bool p_billboard) const {
 	String directory;
 	if (!p_source.scene_path.is_empty()) {
 		directory = p_source.scene_path.get_base_dir();
@@ -144,25 +158,29 @@ String OctahedralImpostorDialog::_get_default_path(const Source &p_source, bool 
 	if (p_directory) {
 		return directory;
 	}
-	return directory.path_join(p_source.name.to_snake_case() + "_impostor.tres");
+	return directory.path_join(p_source.name.to_snake_case() + (p_billboard ? "_billboard.tres" : "_impostor.tres"));
 }
 
 Ref<OctahedralImpostorBaker> OctahedralImpostorDialog::_create_baker() const {
 	Ref<OctahedralImpostorBaker> baker;
 	baker.instantiate();
+	baker->set_type(OctahedralImpostorBaker::Type(type_option->get_selected_id()));
 	baker->set_layout(OctahedralImpostorMaterial3D::Layout(layout_option->get_selected_id()));
 	baker->set_frames(frames_spin->get_value());
+	baker->set_billboard_mode(OctahedralImpostorBaker::BillboardMode(billboard_mode_option->get_selected_id()));
+	baker->set_cross_planes(cross_planes_spin->get_value());
 	baker->set_atlas_size(atlas_size_option->get_selected_id());
 	baker->set_supersampling(supersampling_option->get_selected_id());
 	baker->set_bake_orm(orm_check->is_pressed());
 	return baker;
 }
 
-void OctahedralImpostorDialog::_open(const Vector<Source> &p_sources) {
+void OctahedralImpostorDialog::_open(const Vector<Source> &p_sources, int p_type) {
 	_free_scene_instance();
 	sources = p_sources;
 	ERR_FAIL_COND(sources.is_empty());
 
+	type_option->select(type_option->get_item_index(p_type));
 	if (_is_batch()) {
 		source_label->set_text(vformat(TTR("Sources: %d"), sources.size()));
 		String names;
@@ -171,14 +189,13 @@ void OctahedralImpostorDialog::_open(const Vector<Source> &p_sources) {
 		}
 		source_label->set_tooltip_text(names);
 		path_label->set_text(TTR("Output Folder:"));
-		path_edit->set_tooltip_text(TTR("The impostors are saved in this folder as \"<name>_impostor.tres\", with their atlases."));
 	} else {
 		source_label->set_text(vformat(TTR("Source: %s"), sources[0].name));
 		source_label->set_tooltip_text(sources[0].scene_path);
 		path_label->set_text(TTR("Mesh Path:"));
-		path_edit->set_tooltip_text(TTR("The impostor is saved as a quad mesh with its material, the atlases are saved next to it."));
 	}
-	path_edit->set_text(_get_default_path(sources[0], _is_batch()));
+	path_edit->set_text(_get_default_path(sources[0], _is_batch(), _is_billboard()));
+	_update_type_settings();
 
 	const bool has_nodes = sources[0].scene_path.is_empty() && EditorNode::get_singleton()->get_edited_scene();
 	add_to_scene_check->set_visible(has_nodes);
@@ -193,7 +210,7 @@ void OctahedralImpostorDialog::_open(const Vector<Source> &p_sources) {
 	_queue_preview();
 }
 
-void OctahedralImpostorDialog::popup_for_nodes(const Vector<Node3D *> &p_nodes) {
+void OctahedralImpostorDialog::popup_for_nodes(const Vector<Node3D *> &p_nodes, int p_type) {
 	Vector<Source> new_sources;
 	for (Node3D *node : p_nodes) {
 		Source source;
@@ -201,10 +218,10 @@ void OctahedralImpostorDialog::popup_for_nodes(const Vector<Node3D *> &p_nodes) 
 		source.name = node->get_name();
 		new_sources.push_back(source);
 	}
-	_open(new_sources);
+	_open(new_sources, p_type);
 }
 
-void OctahedralImpostorDialog::popup_for_scenes(const Vector<String> &p_paths) {
+void OctahedralImpostorDialog::popup_for_scenes(const Vector<String> &p_paths, int p_type) {
 	Vector<Source> new_sources;
 	for (const String &path : p_paths) {
 		Source source;
@@ -212,7 +229,54 @@ void OctahedralImpostorDialog::popup_for_scenes(const Vector<String> &p_paths) {
 		source.name = path.get_file().get_basename();
 		new_sources.push_back(source);
 	}
-	_open(new_sources);
+	_open(new_sources, p_type);
+}
+
+void OctahedralImpostorDialog::_type_changed(int p_type) {
+	if (!sources.is_empty()) {
+		// The default path follows the type.
+		const bool billboard = _is_billboard();
+		if (path_edit->get_text() == _get_default_path(sources[0], _is_batch(), !billboard)) {
+			path_edit->set_text(_get_default_path(sources[0], _is_batch(), billboard));
+		}
+	}
+	_update_type_settings();
+	_settings_changed();
+}
+
+void OctahedralImpostorDialog::_update_type_settings() {
+	const bool billboard = _is_billboard();
+	set_title(billboard ? TTR("Create Billboard") : TTR("Create Octahedral Impostor"));
+	layout_label->set_visible(!billboard);
+	layout_option->set_visible(!billboard);
+	frames_label->set_visible(!billboard);
+	frames_spin->set_visible(!billboard);
+	billboard_mode_label->set_visible(billboard);
+	billboard_mode_option->set_visible(billboard);
+	const bool cross = billboard && billboard_mode_option->get_selected_id() == OctahedralImpostorBaker::BILLBOARD_CROSS;
+	cross_planes_label->set_visible(cross);
+	cross_planes_spin->set_visible(cross);
+	atlas_size_label->set_text(billboard ? TTR("Texture Size:") : TTR("Atlas Size:"));
+	atlas_size_option->set_tooltip_text(billboard ? TTR("Size of the longest side of the textures. The other side fits the shape of the object.") : TTR("Size of the atlases of the views."));
+	orm_check->set_text(billboard ? TTR("ORM Texture") : TTR("ORM Atlas"));
+
+	if (_is_batch()) {
+		path_edit->set_tooltip_text(billboard ? TTR("The billboards are saved in this folder as \"<name>_billboard.tres\", with their textures.") : TTR("The impostors are saved in this folder as \"<name>_impostor.tres\", with their atlases."));
+	} else {
+		path_edit->set_tooltip_text(billboard ? TTR("The billboard is saved as a mesh with a StandardMaterial3D, the textures are saved next to it.") : TTR("The impostor is saved as a quad mesh with its material, the atlases are saved next to it."));
+	}
+	add_to_scene_check->set_tooltip_text(billboard ? TTR("Adds the billboard to the node, shown from the distance, and hides the meshes of the node from there (with the visibility ranges).") : TTR("Adds the impostor to the node, shown from the distance, and hides the meshes of the node from there (with the visibility ranges)."));
+	lod_distance_spin->set_tooltip_text(billboard ? TTR("Distance from which the billboard replaces the meshes. By default, where the object is about 128 pixels large on a 1080p screen, or farther if its textures need it to look sharp.") : TTR("Distance from which the impostor replaces the meshes. By default, where the views are shown at about their resolution on a 1080p screen."));
+
+	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_IMPOSTOR), billboard ? TTR("Billboard") : TTR("Impostor"));
+	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_ALBEDO), billboard ? TTR("Albedo Texture") : TTR("Albedo Atlas"));
+	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_NORMAL), billboard ? TTR("Normal Map") : TTR("Normal Atlas"));
+	// Billboards are flat.
+	preview_mode_option->set_item_disabled(preview_mode_option->get_item_index(PREVIEW_DEPTH), billboard);
+	if (billboard && preview_mode_option->get_selected_id() == PREVIEW_DEPTH) {
+		preview_mode_option->select(preview_mode_option->get_item_index(PREVIEW_IMPOSTOR));
+		_update_preview_mode();
+	}
 }
 
 void OctahedralImpostorDialog::_settings_changed(int p_value) {
@@ -232,18 +296,39 @@ void OctahedralImpostorDialog::_add_to_scene_toggled(bool p_pressed) {
 
 void OctahedralImpostorDialog::_update_info() {
 	const Ref<OctahedralImpostorBaker> baker = _create_baker();
-	const int frame_size = baker->get_frame_size();
-	const int atlas_size = baker->get_baked_atlas_size();
 	const int maps = baker->is_baking_orm() ? 3 : 2;
-	// VRAM compressed at one byte per pixel (BPTC/ASTC 4x4), with mipmaps.
-	const float memory = float(atlas_size) * atlas_size * maps * 4.0 / 3.0 / (1024.0 * 1024.0);
-	info_label->set_text(vformat(TTR("Frames: %d x %d px. Atlas: %d x %d px.\nVideo memory: %.1f MiB (compressed)."), frame_size, frame_size, atlas_size, atlas_size, memory));
-
 	String warning;
-	if (frame_size < 4 * OctahedralImpostorBaker::FRAME_PADDING) {
-		warning = TTR("The frames are too small: increase the atlas size or reduce the number of frames.");
-	} else if (frame_size < 32) {
-		warning = TTR("The frames are small, the impostor will look blurry: increase the atlas size or reduce the number of frames.");
+	bool can_bake = true;
+	if (_is_billboard()) {
+		// The textures fit the shape of the (first) object.
+		Node3D *node = _get_source_node(0);
+		LocalVector<OctahedralImpostorBaker::View> views;
+		Size2i texture_size;
+		real_t texel_size = 0.0;
+		if (node && OctahedralImpostorBaker::compute_billboard_views(OctahedralImpostorBaker::collect_geometry(node), baker->get_billboard_mode(), baker->get_cross_planes(), baker->get_atlas_size(), views, texture_size, texel_size)) {
+			// VRAM compressed at one byte per pixel (BPTC/ASTC 4x4), with mipmaps.
+			const float memory = float(texture_size.x) * texture_size.y * maps * 4.0 / 3.0 / (1024.0 * 1024.0);
+			if (_is_batch()) {
+				info_label->set_text(vformat(TTR("Textures of \"%s\": %d x %d px.\nVideo memory: %.1f MiB (compressed)."), sources[0].name, texture_size.x, texture_size.y, memory));
+			} else {
+				info_label->set_text(vformat(TTR("Textures: %d x %d px.\nVideo memory: %.1f MiB (compressed)."), texture_size.x, texture_size.y, memory));
+			}
+		} else {
+			info_label->set_text(vformat(TTR("Textures: %d px on the longest side."), baker->get_atlas_size()));
+		}
+	} else {
+		const int frame_size = baker->get_frame_size();
+		const int atlas_size = baker->get_baked_atlas_size();
+		// VRAM compressed at one byte per pixel (BPTC/ASTC 4x4), with mipmaps.
+		const float memory = float(atlas_size) * atlas_size * maps * 4.0 / 3.0 / (1024.0 * 1024.0);
+		info_label->set_text(vformat(TTR("Frames: %d x %d px. Atlas: %d x %d px.\nVideo memory: %.1f MiB (compressed)."), frame_size, frame_size, atlas_size, atlas_size, memory));
+
+		if (frame_size < 4 * OctahedralImpostorBaker::FRAME_PADDING) {
+			warning = TTR("The frames are too small: increase the atlas size or reduce the number of frames.");
+			can_bake = false;
+		} else if (frame_size < 32) {
+			warning = TTR("The frames are small, the impostor will look blurry: increase the atlas size or reduce the number of frames.");
+		}
 	}
 	for (int i = 0; i < sources.size() && warning.is_empty(); i++) {
 		if (sources[i].scene_path.is_empty()) {
@@ -255,7 +340,7 @@ void OctahedralImpostorDialog::_update_info() {
 	}
 	warning_label->set_text(warning);
 	warning_label->set_visible(!warning.is_empty());
-	get_ok_button()->set_disabled(frame_size < 4 * OctahedralImpostorBaker::FRAME_PADDING);
+	get_ok_button()->set_disabled(!can_bake);
 }
 
 void OctahedralImpostorDialog::_queue_preview() {
@@ -286,20 +371,18 @@ void OctahedralImpostorDialog::_update_preview() {
 		return;
 	}
 	preview_status->hide();
-
-	const Ref<OctahedralImpostorMaterial3D> material = preview_baker->create_material();
-	Ref<QuadMesh> mesh;
-	mesh.instantiate();
-	mesh->set_material(material);
-	mesh->set_custom_aabb(material->get_bounds());
-	preview_instance->set_mesh(mesh);
+	preview_instance->set_mesh(preview_baker->create_mesh());
 
 	if (!lod_distance_edited) {
-		// The distance at which a frame is shown at about its resolution, on a 1080p screen with
-		// a vertical field of view of 75 degrees.
-		const float pixel_angle = 2.0 * Math::tan(Math::deg_to_rad(75.0 / 2.0)) / 1080.0;
-		const int frame_size = _create_baker()->get_frame_size();
-		const float distance = 2.0 * preview_baker->get_sphere_radius() / (MAX(frame_size, 1) * pixel_angle);
+		// Where the pixels of the bake with the settings are shown at about their resolution (the
+		// preview is baked at a lower resolution). Billboards also wait for the object to be small.
+		float distance = 0.0;
+		if (preview_baker->get_baked_type() == OctahedralImpostorBaker::TYPE_BILLBOARD) {
+			const float texel_size = preview_baker->get_texel_size() * preview_baker->get_atlas_size() / MAX(_create_baker()->get_atlas_size(), 1);
+			distance = MAX(_get_lod_distance(texel_size), _get_lod_distance(2.0 * preview_baker->get_sphere_radius() / BILLBOARD_LOD_PIXELS));
+		} else {
+			distance = _get_lod_distance(2.0 * preview_baker->get_sphere_radius() / MAX(_create_baker()->get_frame_size(), 1));
+		}
 		lod_distance_spin->set_value_no_signal(Math::snapped(distance, distance > 20.0 ? 1.0 : 0.1));
 	}
 
@@ -319,6 +402,9 @@ void OctahedralImpostorDialog::_update_preview_mode(int p_mode) {
 	Ref<Image> image;
 	if (preview_mode == PREVIEW_ALBEDO) {
 		image = preview_baker->get_albedo_image();
+	} else if (preview_baker->get_baked_type() == OctahedralImpostorBaker::TYPE_BILLBOARD) {
+		// A normal map.
+		image = preview_baker->get_normal_depth_image();
 	} else {
 		// Normal in RGB, depth in A.
 		image = preview_baker->get_normal_depth_image()->duplicate();
@@ -372,11 +458,11 @@ void OctahedralImpostorDialog::_browse_path() {
 	file_dialog->clear_filters();
 	if (_is_batch()) {
 		file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_DIR);
-		file_dialog->set_title(TTR("Select the Folder of the Impostors"));
+		file_dialog->set_title(_is_billboard() ? TTR("Select the Folder of the Billboards") : TTR("Select the Folder of the Impostors"));
 		file_dialog->set_current_dir(path_edit->get_text());
 	} else {
 		file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_SAVE_FILE);
-		file_dialog->set_title(TTR("Save the Impostor Mesh"));
+		file_dialog->set_title(_is_billboard() ? TTR("Save the Billboard Mesh") : TTR("Save the Impostor Mesh"));
 		file_dialog->add_filter("*.tres", TTR("Text Resource"));
 		file_dialog->add_filter("*.res", TTR("Binary Resource"));
 		file_dialog->set_current_path(path_edit->get_text());
@@ -392,6 +478,8 @@ void OctahedralImpostorDialog::_save_settings() {
 	EditorSettings *settings = EditorSettings::get_singleton();
 	settings->set_project_metadata("octahedral_impostor", "layout", layout_option->get_selected_id());
 	settings->set_project_metadata("octahedral_impostor", "frames", int(frames_spin->get_value()));
+	settings->set_project_metadata("octahedral_impostor", "billboard_mode", billboard_mode_option->get_selected_id());
+	settings->set_project_metadata("octahedral_impostor", "cross_planes", int(cross_planes_spin->get_value()));
 	settings->set_project_metadata("octahedral_impostor", "atlas_size", atlas_size_option->get_selected_id());
 	settings->set_project_metadata("octahedral_impostor", "supersampling", supersampling_option->get_selected_id());
 	settings->set_project_metadata("octahedral_impostor", "orm", orm_check->is_pressed());
@@ -417,7 +505,7 @@ void OctahedralImpostorDialog::_add_impostor_to_scene(Node3D *p_node, const Ref<
 	}
 	if (!impostor) {
 		impostor = memnew(MeshInstance3D);
-		impostor->set_name("Impostor");
+		impostor->set_name(p_baker->get_baked_type() == OctahedralImpostorBaker::TYPE_BILLBOARD ? "Billboard" : "Impostor");
 		impostor->set_mesh(p_mesh);
 		// The impostor is a level of detail, not part of the baked lighting.
 		impostor->set_gi_mode(GeometryInstance3D::GI_MODE_DISABLED);
@@ -460,6 +548,7 @@ void OctahedralImpostorDialog::_add_impostor_to_scene(Node3D *p_node, const Ref<
 void OctahedralImpostorDialog::_bake() {
 	_save_settings();
 	const bool batch = _is_batch();
+	const bool billboard = _is_billboard();
 	const String path = path_edit->get_text().strip_edges();
 	if (batch) {
 		if (!DirAccess::dir_exists_absolute(path)) {
@@ -469,7 +558,7 @@ void OctahedralImpostorDialog::_bake() {
 	} else {
 		const String extension = path.get_extension().to_lower();
 		if (extension != "tres" && extension != "res") {
-			EditorNode::get_singleton()->show_warning(TTR("The impostor mesh must be saved as a resource (\".tres\" or \".res\")."));
+			EditorNode::get_singleton()->show_warning(billboard ? TTR("The billboard mesh must be saved as a resource (\".tres\" or \".res\").") : TTR("The impostor mesh must be saved as a resource (\".tres\" or \".res\")."));
 			return;
 		}
 		if (!DirAccess::dir_exists_absolute(path.get_base_dir())) {
@@ -504,7 +593,7 @@ void OctahedralImpostorDialog::_bake() {
 			continue;
 		}
 
-		const String mesh_path = batch ? path.path_join(source.name.to_snake_case() + "_impostor.tres") : path;
+		const String mesh_path = batch ? path.path_join(source.name.to_snake_case() + (billboard ? "_billboard.tres" : "_impostor.tres")) : path;
 		Ref<OctahedralImpostorBaker> baker = _create_baker();
 		const Error err = baker->bake(node, true);
 		Ref<Mesh> mesh;
@@ -513,7 +602,7 @@ void OctahedralImpostorDialog::_bake() {
 		}
 		if (mesh.is_valid() && add_to_scene && !temporary && source.scene_path.is_empty()) {
 			if (!action_created) {
-				undo_redo->create_action(TTR("Create Octahedral Impostor"));
+				undo_redo->create_action(billboard ? TTR("Create Billboard") : TTR("Create Octahedral Impostor"));
 				action_created = true;
 			}
 			_add_impostor_to_scene(node, mesh, baker, skipped_nodes);
@@ -536,9 +625,10 @@ void OctahedralImpostorDialog::_bake() {
 	_free_scene_instance();
 
 	if (!failed.is_empty()) {
-		EditorNode::get_singleton()->show_warning(vformat(TTR("The impostors of these sources couldn't be baked (see the Output panel):\n%s"), String("\n").join(failed)));
+		const String message = billboard ? TTR("The billboards of these sources couldn't be baked (see the Output panel):\n%s") : TTR("The impostors of these sources couldn't be baked (see the Output panel):\n%s");
+		EditorNode::get_singleton()->show_warning(vformat(message, String("\n").join(failed)));
 	} else if (!last_mesh_path.is_empty()) {
-		EditorToaster::get_singleton()->popup_str(vformat(TTR("Octahedral impostor saved to \"%s\"."), batch ? path : last_mesh_path));
+		EditorToaster::get_singleton()->popup_str(vformat(billboard ? TTR("Billboard saved to \"%s\".") : TTR("Octahedral impostor saved to \"%s\"."), batch ? path : last_mesh_path));
 	}
 	if (skipped_nodes > 0) {
 		EditorToaster::get_singleton()->popup_str(vformat(TTR("The visibility range of %d meshes of instantiated scenes wasn't changed: set it up in their scenes, or make their children editable."), skipped_nodes), EditorToaster::SEVERITY_WARNING);
@@ -590,8 +680,20 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 
 	EditorSettings *settings = EditorSettings::get_singleton();
 
-	Label *label = memnew(Label(TTR("Layout:")));
+	Label *label = memnew(Label(TTR("Type:")));
 	grid->add_child(label);
+	type_option = memnew(OptionButton);
+	type_option->set_accessibility_name(TTRC("Type:"));
+	type_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	type_option->add_item(TTR("Octahedral Impostor"), OctahedralImpostorBaker::TYPE_OCTAHEDRAL_IMPOSTOR);
+	type_option->set_item_tooltip(-1, TTR("A quad that shows the object from the closest of many views, with parallax, depth and lighting like the object."));
+	type_option->add_item(TTR("Billboard"), OctahedralImpostorBaker::TYPE_BILLBOARD);
+	type_option->set_item_tooltip(-1, TTR("A quad turned toward the camera, or crossed planes, with a view of the object and a StandardMaterial3D."));
+	type_option->connect(SceneStringName(item_selected), callable_mp(this, &OctahedralImpostorDialog::_type_changed));
+	grid->add_child(type_option);
+
+	layout_label = memnew(Label(TTR("Layout:")));
+	grid->add_child(layout_label);
 	layout_option = memnew(OptionButton);
 	layout_option->set_accessibility_name(TTRC("Layout:"));
 	layout_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -603,8 +705,8 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	layout_option->connect(SceneStringName(item_selected), callable_mp(this, &OctahedralImpostorDialog::_settings_changed));
 	grid->add_child(layout_option);
 
-	label = memnew(Label(TTR("Frames:")));
-	grid->add_child(label);
+	frames_label = memnew(Label(TTR("Frames:")));
+	grid->add_child(frames_label);
 	frames_spin = memnew(SpinBox);
 	frames_spin->set_accessibility_name(TTRC("Frames:"));
 	frames_spin->set_tooltip_text(TTR("Number of views per side of the atlas. More views give smoother transitions between them, at the cost of the resolution of each view."));
@@ -615,8 +717,36 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	frames_spin->connect(SceneStringName(value_changed), callable_mp(this, &OctahedralImpostorDialog::_settings_changed).unbind(1).bind(0));
 	grid->add_child(frames_spin);
 
-	label = memnew(Label(TTR("Atlas Size:")));
-	grid->add_child(label);
+	billboard_mode_label = memnew(Label(TTR("Billboard:")));
+	grid->add_child(billboard_mode_label);
+	billboard_mode_option = memnew(OptionButton);
+	billboard_mode_option->set_accessibility_name(TTRC("Billboard:"));
+	billboard_mode_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	billboard_mode_option->add_item(TTR("Y-Billboard"), OctahedralImpostorBaker::BILLBOARD_FIXED_Y);
+	billboard_mode_option->set_item_tooltip(-1, TTR("The quad turns around the vertical axis toward the camera, e.g. for trees."));
+	billboard_mode_option->add_item(TTR("Facing Camera"), OctahedralImpostorBaker::BILLBOARD_ENABLED);
+	billboard_mode_option->set_item_tooltip(-1, TTR("The quad faces the camera, also when it's seen from above or below. It turns around the origin of the node."));
+	billboard_mode_option->add_item(TTR("Cross"), OctahedralImpostorBaker::BILLBOARD_CROSS);
+	billboard_mode_option->set_item_tooltip(-1, TTR("Static vertical planes crossing on the vertical axis of the object, each with the view from its front, e.g. for bushes and grass."));
+	const int billboard_mode_index = billboard_mode_option->get_item_index(settings->get_project_metadata("octahedral_impostor", "billboard_mode", OctahedralImpostorBaker::BILLBOARD_FIXED_Y));
+	billboard_mode_option->select(billboard_mode_index >= 0 ? billboard_mode_index : 0);
+	billboard_mode_option->connect(SceneStringName(item_selected), callable_mp(this, &OctahedralImpostorDialog::_type_changed));
+	grid->add_child(billboard_mode_option);
+
+	cross_planes_label = memnew(Label(TTR("Planes:")));
+	grid->add_child(cross_planes_label);
+	cross_planes_spin = memnew(SpinBox);
+	cross_planes_spin->set_accessibility_name(TTRC("Planes:"));
+	cross_planes_spin->set_tooltip_text(TTR("Number of crossed planes, at equal angles around the vertical axis."));
+	cross_planes_spin->set_min(OctahedralImpostorBaker::MIN_CROSS_PLANES);
+	cross_planes_spin->set_max(OctahedralImpostorBaker::MAX_CROSS_PLANES);
+	cross_planes_spin->set_value(settings->get_project_metadata("octahedral_impostor", "cross_planes", 2));
+	cross_planes_spin->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	cross_planes_spin->connect(SceneStringName(value_changed), callable_mp(this, &OctahedralImpostorDialog::_settings_changed).unbind(1).bind(0));
+	grid->add_child(cross_planes_spin);
+
+	atlas_size_label = memnew(Label(TTR("Atlas Size:")));
+	grid->add_child(atlas_size_label);
 	atlas_size_option = memnew(OptionButton);
 	atlas_size_option->set_accessibility_name(TTRC("Atlas Size:"));
 	atlas_size_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -624,7 +754,7 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 		atlas_size_option->add_item(vformat("%d x %d", atlas_size, atlas_size), atlas_size);
 	}
 	const int atlas_index = atlas_size_option->get_item_index(settings->get_project_metadata("octahedral_impostor", "atlas_size", 2048));
-	atlas_size_option->select(atlas_index >= 0 ? atlas_index : 2);
+	atlas_size_option->select(atlas_index >= 0 ? atlas_index : atlas_size_option->get_item_index(2048));
 	atlas_size_option->connect(SceneStringName(item_selected), callable_mp(this, &OctahedralImpostorDialog::_settings_changed));
 	grid->add_child(atlas_size_option);
 
@@ -645,7 +775,7 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	grid->add_child(memnew(Control));
 	orm_check = memnew(CheckBox);
 	orm_check->set_text(TTR("ORM Atlas"));
-	orm_check->set_tooltip_text(TTR("Also bakes the ambient occlusion, roughness and metallic of the materials. Otherwise, the impostor uses their mean roughness and metallic."));
+	orm_check->set_tooltip_text(TTR("Also bakes the ambient occlusion, roughness and metallic of the materials. Otherwise, the result uses their mean roughness and metallic."));
 	orm_check->set_pressed(settings->get_project_metadata("octahedral_impostor", "orm", false));
 	orm_check->connect(SceneStringName(toggled), callable_mp(this, &OctahedralImpostorDialog::_settings_changed).unbind(1).bind(0));
 	grid->add_child(orm_check);
@@ -658,7 +788,6 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 
 	add_to_scene_check = memnew(CheckBox);
 	add_to_scene_check->set_text(TTR("Add to Scene as Level of Detail"));
-	add_to_scene_check->set_tooltip_text(TTR("Adds the impostor to the node, shown from the distance, and hides the meshes of the node from there (with the visibility ranges)."));
 	add_to_scene_check->set_pressed(settings->get_project_metadata("octahedral_impostor", "add_to_scene", true));
 	add_to_scene_check->connect(SceneStringName(toggled), callable_mp(this, &OctahedralImpostorDialog::_add_to_scene_toggled));
 	settings_vbox->add_child(add_to_scene_check);
@@ -671,7 +800,6 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	lod_grid->add_child(label);
 	lod_distance_spin = memnew(SpinBox);
 	lod_distance_spin->set_accessibility_name(TTRC("Distance:"));
-	lod_distance_spin->set_tooltip_text(TTR("Distance from which the impostor replaces the meshes. By default, where the views are shown at about their resolution on a 1080p screen."));
 	lod_distance_spin->set_min(0.1);
 	lod_distance_spin->set_max(100000);
 	lod_distance_spin->set_step(0.1);
@@ -685,7 +813,7 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	lod_grid->add_child(memnew(Control));
 	fade_check = memnew(CheckBox);
 	fade_check->set_text(TTR("Fade"));
-	fade_check->set_tooltip_text(TTR("Cross-fades the impostor and the meshes over 10% of the distance."));
+	fade_check->set_tooltip_text(TTR("Cross-fades the impostor or billboard and the meshes over 10% of the distance."));
 	fade_check->set_pressed(settings->get_project_metadata("octahedral_impostor", "fade", true));
 	lod_grid->add_child(fade_check);
 
@@ -794,6 +922,7 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	add_child(preview_timer);
 
 	_update_preview_camera();
+	_update_type_settings();
 }
 
 OctahedralImpostorDialog::~OctahedralImpostorDialog() {
@@ -827,16 +956,19 @@ void OctahedralImpostorContextMenuPlugin::get_options(const OptionsData &p_data)
 		}
 	}
 	if (show) {
-		const Ref<Texture2D> icon = EditorNode::get_singleton()->get_class_icon("OctahedralImpostorMaterial3D");
+		const Ref<Texture2D> impostor_icon = EditorNode::get_singleton()->get_class_icon("OctahedralImpostorMaterial3D");
+		const Ref<Texture2D> billboard_icon = EditorNode::get_singleton()->get_class_icon("QuadMesh");
 		if (filesystem) {
-			add_context_menu_item(TTR("Create Octahedral Impostor..."), callable_mp(this, &OctahedralImpostorContextMenuPlugin::_filesystem_option), icon);
+			add_context_menu_item(TTR("Create Octahedral Impostor..."), callable_mp(this, &OctahedralImpostorContextMenuPlugin::_filesystem_option).bind(OctahedralImpostorBaker::TYPE_OCTAHEDRAL_IMPOSTOR), impostor_icon);
+			add_context_menu_item(TTR("Create Billboard..."), callable_mp(this, &OctahedralImpostorContextMenuPlugin::_filesystem_option).bind(OctahedralImpostorBaker::TYPE_BILLBOARD), billboard_icon);
 		} else {
-			add_context_menu_item(TTR("Create Octahedral Impostor..."), callable_mp(this, &OctahedralImpostorContextMenuPlugin::_scene_tree_option), icon);
+			add_context_menu_item(TTR("Create Octahedral Impostor..."), callable_mp(this, &OctahedralImpostorContextMenuPlugin::_scene_tree_option).bind(OctahedralImpostorBaker::TYPE_OCTAHEDRAL_IMPOSTOR), impostor_icon);
+			add_context_menu_item(TTR("Create Billboard..."), callable_mp(this, &OctahedralImpostorContextMenuPlugin::_scene_tree_option).bind(OctahedralImpostorBaker::TYPE_BILLBOARD), billboard_icon);
 		}
 	}
 }
 
-void OctahedralImpostorContextMenuPlugin::_scene_tree_option(const Dictionary &p_data) {
+void OctahedralImpostorContextMenuPlugin::_scene_tree_option(const Dictionary &p_data, int p_type) {
 	const TypedArray<Node> nodes = p_data.get("selected_nodes", TypedArray<Node>());
 	Vector<Node3D *> sources;
 	for (int i = 0; i < nodes.size(); i++) {
@@ -846,11 +978,11 @@ void OctahedralImpostorContextMenuPlugin::_scene_tree_option(const Dictionary &p
 		}
 	}
 	if (!sources.is_empty()) {
-		dialog->popup_for_nodes(sources);
+		dialog->popup_for_nodes(sources, p_type);
 	}
 }
 
-void OctahedralImpostorContextMenuPlugin::_filesystem_option(const Dictionary &p_data) {
+void OctahedralImpostorContextMenuPlugin::_filesystem_option(const Dictionary &p_data, int p_type) {
 	const PackedStringArray files = p_data.get("selected_files", PackedStringArray());
 	Vector<String> scenes;
 	EditorFileSystem *file_system = EditorFileSystem::get_singleton();
@@ -860,7 +992,7 @@ void OctahedralImpostorContextMenuPlugin::_filesystem_option(const Dictionary &p
 		}
 	}
 	if (!scenes.is_empty()) {
-		dialog->popup_for_scenes(scenes);
+		dialog->popup_for_scenes(scenes, p_type);
 	}
 }
 
