@@ -1378,11 +1378,13 @@ void OctahedralImpostorBaker::OcclusionTask::compute_row(uint32_t p_row, void *p
 	// The cosine weighted fraction of the hemisphere of the normal that isn't blocked by the
 	// geometry, from the depth of the occlusion views: a direction is blocked when the front of the
 	// geometry toward it is above the point. The point is moved along the normal, and the depth is
-	// compared with a slope scaled bias, so that the surface doesn't block itself.
+	// compared with a slope scaled bias, so that the surface doesn't block itself: by the size of the
+	// pixels of the occlusion views, or of the atlas (the point is the mean of its samples).
 	const LocalVector<View> &views = state->occlusion_views;
 	const float *heights = state->occlusion_heights.ptr();
 	const int width = state->occlusion_width;
 	const real_t texel = state->occlusion_texel;
+	const real_t bias = MAX(texel, state->texel_world);
 	const real_t half_size = OCCLUSION_VIEW_SIZE * 0.5;
 	for (int x = 0; x < rect.size.x; x++) {
 		const int index = p_row * rect.size.x + x;
@@ -1390,7 +1392,7 @@ void OctahedralImpostorBaker::OcclusionTask::compute_row(uint32_t p_row, void *p
 		if (normal.is_zero_approx()) {
 			continue;
 		}
-		const Vector3 position = positions[index] + normal * (texel * 1.5);
+		const Vector3 position = positions[index] + normal * (bias * 1.5);
 		real_t visible = 0.0;
 		real_t total = 0.0;
 		for (const View &view : views) {
@@ -1409,7 +1411,7 @@ void OctahedralImpostorBaker::OcclusionTask::compute_row(uint32_t p_row, void *p
 			}
 			const real_t front = heights[(view.rect.position.y + view_y) * width + view.rect.position.x + view_x];
 			const real_t slope = MIN(Math::sqrt(MAX(1.0 - facing * facing, 0.0)) / facing, 4.0);
-			if (front <= offset.dot(direction) + texel * (1.0 + slope)) {
+			if (front <= offset.dot(direction) + bias * (1.0 + slope)) {
 				visible += facing;
 			}
 		}

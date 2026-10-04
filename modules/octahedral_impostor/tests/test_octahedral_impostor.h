@@ -416,7 +416,8 @@ void light() {
 	CHECK_FALSE(capture.contains("stencil_mode"));
 	CHECK(capture.contains("ALPHA_SCISSOR_THRESHOLD = 0.5;"));
 	// The data is written at the end of the fragment function, with its normal map.
-	const int fragment = capture.find("void fragment()");
+	const int fragment = capture.find("void fragment() {\n\tvec4 tex");
+	REQUIRE(fragment > 0);
 	const int light = capture.find("void light()");
 	CHECK(capture.find("uniform int impostor_bake_mode") < fragment);
 	CHECK(capture.find("NORMAL_MAP.xy * 2.0 - 1.0") > capture.find("BACKLIGHT = backlight.rgb;"));
