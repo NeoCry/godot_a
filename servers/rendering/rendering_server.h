@@ -306,6 +306,7 @@ public:
 	virtual void multimesh_instances_reset_physics_interpolation(RID p_multimesh) = 0;
 
 	virtual void multimesh_set_visible_instances(RID p_multimesh, int p_visible) = 0;
+	virtual void multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin = 0.0, float p_range_end = 0.0) = 0;
 	virtual int multimesh_get_visible_instances(RID p_multimesh) const = 0;
 
 	/* SKELETON API */

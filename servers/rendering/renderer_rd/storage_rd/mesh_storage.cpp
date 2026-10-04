@@ -2187,6 +2187,30 @@ void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_
 	}
 }
 
+void MeshStorage::multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin, float p_range_end) {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	if (multimesh->gpu_shadow_caster == p_enable && multimesh->gpu_shadow_caster_range_begin == p_range_begin && multimesh->gpu_shadow_caster_range_end == p_range_end) {
+		return;
+	}
+	multimesh->gpu_shadow_caster = p_enable;
+	multimesh->gpu_shadow_caster_range_begin = p_range_begin;
+	multimesh->gpu_shadow_caster_range_end = p_range_end;
+	multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MULTIMESH);
+}
+
+bool MeshStorage::multimesh_is_gpu_shadow_caster(RID p_multimesh, float *r_range_begin, float *r_range_end) const {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, false);
+	if (r_range_begin) {
+		*r_range_begin = multimesh->gpu_shadow_caster_range_begin;
+	}
+	if (r_range_end) {
+		*r_range_end = multimesh->gpu_shadow_caster_range_end;
+	}
+	return multimesh->gpu_shadow_caster;
+}
+
 RID MeshStorage::_multimesh_get_command_buffer_rd_rid(RID p_multimesh) const {
 	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL_V(multimesh, RID());

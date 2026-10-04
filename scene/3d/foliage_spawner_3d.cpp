@@ -900,6 +900,11 @@ void FoliageSpawner3D::_sync_all_cells_settings() {
 		const int level_index = i < gpu_lod_indices.size() ? gpu_lod_indices[i] : -1;
 		Ref<FoliageLODLevel> level = (level_index >= 0 && level_index < lod_levels.size()) ? Ref<FoliageLODLevel>(lod_levels[level_index]) : Ref<FoliageLODLevel>();
 		_configure_cell_node(gpu_nodes[i], level, false);
+		MultiMeshInstance3D *shadow_node = i < gpu_shadow_nodes.size() ? gpu_shadow_nodes[i] : nullptr;
+		if (shadow_node != nullptr) {
+			_configure_cell_node(shadow_node, level, false);
+			gpu_nodes[i]->set_cast_shadows_setting(SHADOW_CASTING_SETTING_OFF);
+		}
 	}
 }
 
@@ -955,7 +960,14 @@ void FoliageSpawner3D::_clear_gpu_instances() {
 			node->queue_free();
 		}
 	}
+	for (MultiMeshInstance3D *node : gpu_shadow_nodes) {
+		if (node != nullptr) {
+			remove_child(node);
+			node->queue_free();
+		}
+	}
 	gpu_nodes.clear();
+	gpu_shadow_nodes.clear();
 	gpu_multimeshes.clear();
 	gpu_lod_indices.clear();
 	set_process_internal(false);
@@ -1012,7 +1024,8 @@ void FoliageSpawner3D::_rebuild_gpu_instances() {
 		mm->set_mesh(level->get_mesh());
 		// How many instances survive culling is only known on the GPU, so the
 		// bounds are stated up front: every instance origin, plus its reach.
-		mm->set_custom_aabb(bounds.grow(instance_radius * MAX(1.0f, max_scale)));
+		const AABB level_aabb = bounds.grow(instance_radius * MAX(1.0f, max_scale));
+		mm->set_custom_aabb(level_aabb);
 
 		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
 		node->set_multimesh(mm);
@@ -1033,8 +1046,21 @@ void FoliageSpawner3D::_rebuild_gpu_instances() {
 		culler_level.instance_radius = instance_radius;
 		culler_level.surface_count = MAX(1, level->get_mesh()->get_surface_count());
 
+		// The instances culled for the camera leave out those behind it or hidden behind
+		// something, which still cast shadows into view: where the renderer can cull every
+		// instance for each shadow pass instead, shadows come from all of them, in the same
+		// distance bands.
+		MultiMeshInstance3D *shadow_node = nullptr;
+		if (node->get_cast_shadows_setting() != SHADOW_CASTING_SETTING_OFF && FoliageGPUCuller::are_shadow_casters_supported()) {
+			shadow_node = FoliageGPUCuller::create_shadow_caster(gpu_transforms, level->get_mesh(), level_aabb, culler_level.range_begin, culler_level.range_end);
+			_configure_cell_node(shadow_node, level, false);
+			add_child(shadow_node, false, INTERNAL_MODE_FRONT);
+			node->set_cast_shadows_setting(SHADOW_CASTING_SETTING_OFF);
+		}
+
 		gpu_multimeshes.push_back(mm);
 		gpu_nodes.push_back(node);
+		gpu_shadow_nodes.push_back(shadow_node);
 		gpu_lod_indices.push_back(i);
 		culler_levels.push_back(culler_level);
 	}

@@ -168,6 +168,13 @@ public:
 
 	virtual AABB multimesh_get_aabb(RID p_multimesh);
 
+	// A MultiMesh drawn only in shadow passes, where its instances are culled one by one on the GPU
+	// for each pass, and only those whose distance to the camera is within the given range drawn
+	// (when p_range_end is above 0). Only supported by renderers that cull them (see
+	// RendererSceneRender::is_gpu_shadow_caster_supported()).
+	virtual void multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin, float p_range_end) {}
+	virtual bool multimesh_is_gpu_shadow_caster(RID p_multimesh, float *r_range_begin = nullptr, float *r_range_end = nullptr) const { return false; }
+
 	virtual RID _multimesh_allocate() = 0;
 	virtual void _multimesh_initialize(RID p_rid) = 0;
 	virtual void _multimesh_free(RID p_rid) = 0;

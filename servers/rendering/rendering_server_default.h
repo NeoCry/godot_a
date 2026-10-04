@@ -488,6 +488,7 @@ public:
 	FUNC1(multimesh_instances_reset_physics_interpolation, RID)
 
 	FUNC2(multimesh_set_visible_instances, RID, int)
+	FUNC4(multimesh_set_gpu_shadow_caster, RID, bool, float, float)
 	FUNC1RC(int, multimesh_get_visible_instances, RID)
 
 	/* SKELETON API */

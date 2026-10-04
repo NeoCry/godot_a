@@ -143,6 +143,10 @@ class FoliageSpawner3D : public MultiMeshInstance3D {
 	LocalVector<Transform3D> gpu_transforms;
 	LocalVector<Ref<MultiMesh>> gpu_multimeshes;
 	LocalVector<MultiMeshInstance3D *> gpu_nodes;
+	// For each of gpu_nodes, the node that casts the shadows of all of its level's instances
+	// instead of it, when the renderer culls them for each shadow pass (see
+	// FoliageGPUCuller::create_shadow_caster()), or null.
+	LocalVector<MultiMeshInstance3D *> gpu_shadow_nodes;
 	// Which lod_levels entry each of the nodes above was built from. Levels
 	// without a mesh are skipped, so the indices are not one to one.
 	LocalVector<int> gpu_lod_indices;

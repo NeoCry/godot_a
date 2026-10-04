@@ -463,6 +463,17 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 		RID xforms_uniform_set = surf->owner->transforms_uniform_set;
 
+		// A GPU shadow caster draws its instances culled for this pass (see ShadowCull).
+		uint32_t shadow_cull_job = UINT32_MAX;
+		if constexpr (p_pass_mode == PASS_MODE_SHADOW || p_pass_mode == PASS_MODE_SHADOW_DP) {
+			if (p_params->shadow_cull_element_jobs != nullptr && surf->owner->gpu_shadow_caster) {
+				shadow_cull_job = p_params->shadow_cull_element_jobs[i + p_params->element_offset];
+				if (shadow_cull_job != UINT32_MAX) {
+					xforms_uniform_set = shadow_cull.transforms_uniform_set;
+				}
+			}
+		}
+
 		SceneShaderForwardClustered::ShaderSpecialization pipeline_specialization = p_params->base_specialization;
 		pipeline_specialization.multimesh = bool(surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH);
 		pipeline_specialization.multimesh_format_2d = bool(surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D);
@@ -541,6 +552,11 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 		pipeline_key.ubershader = 0;
 
 		bool emulate_point_size = shader->uses_point_size && scene_shader.emulate_point_size;
+		if (emulate_point_size && shadow_cull_job != UINT32_MAX) {
+			// Emulated points can't be drawn indirectly, so all of the instances are drawn instead.
+			shadow_cull_job = UINT32_MAX;
+			xforms_uniform_set = surf->owner->transforms_uniform_set;
+		}
 
 		const RD::PolygonCullMode cull_mode = shader->get_cull_mode_from_cull_variant(cull_variant);
 		RID vertex_array_rd;
@@ -629,6 +645,10 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 			if (surf->owner->base_flags & INSTANCE_DATA_FLAG_PARTICLES) {
 				particles_storage->particles_get_instance_buffer_motion_vectors_offsets(surf->owner->data->base, push_constant.multimesh_motion_vectors_current_offset, push_constant.multimesh_motion_vectors_previous_offset);
+			} else if (shadow_cull_job != UINT32_MAX) {
+				// Where the job's instances start in the shared buffer.
+				push_constant.multimesh_motion_vectors_current_offset = shadow_cull.jobs[shadow_cull_job].output_base;
+				push_constant.multimesh_motion_vectors_previous_offset = shadow_cull.jobs[shadow_cull_job].output_base;
 			} else if (surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH) {
 				mesh_storage->_multimesh_get_motion_vectors_offsets(surf->owner->data->base, push_constant.multimesh_motion_vectors_current_offset, push_constant.multimesh_motion_vectors_previous_offset);
 			} else {
@@ -655,7 +675,9 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 			bool indirect = bool(surf->owner->base_flags & INSTANCE_DATA_FLAG_MULTIMESH_INDIRECT);
 
-			if (emulate_point_size) {
+			if (shadow_cull_job != UINT32_MAX) {
+				RD::get_singleton()->draw_list_draw_indirect(draw_list, index_array_rd.is_valid(), shadow_cull.command_buffer, (shadow_cull.jobs[shadow_cull_job].command_base + surf->surface_index) * sizeof(uint32_t) * RendererRD::MeshStorage::INDIRECT_MULTIMESH_COMMAND_STRIDE, 1, 0);
+			} else if (emulate_point_size) {
 				if (indirect) {
 					WARN_PRINT("Indirect draws are not supported when emulating point size.");
 				}
@@ -1032,6 +1054,10 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 
 	for (int i = 0; i < (int)p_render_data->instances->size(); i++) {
 		GeometryInstanceForwardClustered *inst = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
+
+		if (inst->gpu_shadow_caster && p_pass_mode != PASS_MODE_SHADOW && p_pass_mode != PASS_MODE_SHADOW_DP) {
+			continue; // Only drawn in shadow passes.
+		}
 
 		Vector3 center = inst->transform.origin;
 		if (p_render_data->scene_data->cam_orthogonal) {
@@ -1727,7 +1753,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		if (p_render_data->instances) {
 			for (int i = 0; i < (int)p_render_data->instances->size(); i++) {
 				GeometryInstanceForwardClustered *geometry_instance = static_cast<GeometryInstanceForwardClustered *>((*p_render_data->instances)[i]);
-				if (geometry_instance->data->ignore_screen_space_shadows) {
+				if (geometry_instance->data->ignore_screen_space_shadows && !geometry_instance->gpu_shadow_caster) {
 					sscs_exclusion_instances.push_back(geometry_instance);
 				}
 			}
@@ -3210,8 +3236,229 @@ void RenderForwardClustered::_scroll_directional_shadow_cache(RendererRD::LightS
 	RD::get_singleton()->draw_command_end_label();
 }
 
+void RenderForwardClustered::_shadow_cull_append_pass(uint32_t p_from, uint32_t p_count, const Projection &p_projection, const Transform3D &p_transform, bool p_use_dp, bool p_use_pancake, const Transform3D &p_main_cam_transform) {
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	const RenderList &list = render_list[RENDER_LIST_SECONDARY];
+
+	const uint32_t old_size = shadow_cull.element_jobs.size();
+	if (old_size < list.elements.size()) {
+		shadow_cull.element_jobs.resize(list.elements.size());
+		for (uint32_t i = old_size; i < shadow_cull.element_jobs.size(); i++) {
+			shadow_cull.element_jobs[i] = UINT32_MAX;
+		}
+	}
+
+	// The pass' frustum, in world space. A dual paraboloid has none to speak of, and directional
+	// lights pancake what is past their near plane rather than cull it.
+	Vector<Plane> planes;
+	if (!p_use_dp) {
+		planes = p_projection.get_projection_planes(p_transform);
+		if (p_use_pancake) {
+			planes.remove_at(Projection::PLANE_NEAR);
+		}
+	}
+
+	// One job for each GPU shadow caster drawn in this pass, shared by its surfaces.
+	GeometryInstanceForwardClustered *last_instance = nullptr;
+	uint32_t last_job = UINT32_MAX;
+	LocalVector<GeometryInstanceForwardClustered *> pass_instances;
+	LocalVector<uint32_t> pass_jobs;
+
+	for (uint32_t i = p_from; i < p_from + p_count; i++) {
+		GeometryInstanceSurfaceDataCache *surf = list.elements[i];
+		GeometryInstanceForwardClustered *instance = surf->owner;
+		if (!instance->gpu_shadow_caster) {
+			continue;
+		}
+
+		uint32_t job = UINT32_MAX;
+		if (instance == last_instance) {
+			job = last_job;
+		} else {
+			int64_t found = pass_instances.find(instance);
+			if (found >= 0) {
+				job = pass_jobs[found];
+			} else {
+				job = _shadow_cull_add_job(instance, planes, p_main_cam_transform.origin);
+				pass_instances.push_back(instance);
+				pass_jobs.push_back(job);
+			}
+			last_instance = instance;
+			last_job = job;
+		}
+
+		if (job == UINT32_MAX || surf->surface_index >= shadow_cull.jobs[job].command_count) {
+			continue;
+		}
+
+		// The surface's command draws as many indices as it has at the LOD this pass picked.
+		const uint32_t command = shadow_cull.jobs[job].command_base + surf->surface_index;
+		shadow_cull.commands[command * RendererRD::MeshStorage::INDIRECT_MULTIMESH_COMMAND_STRIDE] = mesh_storage->mesh_surface_get_lod_vertices_drawn_count(surf->surface_shadow, list.element_info[i].lod_index);
+		shadow_cull.element_jobs[i] = job;
+	}
+}
+
+uint32_t RenderForwardClustered::_shadow_cull_add_job(GeometryInstanceForwardClustered *p_instance, const Vector<Plane> &p_planes, const Vector3 &p_camera_position) {
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+
+	RID source;
+	uint32_t source_offset = 0;
+	uint32_t stride = 0;
+	uint32_t instance_count = 0;
+	mesh_storage->multimesh_get_gpu_shadow_caster_source(p_instance->data->base, source, source_offset, stride, instance_count);
+	RID mesh = mesh_storage->multimesh_get_mesh(p_instance->data->base);
+	if (source.is_null() || instance_count == 0 || stride < 12 || mesh.is_null()) {
+		return UINT32_MAX;
+	}
+
+	ShadowCull::Job job = {};
+
+	// The test runs in the MultiMesh's own space, so the frustum is brought over rather than
+	// every instance being transformed into world space.
+	const Transform3D to_local = p_instance->transform.affine_inverse();
+	job.plane_count = MIN(p_planes.size(), 6);
+	for (uint32_t i = 0; i < job.plane_count; i++) {
+		const Plane plane = to_local.xform(p_planes[i]);
+		job.planes[i][0] = plane.normal.x;
+		job.planes[i][1] = plane.normal.y;
+		job.planes[i][2] = plane.normal.z;
+		job.planes[i][3] = plane.d;
+	}
+	const Vector3 camera_position = to_local.xform(p_camera_position);
+	job.camera_position[0] = camera_position.x;
+	job.camera_position[1] = camera_position.y;
+	job.camera_position[2] = camera_position.z;
+	mesh_storage->multimesh_is_gpu_shadow_caster(p_instance->data->base, &job.range_begin, &job.range_end);
+
+	// How far the mesh reaches from an instance's origin, since a mesh is rarely centered on it.
+	const AABB aabb = mesh_storage->mesh_get_aabb(mesh, RID());
+	const Vector3 farthest(
+			MAX(Math::abs(aabb.position.x), Math::abs(aabb.position.x + aabb.size.x)),
+			MAX(Math::abs(aabb.position.y), Math::abs(aabb.position.y + aabb.size.y)),
+			MAX(Math::abs(aabb.position.z), Math::abs(aabb.position.z + aabb.size.z)));
+	job.instance_radius = farthest.length();
+
+	job.instance_count = instance_count;
+	job.source_offset = source_offset;
+	job.stride = stride;
+
+	// Its part of the shared buffer: room for all of its instances, starting at a whole number of
+	// its instances, since that is how the pass addresses it.
+	const uint32_t first_float = Math::division_round_up(shadow_cull.output_floats, stride) * stride;
+	job.output_base = first_float / stride;
+	job.capacity = instance_count;
+	shadow_cull.output_floats = first_float + instance_count * stride;
+
+	const uint32_t job_index = shadow_cull.jobs.size();
+	job.command_base = shadow_cull.command_jobs.size();
+	job.command_count = mesh_storage->mesh_get_surface_count(mesh);
+	for (uint32_t i = 0; i < job.command_count; i++) {
+		for (uint32_t j = 0; j < RendererRD::MeshStorage::INDIRECT_MULTIMESH_COMMAND_STRIDE; j++) {
+			shadow_cull.commands.push_back(0);
+		}
+		shadow_cull.command_jobs.push_back(job_index);
+	}
+
+	shadow_cull.jobs.push_back(job);
+	shadow_cull.job_sources.push_back(source);
+	return job_index;
+}
+
+void RenderForwardClustered::_shadow_cull_dispatch() {
+	if (shadow_cull.jobs.is_empty()) {
+		return;
+	}
+
+	RD *rd = RD::get_singleton();
+
+	if (shadow_cull.shader_version.is_null()) {
+		Vector<String> modes;
+		modes.push_back("\n");
+		modes.push_back("\n#define MODE_APPLY\n");
+		shadow_cull.shader.initialize(modes);
+		shadow_cull.shader_version = shadow_cull.shader.version_create();
+		for (int i = 0; i < ShadowCull::MODE_MAX; i++) {
+			shadow_cull.pipelines[i] = rd->compute_pipeline_create(shadow_cull.shader.version_get_shader(shadow_cull.shader_version, i));
+		}
+	}
+
+	// Grows a buffer to fit p_size bytes, and fills it with p_data, if any.
+	auto fit_buffer = [rd](RID &r_buffer, uint32_t &r_buffer_size, uint32_t p_size, const void *p_data, BitField<RD::StorageBufferUsage> p_usage) {
+		p_size = MAX(p_size, 16u);
+		if (r_buffer.is_null() || r_buffer_size < p_size) {
+			if (r_buffer.is_valid()) {
+				rd->free_rid(r_buffer);
+			}
+			r_buffer_size = Math::next_power_of_2(p_size);
+			r_buffer = rd->storage_buffer_create(r_buffer_size, Vector<uint8_t>(), p_usage);
+		}
+		if (p_data != nullptr) {
+			rd->buffer_update(r_buffer, 0, p_size, p_data);
+		}
+	};
+
+	const uint32_t job_count = shadow_cull.jobs.size();
+	const uint32_t command_count = shadow_cull.command_jobs.size();
+	fit_buffer(shadow_cull.job_buffer, shadow_cull.job_buffer_size, job_count * sizeof(ShadowCull::Job), shadow_cull.jobs.ptr(), 0);
+	fit_buffer(shadow_cull.counter_buffer, shadow_cull.counter_buffer_size, job_count * sizeof(uint32_t), nullptr, 0);
+	rd->buffer_clear(shadow_cull.counter_buffer, 0, Math::division_round_up(job_count * (uint32_t)sizeof(uint32_t), 4u) * 4);
+	fit_buffer(shadow_cull.command_buffer, shadow_cull.command_buffer_size, shadow_cull.commands.size() * sizeof(uint32_t), shadow_cull.commands.ptr(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+	fit_buffer(shadow_cull.command_job_buffer, shadow_cull.command_job_buffer_size, command_count * sizeof(uint32_t), shadow_cull.command_jobs.ptr(), 0);
+	fit_buffer(shadow_cull.output_buffer, shadow_cull.output_buffer_size, shadow_cull.output_floats * sizeof(float), nullptr, 0);
+
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+
+	RD::get_singleton()->draw_command_begin_label("Cull GPU Shadow Casters");
+	RD::ComputeListID compute_list = rd->compute_list_begin();
+
+	RID cull_shader = shadow_cull.shader.version_get_shader(shadow_cull.shader_version, ShadowCull::MODE_CULL);
+	rd->compute_list_bind_compute_pipeline(compute_list, shadow_cull.pipelines[ShadowCull::MODE_CULL]);
+	rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(cull_shader, 0, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, shadow_cull.job_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, shadow_cull.counter_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, shadow_cull.output_buffer)), 0);
+	for (uint32_t i = 0; i < job_count; i++) {
+		rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(cull_shader, 1, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, shadow_cull.job_sources[i])), 1);
+		uint32_t push_constant[4] = { i, 0, 0, 0 };
+		rd->compute_list_set_push_constant(compute_list, push_constant, sizeof(push_constant));
+		rd->compute_list_dispatch_threads(compute_list, shadow_cull.jobs[i].instance_count, 1, 1);
+	}
+
+	rd->compute_list_add_barrier(compute_list);
+
+	RID apply_shader = shadow_cull.shader.version_get_shader(shadow_cull.shader_version, ShadowCull::MODE_APPLY);
+	rd->compute_list_bind_compute_pipeline(compute_list, shadow_cull.pipelines[ShadowCull::MODE_APPLY]);
+	rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(apply_shader, 0, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, shadow_cull.job_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, shadow_cull.counter_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, shadow_cull.command_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 3, shadow_cull.command_job_buffer)), 0);
+	uint32_t push_constant[4] = { command_count, 0, 0, 0 };
+	rd->compute_list_set_push_constant(compute_list, push_constant, sizeof(push_constant));
+	rd->compute_list_dispatch_threads(compute_list, command_count, 1, 1);
+
+	rd->compute_list_end();
+	RD::get_singleton()->draw_command_end_label();
+
+	shadow_cull.transforms_uniform_set = uniform_set_cache->get_cache(scene_shader.default_shader_rd, TRANSFORMS_UNIFORM_SET, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, shadow_cull.output_buffer));
+}
+
+void RenderForwardClustered::_shadow_cull_free() {
+	RD *rd = RD::get_singleton();
+	RID *buffers[] = { &shadow_cull.job_buffer, &shadow_cull.counter_buffer, &shadow_cull.command_buffer, &shadow_cull.command_job_buffer, &shadow_cull.output_buffer };
+	for (RID *buffer : buffers) {
+		if (buffer->is_valid()) {
+			rd->free_rid(*buffer);
+			*buffer = RID();
+		}
+	}
+	if (shadow_cull.shader_version.is_valid()) {
+		shadow_cull.shader.version_free(shadow_cull.shader_version);
+		shadow_cull.shader_version = RID();
+	}
+}
+
 void RenderForwardClustered::_render_shadow_begin() {
 	scene_state.shadow_passes.clear();
+	shadow_cull.jobs.clear();
+	shadow_cull.job_sources.clear();
+	shadow_cull.commands.clear();
+	shadow_cull.command_jobs.clear();
+	shadow_cull.element_jobs.clear();
+	shadow_cull.output_floats = 0;
 	RD::get_singleton()->draw_command_begin_label("Shadow Setup");
 	_update_render_base_uniform_set();
 
@@ -3265,6 +3512,7 @@ void RenderForwardClustered::_render_shadow_append(RID p_framebuffer, const Page
 	uint32_t render_list_size = render_list[RENDER_LIST_SECONDARY].elements.size() - render_list_from;
 	render_list[RENDER_LIST_SECONDARY].sort_by_key_range(render_list_from, render_list_size);
 	_fill_instance_data(RENDER_LIST_SECONDARY, p_render_info ? p_render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_SHADOW] : (int *)nullptr, render_list_from, render_list_size, false);
+	_shadow_cull_append_pass(render_list_from, render_list_size, p_projection, p_transform, p_use_dp, p_use_pancake, p_main_cam_transform);
 
 	{
 		//regular forward for now
@@ -3310,6 +3558,8 @@ void RenderForwardClustered::_render_shadow_process() {
 		shadow_pass.rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_SECONDARY, nullptr, false, RID(), RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default(), shadow_pass.uniform_buffer_index, false);
 	}
 
+	_shadow_cull_dispatch();
+
 	RD::get_singleton()->draw_command_end_label();
 }
 void RenderForwardClustered::_render_shadow_end() {
@@ -3320,6 +3570,9 @@ void RenderForwardClustered::_render_shadow_end() {
 			copy_effects->copy_shadow_cache_scroll(shadow_pass.copy_source, shadow_pass.framebuffer, shadow_pass.rect, shadow_pass.copy_offset, 0.0);
 		}
 		RenderListParameters render_list_parameters(render_list[RENDER_LIST_SECONDARY].elements.ptr() + shadow_pass.element_from, render_list[RENDER_LIST_SECONDARY].element_info.ptr() + shadow_pass.element_from, shadow_pass.element_count, shadow_pass.flip_cull, shadow_pass.pass_mode, 0, true, false, shadow_pass.rp_uniform_set, false, Vector2(), shadow_pass.lod_distance_multiplier, shadow_pass.screen_mesh_lod_threshold, 1, shadow_pass.element_from);
+		if (!shadow_cull.jobs.is_empty()) {
+			render_list_parameters.shadow_cull_element_jobs = shadow_cull.element_jobs.ptr();
+		}
 		_render_list_with_draw_list(&render_list_parameters, shadow_pass.framebuffer, shadow_pass.clear_depth ? RD::DRAW_CLEAR_DEPTH : RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0, shadow_pass.rect);
 	}
 
@@ -5026,6 +5279,7 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 	//Fill push constant
 
 	ginstance->base_flags = 0;
+	ginstance->gpu_shadow_caster = false;
 
 	bool store_transform = true;
 	if (ginstance->data->base_type == RSE::INSTANCE_MULTIMESH) {
@@ -5043,6 +5297,7 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 		if (mesh_storage->multimesh_uses_indirect(ginstance->data->base)) {
 			ginstance->base_flags |= INSTANCE_DATA_FLAG_MULTIMESH_INDIRECT;
 		}
+		ginstance->gpu_shadow_caster = mesh_storage->multimesh_is_gpu_shadow_caster(ginstance->data->base) && mesh_storage->multimesh_get_transform_format(ginstance->data->base) == RSE::MULTIMESH_TRANSFORM_3D;
 
 		ginstance->transforms_uniform_set = mesh_storage->multimesh_get_3d_uniform_set(ginstance->data->base, scene_shader.default_shader_rd, TRANSFORMS_UNIFORM_SET);
 
@@ -5852,6 +6107,7 @@ RenderForwardClustered::RenderForwardClustered() {
 
 RenderForwardClustered::~RenderForwardClustered() {
 	sscs_exclusion_instances.reset(); //avoid exit error
+	_shadow_cull_free();
 
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);

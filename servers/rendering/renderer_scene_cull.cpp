@@ -2062,9 +2062,17 @@ bool RendererSceneCull::_instance_can_be_shadow_static(const Instance *p_instanc
 	if (p_instance->visibility_index != -1 || p_instance->visibility_parent != nullptr) {
 		return false;
 	}
-	// Its instances are picked on the GPU, every frame.
-	if (p_instance->base_type == RSE::INSTANCE_MULTIMESH && RSG::mesh_storage->multimesh_get_command_buffer_rd_rid(p_instance->base).is_valid()) {
-		return false;
+	if (p_instance->base_type == RSE::INSTANCE_MULTIMESH) {
+		// Its instances are picked on the GPU, every frame.
+		if (RSG::mesh_storage->multimesh_get_command_buffer_rd_rid(p_instance->base).is_valid()) {
+			return false;
+		}
+		// Its instances cast shadows only at some distances from the camera.
+		float range_begin = 0.0;
+		float range_end = 0.0;
+		if (RSG::mesh_storage->multimesh_is_gpu_shadow_caster(p_instance->base, &range_begin, &range_end) && range_end > 0.0) {
+			return false;
+		}
 	}
 	return true;
 }

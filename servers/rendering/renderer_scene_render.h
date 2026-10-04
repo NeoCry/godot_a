@@ -90,6 +90,9 @@ public:
 	// Whether the renderer can start a directional split's shadow pass from that split's cache of
 	// static objects (see DirectionalLight3D's shadow_cache_splits).
 	virtual bool is_directional_shadow_split_cache_supported() const { return false; }
+	// Whether the renderer culls the instances of GPU shadow caster MultiMeshes on the GPU for each
+	// shadow pass (see RendererMeshStorage::multimesh_set_gpu_shadow_caster()).
+	virtual bool is_gpu_shadow_caster_supported() const { return false; }
 	virtual int sdfgi_get_pending_region_count(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
 	virtual AABB sdfgi_get_pending_region_bounds(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const = 0;
 	virtual uint32_t sdfgi_get_pending_region_cascade(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const = 0;
