@@ -90,10 +90,14 @@ public:
 	LocalVector<int> cube_shadows;
 	LocalVector<int> shadows;
 	LocalVector<int> directional_shadows;
-	// Directional shadow entries whose pass is >= MAX_DIRECTIONAL_LIGHT_CASCADES, i.e. a cached far
-	// cascade (see DirectionalLight3D's shadow_cache_enabled). Rendered into the separate cache
-	// atlas with a per-rect clear, instead of relying on directional_shadow's blanket clear.
+	// Directional shadow entries that draw a region of a far cascade's cache (see DirectionalLight3D's
+	// shadow_cache_enabled). Rendered into the separate cache atlas with a per-rect clear, instead
+	// of relying on directional_shadow's blanket clear.
 	LocalVector<int> directional_shadows_cached;
+	// Directional shadow entries that draw a region of a split's cache of static objects (see
+	// DirectionalLight3D's shadow_cache_splits), into the split cache atlas. Drawn before the
+	// splits, which start from them.
+	LocalVector<int> directional_shadows_split_cached;
 	// Directional lights that should receive screen space (contact) shadows this frame.
 	// Populated independently of whether the light actually has a shadow map rendered,
 	// so screen space shadows work for the whole scene even without real-time shadows.

@@ -2507,6 +2507,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("multimesh_instance_get_color", "multimesh", "index"), &RenderingServer::multimesh_instance_get_color);
 	ClassDB::bind_method(D_METHOD("multimesh_instance_get_custom_data", "multimesh", "index"), &RenderingServer::multimesh_instance_get_custom_data);
 	ClassDB::bind_method(D_METHOD("multimesh_set_visible_instances", "multimesh", "visible"), &RenderingServer::multimesh_set_visible_instances);
+	ClassDB::bind_method(D_METHOD("multimesh_set_gpu_shadow_caster", "multimesh", "enable", "range_begin", "range_end"), &RenderingServer::multimesh_set_gpu_shadow_caster, DEFVAL(0.0), DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("multimesh_get_visible_instances", "multimesh"), &RenderingServer::multimesh_get_visible_instances);
 	ClassDB::bind_method(D_METHOD("multimesh_set_buffer", "multimesh", "buffer"), &RenderingServer::multimesh_set_buffer);
 	ClassDB::bind_method(D_METHOD("multimesh_get_command_buffer_rd_rid", "multimesh"), &RenderingServer::multimesh_get_command_buffer_rd_rid);
@@ -2623,6 +2624,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("directional_soft_shadow_filter_set_quality", "quality"), &RenderingServer::directional_soft_shadow_filter_set_quality);
 	ClassDB::bind_method(D_METHOD("directional_shadow_atlas_set_size", "size", "is_16bits"), &RenderingServer::directional_shadow_atlas_set_size);
 	ClassDB::bind_method(D_METHOD("light_directional_set_shadow_cache_enabled", "light", "enabled"), &RenderingServer::light_directional_set_shadow_cache_enabled);
+	ClassDB::bind_method(D_METHOD("light_directional_set_shadow_cache_splits", "light", "enabled"), &RenderingServer::light_directional_set_shadow_cache_splits);
 
 	BIND_ENUM_CONSTANT(RSE::SHADOW_QUALITY_HARD);
 	BIND_ENUM_CONSTANT(RSE::SHADOW_QUALITY_SOFT_VERY_LOW);
@@ -3728,6 +3730,7 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/limits/time/time_rollover_secs", PROPERTY_HINT_RANGE, "1,10000,1,or_greater,suffix:s"), 3600);
 
 	GLOBAL_DEF_RST("rendering/lights_and_shadows/use_physical_light_units", false);
+	GLOBAL_DEF("rendering/lights_and_shadows/batch_static_shadow_casters", false);
 
 	GLOBAL_DEF("rendering/lights_and_shadows/contact_shadow/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/contact_shadow/shadow_length", PROPERTY_HINT_ENUM, "Short (Fast),Medium (Average),Long (Slow)"), 1);

@@ -271,6 +271,12 @@ void FoliagePainter3D::_prune_layers_to_size() {
 					node->queue_free();
 				}
 			}
+			for (MultiMeshInstance3D *node : gpu_layer->shadow_nodes) {
+				if (node != nullptr) {
+					remove_child(node);
+					node->queue_free();
+				}
+			}
 			memdelete(gpu_layer);
 		}
 		gpu_layers.remove_at(gpu_layers.size() - 1);
@@ -521,6 +527,12 @@ void FoliagePainter3D::_clear_gpu_layers() {
 				node->queue_free();
 			}
 		}
+		for (MultiMeshInstance3D *node : gpu_layer->shadow_nodes) {
+			if (node != nullptr) {
+				remove_child(node);
+				node->queue_free();
+			}
+		}
 		memdelete(gpu_layer);
 	}
 	gpu_layers.clear();
@@ -564,7 +576,14 @@ void FoliagePainter3D::_rebuild_gpu_layer(int p_layer) {
 			node->queue_free();
 		}
 	}
+	for (MultiMeshInstance3D *node : gpu_layer->shadow_nodes) {
+		if (node != nullptr) {
+			remove_child(node);
+			node->queue_free();
+		}
+	}
 	gpu_layer->lod_nodes.clear();
+	gpu_layer->shadow_nodes.clear();
 	gpu_layer->lod_multimeshes.clear();
 
 	Ref<FoliageLayer> layer = layers[p_layer];
@@ -631,7 +650,8 @@ void FoliagePainter3D::_rebuild_gpu_layer(int p_layer) {
 		mm->set_mesh(level->get_mesh());
 		// How many instances survive culling is only known on the GPU, so the
 		// bounds are stated up front: every instance origin, plus its reach.
-		mm->set_custom_aabb(bounds.grow(instance_radius * MAX(1.0f, layer->get_max_scale())));
+		const AABB level_aabb = bounds.grow(instance_radius * MAX(1.0f, layer->get_max_scale()));
+		mm->set_custom_aabb(level_aabb);
 
 		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
 		node->set_multimesh(mm);
@@ -659,6 +679,20 @@ void FoliagePainter3D::_rebuild_gpu_layer(int p_layer) {
 		}
 		culler_level.instance_radius = instance_radius;
 		culler_level.surface_count = MAX(1, level->get_mesh()->get_surface_count());
+
+		// The instances culled for the camera leave out those behind it or hidden behind
+		// something, which still cast shadows into view: where the renderer can cull every
+		// instance for each shadow pass instead, shadows come from all of them, in the same
+		// distance bands.
+		if (node->get_cast_shadows_setting() != GeometryInstance3D::SHADOW_CASTING_SETTING_OFF && FoliageGPUCuller::are_shadow_casters_supported()) {
+			MultiMeshInstance3D *shadow_node = FoliageGPUCuller::create_shadow_caster(transforms, level->get_mesh(), level_aabb, culler_level.range_begin, culler_level.range_end);
+			shadow_node->set_material_override(level->get_material_override());
+			shadow_node->set_cast_shadows_setting(node->get_cast_shadows_setting());
+			shadow_node->set_lod_bias(layer->get_lod_bias());
+			add_child(shadow_node, false, INTERNAL_MODE_FRONT);
+			gpu_layer->shadow_nodes.push_back(shadow_node);
+			node->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		}
 
 		gpu_layer->lod_multimeshes.push_back(mm);
 		gpu_layer->lod_nodes.push_back(node);

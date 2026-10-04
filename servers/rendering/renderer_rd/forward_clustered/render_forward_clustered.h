@@ -40,6 +40,7 @@
 #include "servers/rendering/renderer_rd/effects/xegtao.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
+#include "servers/rendering/renderer_rd/shaders/effects/shadow_instance_cull.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/best_fit_normal.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/forward_clustered/integrate_dfg.glsl.gen.h"
 
@@ -254,6 +255,9 @@ private:
 		float screen_mesh_lod_threshold = 0.0;
 		RD::FramebufferFormatID framebuffer_format = 0;
 		uint32_t element_offset = 0;
+		// Shadow passes: the GPU shadow caster culling job each element draws from, if any (see
+		// ShadowCull::element_jobs).
+		const uint32_t *shadow_cull_element_jobs = nullptr;
 		bool use_directional_soft_shadow = false;
 		SceneShaderForwardClustered::ShaderSpecialization base_specialization = {};
 		bool use_material_feedback = false;
@@ -471,6 +475,11 @@ private:
 			bool flip_cull;
 
 			uint32_t uniform_buffer_index;
+
+			// When valid, the pass first fills its rect with the depths of this texture, from
+			// copy_offset texels away: a split starting from its cache of static objects.
+			RID copy_source;
+			Vector2i copy_offset;
 		};
 
 		LocalVector<ShadowPass> shadow_passes;
@@ -610,6 +619,9 @@ private:
 		bool can_sdfgi = false;
 		bool using_projectors = false;
 		bool using_softshadows = false;
+		// A MultiMesh drawn in shadow passes only, from its instances culled for each of them (see
+		// ShadowCull).
+		bool gpu_shadow_caster = false;
 
 		//used during setup
 		uint64_t prev_transform_change_frame = 0xFFFFFFFF;
@@ -812,6 +824,74 @@ private:
 	/* Render shadows */
 
 	void _render_shadow_pass(RID p_light, RID p_shadow_atlas, int p_pass, const PagedArray<RenderGeometryInstance *> &p_instances, float p_lod_distance_multiplier = 0, float p_screen_mesh_lod_threshold = 0.0, bool p_open_pass = true, bool p_close_pass = true, bool p_clear_region = true, RenderingServerTypes::RenderInfo *p_render_info = nullptr, const Size2i &p_viewport_size = Size2i(1, 1), const Transform3D &p_main_cam_transform = Transform3D());
+	/* GPU shadow casters */
+
+	// Culls the instances of GPU shadow caster MultiMeshes (see
+	// RendererMeshStorage::multimesh_set_gpu_shadow_caster()) on the GPU, for each shadow pass they
+	// are drawn in. Each MultiMesh drawn in a pass is a job: its instances that are in the pass'
+	// frustum (and in its distance range from the camera) are compacted into the job's part of a
+	// shared buffer, which the pass draws them from, with indirect draws whose instance counts the
+	// GPU fills in.
+	struct ShadowCull {
+		// Mirrors the shader's Job struct (std430).
+		struct Job {
+			float planes[6][4];
+			float camera_position[3];
+			uint32_t plane_count;
+			float range_begin;
+			float range_end;
+			float instance_radius;
+			uint32_t instance_count;
+			uint32_t source_offset;
+			uint32_t stride;
+			uint32_t output_base;
+			uint32_t capacity;
+			uint32_t command_base;
+			uint32_t command_count;
+			uint32_t pad[2];
+		};
+		static_assert(sizeof(Job) == 160, "Job must match the shader's std430 layout.");
+
+		enum Mode {
+			MODE_CULL,
+			MODE_APPLY,
+			MODE_MAX,
+		};
+
+		ShadowInstanceCullShaderRD shader;
+		RID shader_version;
+		RID pipelines[MODE_MAX];
+
+		// This frame's shadow passes (between _render_shadow_begin() and _render_shadow_process()).
+		LocalVector<Job> jobs;
+		LocalVector<RID> job_sources;
+		LocalVector<uint32_t> commands; // INDIRECT_MULTIMESH_COMMAND_STRIDE values per command.
+		LocalVector<uint32_t> command_jobs;
+		// The job each element of RENDER_LIST_SECONDARY draws from, or UINT32_MAX.
+		LocalVector<uint32_t> element_jobs;
+		uint32_t output_floats = 0;
+
+		RID job_buffer;
+		uint32_t job_buffer_size = 0;
+		RID counter_buffer;
+		uint32_t counter_buffer_size = 0;
+		RID command_buffer;
+		uint32_t command_buffer_size = 0;
+		RID command_job_buffer;
+		uint32_t command_job_buffer_size = 0;
+		RID output_buffer;
+		uint32_t output_buffer_size = 0;
+		// The output buffer, bound where instances read their transforms from.
+		RID transforms_uniform_set;
+	} shadow_cull;
+
+	void _shadow_cull_append_pass(uint32_t p_from, uint32_t p_count, const Projection &p_projection, const Transform3D &p_transform, bool p_use_dp, bool p_use_pancake, const Transform3D &p_main_cam_transform);
+	uint32_t _shadow_cull_add_job(GeometryInstanceForwardClustered *p_instance, const Vector<Plane> &p_planes, const Vector3 &p_camera_position);
+	void _shadow_cull_dispatch();
+	void _shadow_cull_free();
+
+	// Shifts what a tile of a directional shadow cache atlas holds by whole texels and depth steps.
+	void _scroll_directional_shadow_cache(RendererRD::LightStorage::DirectionalCacheAtlas p_atlas, const Rect2i &p_tile_rect, const Vector2i &p_scroll, float p_depth_scroll);
 	void _render_shadow_begin();
 	void _render_shadow_append(RID p_framebuffer, const PagedArray<RenderGeometryInstance *> &p_instances, const Projection &p_projection, const Transform3D &p_transform, float p_zfar, float p_bias, float p_normal_bias, bool p_reverse_cull_face, bool p_use_dp, bool p_use_dp_flip, bool p_use_pancake, float p_lod_distance_multiplier = 0.0, float p_screen_mesh_lod_threshold = 0.0, const Rect2i &p_rect = Rect2i(), bool p_flip_y = false, bool p_clear_region = true, bool p_begin = true, bool p_end = true, RenderingServerTypes::RenderInfo *p_render_info = nullptr, const Size2i &p_viewport_size = Size2i(1, 1), const Transform3D &p_main_cam_transform = Transform3D());
 	void _render_shadow_process();
@@ -902,6 +982,9 @@ public:
 	virtual bool free(RID p_rid) override;
 
 	virtual void update() override;
+
+	virtual bool is_directional_shadow_split_cache_supported() const override { return true; }
+	virtual bool is_gpu_shadow_caster_supported() const override { return true; }
 
 	RenderForwardClustered();
 	~RenderForwardClustered();

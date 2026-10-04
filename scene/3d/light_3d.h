@@ -188,6 +188,7 @@ private:
 	ShadowMode shadow_mode;
 	SkyMode sky_mode = SKY_MODE_LIGHT_AND_SKY;
 	bool shadow_cache_enabled = false;
+	bool shadow_cache_splits = false;
 
 protected:
 	static void _bind_methods();
@@ -202,6 +203,9 @@ public:
 
 	void set_shadow_cache_enabled(bool p_enable);
 	bool is_shadow_cache_enabled() const;
+
+	void set_shadow_cache_splits(bool p_enable);
+	bool is_shadow_cache_splits_enabled() const;
 
 	void set_sky_mode(SkyMode p_mode);
 	SkyMode get_sky_mode() const;

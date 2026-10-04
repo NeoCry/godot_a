@@ -238,6 +238,10 @@ private:
 		bool aabb_dirty = false;
 		bool buffer_set = false;
 		bool indirect = false;
+		// See multimesh_set_gpu_shadow_caster().
+		bool gpu_shadow_caster = false;
+		float gpu_shadow_caster_range_begin = 0.0;
+		float gpu_shadow_caster_range_end = 0.0;
 		bool motion_vectors_enabled = false;
 		uint32_t motion_vectors_current_offset = 0;
 		uint32_t motion_vectors_previous_offset = 0;
@@ -398,6 +402,7 @@ public:
 	virtual RID mesh_surface_get_index_buffer_rd_rid(RID p_mesh, int p_surface) const override;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const override;
+	virtual bool mesh_has_lods(RID p_mesh) const override;
 
 	virtual void mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) override;
 	virtual AABB mesh_get_custom_aabb(RID p_mesh) const override;
@@ -500,6 +505,15 @@ public:
 			r_index_count = s->lods[current_lod].index_count;
 			return current_lod + 1;
 		}
+	}
+
+	// How many indices (or vertices, without an index array) a surface draws at a LOD.
+	_FORCE_INLINE_ uint32_t mesh_surface_get_lod_vertices_drawn_count(void *p_surface, uint32_t p_lod) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		if (p_lod == 0 || p_lod > s->lod_count) {
+			return s->index_count ? s->index_count : s->vertex_count;
+		}
+		return s->lods[p_lod - 1].index_count;
 	}
 
 	_FORCE_INLINE_ RID mesh_surface_get_index_array(void *p_surface, uint32_t p_lod) const {
@@ -698,6 +712,19 @@ public:
 	void _multimesh_get_motion_vectors_offsets(RID p_multimesh, uint32_t &r_current_offset, uint32_t &r_prev_offset);
 	bool _multimesh_uses_motion_vectors_offsets(RID p_multimesh);
 	bool _multimesh_uses_motion_vectors(RID p_multimesh);
+
+	virtual void multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin, float p_range_end) override;
+	virtual bool multimesh_is_gpu_shadow_caster(RID p_multimesh, float *r_range_begin = nullptr, float *r_range_end = nullptr) const override;
+
+	// The current instances of a MultiMesh, as the GPU shadow caster culling reads them.
+	_FORCE_INLINE_ void multimesh_get_gpu_shadow_caster_source(RID p_multimesh, RID &r_buffer, uint32_t &r_offset, uint32_t &r_stride, uint32_t &r_instances) const {
+		MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+		ERR_FAIL_NULL(multimesh);
+		r_buffer = multimesh->buffer;
+		r_offset = multimesh->motion_vectors_current_offset;
+		r_stride = multimesh->stride_cache;
+		r_instances = multimesh->visible_instances >= 0 ? MIN(multimesh->visible_instances, multimesh->instances) : multimesh->instances;
+	}
 
 	_FORCE_INLINE_ bool multimesh_uses_indirect(RID p_multimesh) const {
 		MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);

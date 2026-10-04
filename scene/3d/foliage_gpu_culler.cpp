@@ -33,6 +33,7 @@
 #include "core/config/engine.h"
 #include "core/object/callable_mp.h"
 #include "scene/3d/camera_3d.h"
+#include "scene/3d/multimesh_instance_3d.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/main/window.h"
@@ -722,6 +723,47 @@ bool FoliageGPUCuller::is_supported() {
 #else
 	return false;
 #endif
+}
+
+bool FoliageGPUCuller::are_shadow_casters_supported() {
+	return is_supported() && RenderingServer::get_singleton()->get_current_rendering_method() == "forward_plus";
+}
+
+MultiMeshInstance3D *FoliageGPUCuller::create_shadow_caster(const LocalVector<Transform3D> &p_transforms, const Ref<Mesh> &p_mesh, const AABB &p_custom_aabb, float p_range_begin, float p_range_end) {
+	PackedFloat32Array buffer;
+	buffer.resize(p_transforms.size() * FOLIAGE_TRANSFORM_FLOATS);
+	{
+		float *w = buffer.ptrw();
+		for (uint32_t i = 0; i < p_transforms.size(); i++) {
+			const Transform3D &t = p_transforms[i];
+			float *dst = w + i * FOLIAGE_TRANSFORM_FLOATS;
+			dst[0] = t.basis.rows[0][0];
+			dst[1] = t.basis.rows[0][1];
+			dst[2] = t.basis.rows[0][2];
+			dst[3] = t.origin.x;
+			dst[4] = t.basis.rows[1][0];
+			dst[5] = t.basis.rows[1][1];
+			dst[6] = t.basis.rows[1][2];
+			dst[7] = t.origin.y;
+			dst[8] = t.basis.rows[2][0];
+			dst[9] = t.basis.rows[2][1];
+			dst[10] = t.basis.rows[2][2];
+			dst[11] = t.origin.z;
+		}
+	}
+
+	Ref<MultiMesh> multimesh;
+	multimesh.instantiate();
+	multimesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+	multimesh->set_instance_count((int)p_transforms.size());
+	multimesh->set_mesh(p_mesh);
+	RenderingServer::get_singleton()->multimesh_set_buffer(multimesh->get_rid(), buffer);
+	multimesh->set_custom_aabb(p_custom_aabb);
+	RenderingServer::get_singleton()->multimesh_set_gpu_shadow_caster(multimesh->get_rid(), true, p_range_begin, p_range_end);
+
+	MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
+	node->set_multimesh(multimesh);
+	return node;
 }
 
 void FoliageGPUCuller::update_instances(const LocalVector<Transform3D> &p_transforms, const LocalVector<LODLevel> &p_levels) {

@@ -488,6 +488,7 @@ public:
 	FUNC1(multimesh_instances_reset_physics_interpolation, RID)
 
 	FUNC2(multimesh_set_visible_instances, RID, int)
+	FUNC4(multimesh_set_gpu_shadow_caster, RID, bool, float, float)
 	FUNC1RC(int, multimesh_get_visible_instances, RID)
 
 	/* SKELETON API */
@@ -531,6 +532,7 @@ public:
 	FUNC2(light_directional_set_shadow_mode, RID, RSE::LightDirectionalShadowMode)
 	FUNC2(light_directional_set_blend_splits, RID, bool)
 	FUNC2(light_directional_set_shadow_cache_enabled, RID, bool)
+	FUNC2(light_directional_set_shadow_cache_splits, RID, bool)
 	FUNC2(light_directional_set_sky_mode, RID, RSE::LightDirectionalSkyMode)
 
 	FUNC2(light_area_set_size, RID, const Vector2 &)

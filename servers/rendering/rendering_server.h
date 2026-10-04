@@ -306,6 +306,7 @@ public:
 	virtual void multimesh_instances_reset_physics_interpolation(RID p_multimesh) = 0;
 
 	virtual void multimesh_set_visible_instances(RID p_multimesh, int p_visible) = 0;
+	virtual void multimesh_set_gpu_shadow_caster(RID p_multimesh, bool p_enable, float p_range_begin = 0.0, float p_range_end = 0.0) = 0;
 	virtual int multimesh_get_visible_instances(RID p_multimesh) const = 0;
 
 	/* SKELETON API */
@@ -349,6 +350,7 @@ public:
 	virtual void light_directional_set_shadow_mode(RID p_light, RSE::LightDirectionalShadowMode p_mode) = 0;
 	virtual void light_directional_set_blend_splits(RID p_light, bool p_enable) = 0;
 	virtual void light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) = 0;
+	virtual void light_directional_set_shadow_cache_splits(RID p_light, bool p_enable) = 0;
 	virtual void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) = 0;
 
 	virtual void light_area_set_size(RID p_light, const Vector2 &p_size) = 0;

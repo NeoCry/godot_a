@@ -2247,6 +2247,15 @@
 			<param index="0" name="light" type="RID" />
 			<param index="1" name="enabled" type="bool" />
 			<description>
+				If [code]true[/code], this directional light extends its shadows with a far cascade whose shadow map is kept from frame to frame. Equivalent to [member DirectionalLight3D.directional_shadow_cache_enabled].
+			</description>
+		</method>
+		<method name="light_directional_set_shadow_cache_splits">
+			<return type="void" />
+			<param index="0" name="light" type="RID" />
+			<param index="1" name="enabled" type="bool" />
+			<description>
+				If [code]true[/code], each split of this directional light keeps a cache of the shadows static objects cast into it. Equivalent to [member DirectionalLight3D.directional_shadow_cache_splits].
 			</description>
 		</method>
 		<method name="light_directional_set_shadow_mode">
@@ -3080,6 +3089,19 @@
 			<param index="1" name="aabb" type="AABB" />
 			<description>
 				Sets the custom AABB for this MultiMesh resource.
+			</description>
+		</method>
+		<method name="multimesh_set_gpu_shadow_caster">
+			<return type="void" />
+			<param index="0" name="multimesh" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="range_begin" type="float" default="0.0" />
+			<param index="3" name="range_end" type="float" default="0.0" />
+			<description>
+				If [param enable] is [code]true[/code], the MultiMesh is drawn only in shadow passes, and each of those passes draws only those of its instances that can cast shadows into it: before the passes are drawn, a compute pass tests every instance's bounding sphere against the frustum of each pass (each split of a [DirectionalLight3D], each [SpotLight3D], each face of an [OmniLight3D]'s cube map, but not the halves of a dual-paraboloid one, which are drawn whole), and the pass draws the survivors. When [param range_end] is greater than [code]0.0[/code], only the instances whose origin is at least [param range_begin] and less than [param range_end] away from the camera are drawn, which lets several of them share instances as the levels of detail of a [MultiMesh] of foliage.
+				This is meant to go along with MultiMeshes whose instances are culled for the camera on the GPU (see [member MultiMesh.use_indirect]): drawn in shadow passes, those would only cast the shadows of the instances visible to the camera, leaving out those behind it or hidden behind something, which still cast shadows into view. [FoliageSpawner3D] and [FoliagePainter3D] use this for [member FoliageSpawner3D.gpu_culling].
+				Only MultiMeshes of [constant MULTIMESH_TRANSFORM_3D] that aren't indirect are culled; the instance's mesh LOD is picked as for any other MultiMesh.
+				[b]Note:[/b] Only culled by the Forward+ renderer. The Mobile renderer still draws the MultiMesh only in shadow passes, but draws all of its instances there; the Compatibility renderer ignores this.
 			</description>
 		</method>
 		<method name="multimesh_set_mesh">

@@ -90,6 +90,9 @@ public:
 
 	virtual bool material_is_animated(RID p_material) = 0;
 	virtual bool material_casts_shadows(RID p_material) = 0;
+	// Whether the material reads anything about the node it draws (its transform, instance ID or
+	// custom data) that would read differently if it were drawn as an instance of a MultiMesh.
+	virtual bool material_uses_node_data(RID p_material) { return true; }
 	virtual RSE::CullMode material_get_cull_mode(RID p_material) const = 0;
 
 	struct InstanceShaderParam {
