@@ -31,6 +31,7 @@
 #include "landscape_3d.h"
 
 #include "core/config/engine.h"
+#include "core/config/project_settings.h"
 #include "core/core_string_names.h"
 #include "core/io/image.h"
 #include "core/math/math_funcs_binary.h"
@@ -96,6 +97,45 @@ void set_layer_weight_renormalized(Vector<PackedFloat32Array> &r_layer_weights, 
 					PackedFloat32Array &other = r_layer_weights.write[i];
 					other.set(p_index, other[p_index] * scale);
 				}
+			}
+		}
+	}
+	target.set(p_index, new_target);
+}
+
+// Lowers p_target_layer's weight at sample p_index to p_new_weight, handing
+// what it loses to the other layers in proportion to their current share, so
+// that erasing a layer brings back whatever it was painted over. Where no
+// other layer has any weight left (it was painted over completely), it goes
+// back to layer 0, the ground a new terrain starts out as; erasing layer 0
+// itself there would only leave bare, unpainted ground, and the weight stays.
+void set_layer_weight_erased(Vector<PackedFloat32Array> &r_layer_weights, int p_target_layer, int p_index, float p_new_weight) {
+	PackedFloat32Array &target = r_layer_weights.write[p_target_layer];
+	const float new_target = CLAMP(p_new_weight, 0.0f, 1.0f);
+	const float delta = target[p_index] - new_target;
+	if (delta <= 0.00001f) {
+		return;
+	}
+
+	const int layer_count = r_layer_weights.size();
+	float others_sum = 0.0f;
+	for (int i = 0; i < layer_count; i++) {
+		if (i != p_target_layer) {
+			others_sum += r_layer_weights[i][p_index];
+		}
+	}
+	if (others_sum <= 0.00001f) {
+		if (p_target_layer == 0) {
+			return;
+		}
+		PackedFloat32Array &base = r_layer_weights.write[0];
+		base.set(p_index, MIN(base[p_index] + delta, 1.0f));
+	} else {
+		const float scale = (others_sum + delta) / others_sum;
+		for (int i = 0; i < layer_count; i++) {
+			if (i != p_target_layer) {
+				PackedFloat32Array &other = r_layer_weights.write[i];
+				other.set(p_index, MIN(other[p_index] * scale, 1.0f));
 			}
 		}
 	}
@@ -219,13 +259,13 @@ bool lod_params_equal(const LandscapeQuadtree::SelectParams &p_a, const Landscap
 }
 } // namespace
 
-// TerrainData::MAX_LAYERS (see its declaration) must match the shader
-// source's per-layer uniform array sizes: shader uniform arrays are
-// fixed-size, and TerrainData packs the same number of layers' weights into
-// its weight maps, so the two hard caps have to agree.
+// The shader's per-layer uniform arrays are TerrainData::MAX_LAYERS long (the
+// source says MAX_LAYERS, replaced before it is compiled): shader uniform
+// arrays are fixed-size, and TerrainData packs the same number of layers'
+// weights into its weight maps, so the two hard caps have to agree.
 
 void Landscape3D::init_shaders() {
-	const String code = R"(
+	String code = R"(
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
@@ -266,7 +306,7 @@ uniform float displacement_footprint_scale = 0.01;
 // Nor finer than the finest quads there are.
 uniform float displacement_min_footprint = 0.0625;
 uniform float height_texture_size = 1.0;
-uniform float layer_displacement[32];
+uniform float layer_displacement[MAX_LAYERS];
 
 // One weight per layer, four layers packed per RGBA8 array layer (see
 // TerrainData). Sampled with normal bilinear filtering - unlike an
@@ -277,29 +317,29 @@ uniform sampler2DArray albedo_array : source_color, filter_linear_mipmap_anisotr
 uniform sampler2DArray normal_array : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray orm_array : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray height_array : hint_default_white, filter_linear_mipmap, repeat_enable;
-uniform float layer_uv_scales[32];
+uniform float layer_uv_scales[MAX_LAYERS];
 // Per-layer scalar tweaks (see TerrainLayer): albedo_color multiplies the
 // albedo texture, roughness multiplies the ORM texture's roughness channel,
 // ao_strength fades the ORM texture's occlusion channel towards "no
 // occlusion" (not towards black - see accumulate_layer()), normal_strength
 // feeds Godot's own NORMAL_MAP_DEPTH, and specular is unrelated to any
 // texture (it matches BaseMaterial3D.metallic_specular).
-uniform vec4 layer_albedo_colors[32];
-uniform float layer_roughness[32];
-uniform float layer_specular[32];
-uniform float layer_ao_strength[32];
-uniform float layer_normal_strength[32];
-uniform float layer_heightmap_scale[32];
-uniform float layer_height_min[32];
-uniform float layer_height_max[32];
+uniform vec4 layer_albedo_colors[MAX_LAYERS];
+uniform float layer_roughness[MAX_LAYERS];
+uniform float layer_specular[MAX_LAYERS];
+uniform float layer_ao_strength[MAX_LAYERS];
+uniform float layer_normal_strength[MAX_LAYERS];
+uniform float layer_heightmap_scale[MAX_LAYERS];
+uniform float layer_height_min[MAX_LAYERS];
+uniform float layer_height_max[MAX_LAYERS];
 // Whether each layer uses Parallax Occlusion Mapping / Triplanar Mapping
 // (see TerrainLayer.pom_enabled/triplanar_enabled). pom_enabled below is a
 // cheap master switch on top of layer_pom_enabled: both must be true.
 // 0.0/1.0, not bool: Godot's Variant system has no packed bool array type
 // to upload these as, so they're checked as > 0.5 instead.
-uniform float layer_pom_enabled[32];
-uniform float layer_triplanar[32];
-uniform float layer_triplanar_sharpness[32];
+uniform float layer_pom_enabled[MAX_LAYERS];
+uniform float layer_triplanar[MAX_LAYERS];
+uniform float layer_triplanar_sharpness[MAX_LAYERS];
 uniform int layer_count = 0;
 
 uniform bool pom_enabled = false;
@@ -879,6 +919,7 @@ void fragment() {
 	}
 }
 )";
+	code = code.replace("MAX_LAYERS", itos(TerrainData::MAX_LAYERS));
 	shader.instantiate();
 	shader->set_code(code);
 	// What draws the terrain into its runtime virtual texture: the same, but writing the depth of the
@@ -895,6 +936,104 @@ void Landscape3D::finish_shaders() {
 	writer_mesh.unref();
 }
 
+void Landscape3D::register_project_settings() {
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/level_of_detail/pixel_error", PROPERTY_HINT_RANGE, "0.25,16,0.05,or_greater,suffix:px"), 2.0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/level_of_detail/max_quad_pixels", PROPERTY_HINT_RANGE, "4,512,1,or_greater,suffix:px"), 48.0);
+	GLOBAL_DEF_BASIC("landscape_3d/level_of_detail/gpu_lod_enabled", true);
+	GLOBAL_DEF_BASIC("landscape_3d/level_of_detail/frustum_culling", true);
+
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/micro_detail/levels", PROPERTY_HINT_RANGE, vformat("0,%d,1", LandscapeQuadtree::MAX_MICRO_LEVELS)), 2);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/micro_detail/distance", PROPERTY_HINT_RANGE, "0,1024,0.1,or_greater,suffix:m"), 48.0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/micro_detail/triangle_size", PROPERTY_HINT_RANGE, "1,64,0.5,or_greater,suffix:px"), 6.0);
+
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/material_layers/max_layers", PROPERTY_HINT_ENUM, vformat("4:4,8:8,%d:%d", TerrainData::MAX_LAYERS, TerrainData::MAX_LAYERS)), TerrainData::MAX_LAYERS);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/material_layers/texture_size_limit", PROPERTY_HINT_RANGE, "16,8192,1"), 2048);
+
+	GLOBAL_DEF_BASIC("landscape_3d/virtual_texture/enabled", true);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/virtual_texture/texel_size", PROPERTY_HINT_RANGE, "0.001,1,0.001,or_greater,suffix:m"), 0.02);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/virtual_texture/near_distance", PROPERTY_HINT_RANGE, "0,256,0.1,or_greater,suffix:m"), 32.0);
+
+	GLOBAL_DEF_BASIC("landscape_3d/occlusion_culling/enabled", true);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/occlusion_culling/detail", PROPERTY_HINT_ENUM, "1x1 Quad (Fastest):1,2x2 Quads:2,4x4 Quads:4,8x8 Quads:8,16x16 Quads:16,32x32 Quads (Most Accurate):32"), 8);
+
+	GLOBAL_DEF_BASIC("landscape_3d/parallax_occlusion_mapping/enabled", false);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/parallax_occlusion_mapping/min_layers", PROPERTY_HINT_RANGE, "1,64,1"), 8);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/parallax_occlusion_mapping/max_layers", PROPERTY_HINT_RANGE, "1,64,1"), 32);
+	GLOBAL_DEF_BASIC("landscape_3d/parallax_occlusion_mapping/flip_tangent", false);
+	GLOBAL_DEF_BASIC("landscape_3d/parallax_occlusion_mapping/flip_binormal", false);
+	GLOBAL_DEF_BASIC("landscape_3d/parallax_occlusion_mapping/self_shadow_enabled", true);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "landscape_3d/parallax_occlusion_mapping/shadow_steps", PROPERTY_HINT_RANGE, "1,32,1"), 8);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/parallax_occlusion_mapping/shadow_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
+	GLOBAL_DEF_BASIC("landscape_3d/parallax_occlusion_mapping/shadow_light_direction", Vector3(0.5, 0.75, 0.3));
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/parallax_occlusion_mapping/fade_start", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), 20.0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "landscape_3d/parallax_occlusion_mapping/fade_end", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), 60.0);
+}
+
+void Landscape3D::_apply_project_settings() {
+	const ProjectSettings *ps = ProjectSettings::get_singleton();
+	if (ps == nullptr) {
+		return;
+	}
+	// A setting that was never defined (a build that registers no scene types) leaves what is there.
+	const auto setting = [ps](const char *p_name, const Variant &p_current) -> Variant {
+		return ps->has_setting(p_name) ? ps->get_setting_with_override(p_name) : p_current;
+	};
+
+	set_lod_pixel_error(setting("landscape_3d/level_of_detail/pixel_error", lod_pixel_error));
+	set_lod_max_quad_pixels(setting("landscape_3d/level_of_detail/max_quad_pixels", lod_max_quad_pixels));
+	set_gpu_lod_enabled(setting("landscape_3d/level_of_detail/gpu_lod_enabled", gpu_lod_enabled));
+	set_frustum_culling(setting("landscape_3d/level_of_detail/frustum_culling", frustum_culling));
+
+	set_micro_detail_levels(setting("landscape_3d/micro_detail/levels", micro_detail_levels));
+	set_micro_detail_distance(setting("landscape_3d/micro_detail/distance", micro_detail_distance));
+	set_micro_detail_triangle_size(setting("landscape_3d/micro_detail/triangle_size", micro_detail_triangle_size));
+
+	set_max_material_layers(setting("landscape_3d/material_layers/max_layers", max_material_layers));
+	set_layer_texture_size_limit(setting("landscape_3d/material_layers/texture_size_limit", layer_texture_size_limit));
+
+	set_virtual_texture_enabled(setting("landscape_3d/virtual_texture/enabled", virtual_texture_enabled));
+	set_virtual_texture_texel_size(setting("landscape_3d/virtual_texture/texel_size", virtual_texture_texel_size));
+	set_virtual_texture_near_distance(setting("landscape_3d/virtual_texture/near_distance", virtual_texture_near_distance));
+
+	set_occluder_enabled(setting("landscape_3d/occlusion_culling/enabled", occluder_enabled));
+	set_occluder_detail(setting("landscape_3d/occlusion_culling/detail", occluder_detail));
+
+	set_pom_enabled(setting("landscape_3d/parallax_occlusion_mapping/enabled", pom_enabled));
+	set_pom_min_layers(setting("landscape_3d/parallax_occlusion_mapping/min_layers", pom_min_layers));
+	set_pom_max_layers(setting("landscape_3d/parallax_occlusion_mapping/max_layers", pom_max_layers));
+	set_pom_flip_tangent(setting("landscape_3d/parallax_occlusion_mapping/flip_tangent", pom_flip_tangent));
+	set_pom_flip_binormal(setting("landscape_3d/parallax_occlusion_mapping/flip_binormal", pom_flip_binormal));
+	set_pom_self_shadow_enabled(setting("landscape_3d/parallax_occlusion_mapping/self_shadow_enabled", pom_self_shadow_enabled));
+	set_pom_shadow_steps(setting("landscape_3d/parallax_occlusion_mapping/shadow_steps", pom_shadow_steps));
+	set_pom_shadow_strength(setting("landscape_3d/parallax_occlusion_mapping/shadow_strength", pom_shadow_strength));
+	set_pom_shadow_light_direction(setting("landscape_3d/parallax_occlusion_mapping/shadow_light_direction", pom_shadow_light_direction));
+	set_pom_fade_start(setting("landscape_3d/parallax_occlusion_mapping/fade_start", pom_fade_start));
+	set_pom_fade_end(setting("landscape_3d/parallax_occlusion_mapping/fade_end", pom_fade_end));
+}
+
+void Landscape3D::_on_project_settings_changed() {
+	if (ProjectSettings::get_singleton()->check_changed_settings_in_group("landscape_3d/")) {
+		_apply_project_settings();
+	}
+}
+
+void Landscape3D::_connect_project_settings() {
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	if (project_settings_connected || ps == nullptr) {
+		return;
+	}
+	ps->connect(SNAME("settings_changed"), callable_mp(this, &Landscape3D::_on_project_settings_changed));
+	project_settings_connected = true;
+}
+
+void Landscape3D::_disconnect_project_settings() {
+	if (!project_settings_connected) {
+		return;
+	}
+	ProjectSettings::get_singleton()->disconnect(SNAME("settings_changed"), callable_mp(this, &Landscape3D::_on_project_settings_changed));
+	project_settings_connected = false;
+}
+
 void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_terrain_data", "data"), &Landscape3D::set_terrain_data);
 	ClassDB::bind_method(D_METHOD("get_terrain_data"), &Landscape3D::get_terrain_data);
@@ -902,41 +1041,11 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_layers", "layers"), &Landscape3D::set_layers);
 	ClassDB::bind_method(D_METHOD("get_layers"), &Landscape3D::get_layers);
 
-	ClassDB::bind_method(D_METHOD("set_lod_pixel_error", "pixels"), &Landscape3D::set_lod_pixel_error);
-	ClassDB::bind_method(D_METHOD("get_lod_pixel_error"), &Landscape3D::get_lod_pixel_error);
-
-	ClassDB::bind_method(D_METHOD("set_lod_max_quad_pixels", "pixels"), &Landscape3D::set_lod_max_quad_pixels);
-	ClassDB::bind_method(D_METHOD("get_lod_max_quad_pixels"), &Landscape3D::get_lod_max_quad_pixels);
-
-	ClassDB::bind_method(D_METHOD("set_frustum_culling", "enabled"), &Landscape3D::set_frustum_culling);
-	ClassDB::bind_method(D_METHOD("is_frustum_culling_enabled"), &Landscape3D::is_frustum_culling_enabled);
-
-	ClassDB::bind_method(D_METHOD("set_gpu_lod_enabled", "enabled"), &Landscape3D::set_gpu_lod_enabled);
-	ClassDB::bind_method(D_METHOD("is_gpu_lod_enabled"), &Landscape3D::is_gpu_lod_enabled);
-
 	ClassDB::bind_method(D_METHOD("set_shadow_distance", "distance"), &Landscape3D::set_shadow_distance);
 	ClassDB::bind_method(D_METHOD("get_shadow_distance"), &Landscape3D::get_shadow_distance);
 
-	ClassDB::bind_method(D_METHOD("set_micro_detail_levels", "levels"), &Landscape3D::set_micro_detail_levels);
-	ClassDB::bind_method(D_METHOD("get_micro_detail_levels"), &Landscape3D::get_micro_detail_levels);
-
-	ClassDB::bind_method(D_METHOD("set_micro_detail_distance", "distance"), &Landscape3D::set_micro_detail_distance);
-	ClassDB::bind_method(D_METHOD("get_micro_detail_distance"), &Landscape3D::get_micro_detail_distance);
-
-	ClassDB::bind_method(D_METHOD("set_micro_detail_triangle_size", "pixels"), &Landscape3D::set_micro_detail_triangle_size);
-	ClassDB::bind_method(D_METHOD("get_micro_detail_triangle_size"), &Landscape3D::get_micro_detail_triangle_size);
-
 	ClassDB::bind_method(D_METHOD("set_debug_view", "view"), &Landscape3D::set_debug_view);
 	ClassDB::bind_method(D_METHOD("get_debug_view"), &Landscape3D::get_debug_view);
-
-	ClassDB::bind_method(D_METHOD("set_virtual_texture_enabled", "enabled"), &Landscape3D::set_virtual_texture_enabled);
-	ClassDB::bind_method(D_METHOD("is_virtual_texture_enabled"), &Landscape3D::is_virtual_texture_enabled);
-
-	ClassDB::bind_method(D_METHOD("set_virtual_texture_texel_size", "size"), &Landscape3D::set_virtual_texture_texel_size);
-	ClassDB::bind_method(D_METHOD("get_virtual_texture_texel_size"), &Landscape3D::get_virtual_texture_texel_size);
-
-	ClassDB::bind_method(D_METHOD("set_virtual_texture_near_distance", "distance"), &Landscape3D::set_virtual_texture_near_distance);
-	ClassDB::bind_method(D_METHOD("get_virtual_texture_near_distance"), &Landscape3D::get_virtual_texture_near_distance);
 
 	ClassDB::bind_method(D_METHOD("set_virtual_texture_layers", "layers"), &Landscape3D::set_virtual_texture_layers);
 	ClassDB::bind_method(D_METHOD("get_virtual_texture_layers"), &Landscape3D::get_virtual_texture_layers);
@@ -944,12 +1053,6 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_virtual_texture"), &Landscape3D::get_virtual_texture);
 	ClassDB::bind_method(D_METHOD("get_virtual_texture_volume"), &Landscape3D::get_virtual_texture_volume);
 	ClassDB::bind_method(D_METHOD("get_virtual_texture_size"), &Landscape3D::get_virtual_texture_size);
-
-	ClassDB::bind_method(D_METHOD("set_occluder_enabled", "enabled"), &Landscape3D::set_occluder_enabled);
-	ClassDB::bind_method(D_METHOD("is_occluder_enabled"), &Landscape3D::is_occluder_enabled);
-
-	ClassDB::bind_method(D_METHOD("set_occluder_detail", "detail"), &Landscape3D::set_occluder_detail);
-	ClassDB::bind_method(D_METHOD("get_occluder_detail"), &Landscape3D::get_occluder_detail);
 
 	ClassDB::bind_method(D_METHOD("set_cast_shadow", "setting"), &Landscape3D::set_cast_shadow);
 	ClassDB::bind_method(D_METHOD("get_cast_shadow"), &Landscape3D::get_cast_shadow);
@@ -963,44 +1066,8 @@ void Landscape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_collision_mask", "mask"), &Landscape3D::set_collision_mask);
 	ClassDB::bind_method(D_METHOD("get_collision_mask"), &Landscape3D::get_collision_mask);
 
-	ClassDB::bind_method(D_METHOD("set_layer_texture_size_limit", "size"), &Landscape3D::set_layer_texture_size_limit);
-	ClassDB::bind_method(D_METHOD("get_layer_texture_size_limit"), &Landscape3D::get_layer_texture_size_limit);
-
-	ClassDB::bind_method(D_METHOD("set_pom_enabled", "enable"), &Landscape3D::set_pom_enabled);
-	ClassDB::bind_method(D_METHOD("is_pom_enabled"), &Landscape3D::is_pom_enabled);
-
-	ClassDB::bind_method(D_METHOD("set_pom_min_layers", "layers"), &Landscape3D::set_pom_min_layers);
-	ClassDB::bind_method(D_METHOD("get_pom_min_layers"), &Landscape3D::get_pom_min_layers);
-
-	ClassDB::bind_method(D_METHOD("set_pom_max_layers", "layers"), &Landscape3D::set_pom_max_layers);
-	ClassDB::bind_method(D_METHOD("get_pom_max_layers"), &Landscape3D::get_pom_max_layers);
-
-	ClassDB::bind_method(D_METHOD("set_pom_flip_tangent", "flip"), &Landscape3D::set_pom_flip_tangent);
-	ClassDB::bind_method(D_METHOD("get_pom_flip_tangent"), &Landscape3D::get_pom_flip_tangent);
-
-	ClassDB::bind_method(D_METHOD("set_pom_flip_binormal", "flip"), &Landscape3D::set_pom_flip_binormal);
-	ClassDB::bind_method(D_METHOD("get_pom_flip_binormal"), &Landscape3D::get_pom_flip_binormal);
-
-	ClassDB::bind_method(D_METHOD("set_pom_self_shadow_enabled", "enable"), &Landscape3D::set_pom_self_shadow_enabled);
-	ClassDB::bind_method(D_METHOD("is_pom_self_shadow_enabled"), &Landscape3D::is_pom_self_shadow_enabled);
-
-	ClassDB::bind_method(D_METHOD("set_pom_shadow_steps", "steps"), &Landscape3D::set_pom_shadow_steps);
-	ClassDB::bind_method(D_METHOD("get_pom_shadow_steps"), &Landscape3D::get_pom_shadow_steps);
-
-	ClassDB::bind_method(D_METHOD("set_pom_shadow_strength", "strength"), &Landscape3D::set_pom_shadow_strength);
-	ClassDB::bind_method(D_METHOD("get_pom_shadow_strength"), &Landscape3D::get_pom_shadow_strength);
-
-	ClassDB::bind_method(D_METHOD("set_pom_shadow_light_direction", "direction"), &Landscape3D::set_pom_shadow_light_direction);
-	ClassDB::bind_method(D_METHOD("get_pom_shadow_light_direction"), &Landscape3D::get_pom_shadow_light_direction);
-
-	ClassDB::bind_method(D_METHOD("set_pom_fade_start", "distance"), &Landscape3D::set_pom_fade_start);
-	ClassDB::bind_method(D_METHOD("get_pom_fade_start"), &Landscape3D::get_pom_fade_start);
-
-	ClassDB::bind_method(D_METHOD("set_pom_fade_end", "distance"), &Landscape3D::set_pom_fade_end);
-	ClassDB::bind_method(D_METHOD("get_pom_fade_end"), &Landscape3D::get_pom_fade_end);
-
 	ClassDB::bind_method(D_METHOD("sculpt", "local_position", "radius", "strength", "operation", "falloff", "flatten_height", "update_collision"), &Landscape3D::sculpt, DEFVAL(1.0f), DEFVAL(0.0f), DEFVAL(true));
-	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index", "falloff"), &Landscape3D::paint_layer, DEFVAL(1.0f));
+	ClassDB::bind_method(D_METHOD("paint_layer", "local_position", "radius", "strength", "layer_index", "falloff", "operation", "height_range", "slope_range", "height_falloff", "slope_falloff"), &Landscape3D::_paint_layer_bind, DEFVAL(1.0f), DEFVAL(PAINT_ADD), DEFVAL(Vector2(-100000.0, 100000.0)), DEFVAL(Vector2(0.0, 90.0)), DEFVAL(0.0f), DEFVAL(0.0f));
 	ClassDB::bind_method(D_METHOD("set_hole", "local_position", "radius", "hole", "update_collision"), &Landscape3D::set_hole, DEFVAL(true));
 
 	ClassDB::bind_method(D_METHOD("get_height_region", "region"), &Landscape3D::get_height_region);
@@ -1026,46 +1093,14 @@ void Landscape3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "terrain_data", PROPERTY_HINT_RESOURCE_TYPE, "TerrainData"), "set_terrain_data", "get_terrain_data");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "layers", PROPERTY_HINT_ARRAY_TYPE, MAKE_RESOURCE_TYPE_HINT("TerrainLayer")), "set_layers", "get_layers");
 
-	ADD_GROUP("Level of Detail", "lod_");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_pixel_error", PROPERTY_HINT_RANGE, "0.25,16,0.05,or_greater,suffix:px"), "set_lod_pixel_error", "get_lod_pixel_error");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_max_quad_pixels", PROPERTY_HINT_RANGE, "4,512,1,or_greater,suffix:px"), "set_lod_max_quad_pixels", "get_lod_max_quad_pixels");
-
-	ADD_GROUP("Micro Detail", "micro_detail_");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "micro_detail_levels", PROPERTY_HINT_RANGE, vformat("0,%d,1", LandscapeQuadtree::MAX_MICRO_LEVELS)), "set_micro_detail_levels", "get_micro_detail_levels");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "micro_detail_distance", PROPERTY_HINT_RANGE, "0,1024,0.1,or_greater,suffix:m"), "set_micro_detail_distance", "get_micro_detail_distance");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "micro_detail_triangle_size", PROPERTY_HINT_RANGE, "1,64,0.5,or_greater,suffix:px"), "set_micro_detail_triangle_size", "get_micro_detail_triangle_size");
-
 	ADD_GROUP("Rendering", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "cast_shadow", PROPERTY_HINT_ENUM, "Off,On,Double-Sided,Shadows Only"), "set_cast_shadow", "get_cast_shadow");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "shadow_distance", PROPERTY_HINT_RANGE, "0,16384,1,or_greater,suffix:m"), "set_shadow_distance", "get_shadow_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gi_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_gi_mode", "get_gi_mode");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "frustum_culling"), "set_frustum_culling", "is_frustum_culling_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_lod_enabled"), "set_gpu_lod_enabled", "is_gpu_lod_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "layer_texture_size_limit", PROPERTY_HINT_RANGE, "16,8192,1"), "set_layer_texture_size_limit", "get_layer_texture_size_limit");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_view", PROPERTY_HINT_ENUM, "Disabled,LOD Levels,Wireframe,Virtual Texture"), "set_debug_view", "get_debug_view");
 
 	ADD_GROUP("Virtual Texture", "virtual_texture_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "virtual_texture_enabled"), "set_virtual_texture_enabled", "is_virtual_texture_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "virtual_texture_texel_size", PROPERTY_HINT_RANGE, "0.001,1,0.001,or_greater,suffix:m"), "set_virtual_texture_texel_size", "get_virtual_texture_texel_size");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "virtual_texture_near_distance", PROPERTY_HINT_RANGE, "0,256,0.1,or_greater,suffix:m"), "set_virtual_texture_near_distance", "get_virtual_texture_near_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "virtual_texture_layers", PROPERTY_HINT_LAYERS_3D_RENDER), "set_virtual_texture_layers", "get_virtual_texture_layers");
-
-	ADD_GROUP("Occlusion Culling", "occluder_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "occluder_enabled"), "set_occluder_enabled", "is_occluder_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "occluder_detail", PROPERTY_HINT_ENUM, "1x1 Quad (Fastest):1,2x2 Quads:2,4x4 Quads:4,8x8 Quads:8,16x16 Quads:16,32x32 Quads (Most Accurate):32"), "set_occluder_detail", "get_occluder_detail");
-
-	ADD_GROUP("Parallax Occlusion Mapping", "pom_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_enabled"), "set_pom_enabled", "is_pom_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_min_layers", PROPERTY_HINT_RANGE, "1,64,1"), "set_pom_min_layers", "get_pom_min_layers");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_max_layers", PROPERTY_HINT_RANGE, "1,64,1"), "set_pom_max_layers", "get_pom_max_layers");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_flip_tangent"), "set_pom_flip_tangent", "get_pom_flip_tangent");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_flip_binormal"), "set_pom_flip_binormal", "get_pom_flip_binormal");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "pom_self_shadow_enabled"), "set_pom_self_shadow_enabled", "is_pom_self_shadow_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "pom_shadow_steps", PROPERTY_HINT_RANGE, "1,32,1"), "set_pom_shadow_steps", "get_pom_shadow_steps");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pom_shadow_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_pom_shadow_strength", "get_pom_shadow_strength");
-	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "pom_shadow_light_direction"), "set_pom_shadow_light_direction", "get_pom_shadow_light_direction");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pom_fade_start", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), "set_pom_fade_start", "get_pom_fade_start");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "pom_fade_end", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), "set_pom_fade_end", "get_pom_fade_end");
 
 	ADD_GROUP("Collision", "collision_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
@@ -1078,6 +1113,10 @@ void Landscape3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(SCULPT_SMOOTH);
 	BIND_ENUM_CONSTANT(SCULPT_FLATTEN);
 
+	BIND_ENUM_CONSTANT(PAINT_ADD);
+	BIND_ENUM_CONSTANT(PAINT_ERASE);
+	BIND_ENUM_CONSTANT(PAINT_BLEND);
+
 	BIND_ENUM_CONSTANT(DEBUG_VIEW_DISABLED);
 	BIND_ENUM_CONSTANT(DEBUG_VIEW_LOD_LEVELS);
 	BIND_ENUM_CONSTANT(DEBUG_VIEW_WIREFRAME);
@@ -1087,6 +1126,9 @@ void Landscape3D::_bind_methods() {
 void Landscape3D::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
+			// The project settings may have changed while this was out of the tree.
+			_connect_project_settings();
+			_apply_project_settings();
 			if (terrain_data.is_valid() && quadtree.is_empty()) {
 				_rebuild_terrain();
 			}
@@ -1097,6 +1139,7 @@ void Landscape3D::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_EXIT_TREE: {
+			_disconnect_project_settings();
 			_disconnect_frame_hook();
 			BlendLandscape3D::remove_landscape_source(get_instance_id());
 		} break;
@@ -1908,7 +1951,7 @@ void Landscape3D::_rebuild_weight_texture() {
 	// TerrainData::WEIGHT_MAP_COUNT of them: at 4097 x 4097 each one is 64 MB.
 	// But at least two, since the rendering server cannot wrap a texture
 	// array of a single layer around a RenderingDevice texture.
-	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
+	const int layer_count = get_used_layer_count();
 	const int group_count = CLAMP((layer_count + TerrainData::LAYERS_PER_WEIGHT_MAP - 1) / TerrainData::LAYERS_PER_WEIGHT_MAP, 2, TerrainData::WEIGHT_MAP_COUNT);
 	if (weight_texture.is_valid() && weight_texture.get_layer_count() == group_count && weight_texture.get_size() == Size2i(terrain_data->get_resolution(), terrain_data->get_resolution())) {
 		return;
@@ -1979,7 +2022,7 @@ void Landscape3D::_update_pom_params() {
 void Landscape3D::_update_layer_params() {
 	_ensure_material();
 
-	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
+	const int layer_count = get_used_layer_count();
 
 	PackedFloat32Array uv_scales;
 	uv_scales.resize(TerrainData::MAX_LAYERS);
@@ -2083,7 +2126,7 @@ Ref<Texture2D> Landscape3D::_get_layer_texture(int p_layer, LayerTexture p_which
 }
 
 uint32_t Landscape3D::_get_changed_layer_textures() const {
-	const int array_layers = MAX(CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS), 1);
+	const int array_layers = MAX(get_used_layer_count(), 1);
 	uint32_t changed = 0;
 	for (int which = 0; which < LAYER_TEXTURE_MAX; which++) {
 		const Vector<Ref<Texture2D>> &sources = layer_texture_sources[which];
@@ -2155,8 +2198,7 @@ void Landscape3D::_rebuild_layer_textures(uint32_t p_which) {
 		return;
 	}
 
-	const int layer_count = CLAMP(int(layers.size()), 0, TerrainData::MAX_LAYERS);
-	const int array_layers = MAX(layer_count, 1);
+	const int array_layers = MAX(get_used_layer_count(), 1);
 
 	struct ArraySpec {
 		Color default_color;
@@ -2638,6 +2680,11 @@ void Landscape3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 	}
 
 	// A new set of layers: everything is built right away, as the scene that holds them is loaded.
+	_rebuild_layers();
+	update_configuration_warnings();
+}
+
+void Landscape3D::_rebuild_layers() {
 	const float previous_bound = displacement_bound;
 	_update_layer_params();
 	_rebuild_layer_textures(_get_changed_layer_textures());
@@ -2646,7 +2693,6 @@ void Landscape3D::set_layers(const TypedArray<TerrainLayer> &p_layers) {
 		_rebuild_all_occluders();
 	}
 	lod_dirty = true;
-	update_configuration_warnings();
 }
 
 TypedArray<TerrainLayer> Landscape3D::get_layers() const {
@@ -2654,7 +2700,11 @@ TypedArray<TerrainLayer> Landscape3D::get_layers() const {
 }
 
 void Landscape3D::set_lod_pixel_error(float p_pixels) {
-	lod_pixel_error = MAX(p_pixels, 0.05f);
+	p_pixels = MAX(p_pixels, 0.05f);
+	if (lod_pixel_error == p_pixels) {
+		return;
+	}
+	lod_pixel_error = p_pixels;
 	lod_dirty = true;
 }
 
@@ -2663,7 +2713,11 @@ float Landscape3D::get_lod_pixel_error() const {
 }
 
 void Landscape3D::set_lod_max_quad_pixels(float p_pixels) {
-	lod_max_quad_pixels = MAX(p_pixels, 1.0f);
+	p_pixels = MAX(p_pixels, 1.0f);
+	if (lod_max_quad_pixels == p_pixels) {
+		return;
+	}
+	lod_max_quad_pixels = p_pixels;
 	lod_dirty = true;
 }
 
@@ -2672,6 +2726,9 @@ float Landscape3D::get_lod_max_quad_pixels() const {
 }
 
 void Landscape3D::set_frustum_culling(bool p_enabled) {
+	if (frustum_culling == p_enabled) {
+		return;
+	}
 	frustum_culling = p_enabled;
 	lod_dirty = true;
 }
@@ -2681,6 +2738,9 @@ bool Landscape3D::is_frustum_culling_enabled() const {
 }
 
 void Landscape3D::set_gpu_lod_enabled(bool p_enabled) {
+	if (gpu_lod_enabled == p_enabled) {
+		return;
+	}
 	gpu_lod_enabled = p_enabled;
 	// The MultiMeshes are switched over on the next frame.
 	lod_dirty = true;
@@ -2700,7 +2760,11 @@ float Landscape3D::get_shadow_distance() const {
 }
 
 void Landscape3D::set_micro_detail_levels(int p_levels) {
-	micro_detail_levels = CLAMP(p_levels, 0, LandscapeQuadtree::MAX_MICRO_LEVELS);
+	p_levels = CLAMP(p_levels, 0, LandscapeQuadtree::MAX_MICRO_LEVELS);
+	if (micro_detail_levels == p_levels) {
+		return;
+	}
+	micro_detail_levels = p_levels;
 	_update_micro_detail_params();
 }
 
@@ -2709,8 +2773,12 @@ int Landscape3D::get_micro_detail_levels() const {
 }
 
 void Landscape3D::set_micro_detail_distance(float p_distance) {
+	p_distance = MAX(p_distance, 0.0f);
+	if (micro_detail_distance == p_distance) {
+		return;
+	}
 	const bool was_displacing = micro_detail_distance > 0.0f;
-	micro_detail_distance = MAX(p_distance, 0.0f);
+	micro_detail_distance = p_distance;
 	_update_micro_detail_params();
 	if ((micro_detail_distance > 0.0f) != was_displacing && terrain_data.is_valid() && occluder_enabled && displacement_bound > 0.0f) {
 		// The occluders sit below the deepest displacement, while there is any.
@@ -2723,7 +2791,11 @@ float Landscape3D::get_micro_detail_distance() const {
 }
 
 void Landscape3D::set_micro_detail_triangle_size(float p_pixels) {
-	micro_detail_triangle_size = MAX(p_pixels, 0.5f);
+	p_pixels = MAX(p_pixels, 0.5f);
+	if (micro_detail_triangle_size == p_pixels) {
+		return;
+	}
+	micro_detail_triangle_size = p_pixels;
 	lod_dirty = true;
 }
 
@@ -2768,7 +2840,11 @@ float Landscape3D::get_virtual_texture_texel_size() const {
 }
 
 void Landscape3D::set_virtual_texture_near_distance(float p_distance) {
-	virtual_texture_near_distance = MAX(p_distance, 0.0f);
+	p_distance = MAX(p_distance, 0.0f);
+	if (virtual_texture_near_distance == p_distance) {
+		return;
+	}
+	virtual_texture_near_distance = p_distance;
 	if (material.is_valid() && virtual_texture.is_valid()) {
 		material->set_shader_parameter(SNAME("rvt_near_distance"), virtual_texture_near_distance);
 	}
@@ -2884,7 +2960,11 @@ uint32_t Landscape3D::get_collision_mask() const {
 }
 
 void Landscape3D::set_layer_texture_size_limit(int p_size) {
-	layer_texture_size_limit = CLAMP(p_size, 16, 8192);
+	p_size = CLAMP(p_size, 16, 8192);
+	if (layer_texture_size_limit == p_size) {
+		return;
+	}
+	layer_texture_size_limit = p_size;
 	_rebuild_layer_textures((1u << LAYER_TEXTURE_MAX) - 1);
 }
 
@@ -2892,7 +2972,32 @@ int Landscape3D::get_layer_texture_size_limit() const {
 	return layer_texture_size_limit;
 }
 
+void Landscape3D::set_max_material_layers(int p_layers) {
+	// Weights are packed four layers to a weight map, so only whole maps are offered.
+	p_layers = p_layers <= 4 ? 4 : (p_layers <= 8 ? 8 : TerrainData::MAX_LAYERS);
+	if (max_material_layers == p_layers) {
+		return;
+	}
+	max_material_layers = p_layers;
+	// With nothing built yet, there is nothing to build again: the layers are built when they are set.
+	if (material.is_valid()) {
+		_rebuild_layers();
+	}
+	update_configuration_warnings();
+}
+
+int Landscape3D::get_max_material_layers() const {
+	return max_material_layers;
+}
+
+int Landscape3D::get_used_layer_count() const {
+	return MIN(int(layers.size()), max_material_layers);
+}
+
 void Landscape3D::set_pom_enabled(bool p_enable) {
+	if (pom_enabled == p_enable) {
+		return;
+	}
 	pom_enabled = p_enable;
 	_update_pom_params();
 }
@@ -2902,7 +3007,11 @@ bool Landscape3D::is_pom_enabled() const {
 }
 
 void Landscape3D::set_pom_min_layers(int p_layers) {
-	pom_min_layers = MAX(p_layers, 1);
+	p_layers = MAX(p_layers, 1);
+	if (pom_min_layers == p_layers) {
+		return;
+	}
+	pom_min_layers = p_layers;
 	_update_pom_params();
 }
 
@@ -2911,7 +3020,11 @@ int Landscape3D::get_pom_min_layers() const {
 }
 
 void Landscape3D::set_pom_max_layers(int p_layers) {
-	pom_max_layers = MAX(p_layers, 1);
+	p_layers = MAX(p_layers, 1);
+	if (pom_max_layers == p_layers) {
+		return;
+	}
+	pom_max_layers = p_layers;
 	_update_pom_params();
 }
 
@@ -2920,6 +3033,9 @@ int Landscape3D::get_pom_max_layers() const {
 }
 
 void Landscape3D::set_pom_flip_tangent(bool p_flip) {
+	if (pom_flip_tangent == p_flip) {
+		return;
+	}
 	pom_flip_tangent = p_flip;
 	_update_pom_params();
 }
@@ -2929,6 +3045,9 @@ bool Landscape3D::get_pom_flip_tangent() const {
 }
 
 void Landscape3D::set_pom_flip_binormal(bool p_flip) {
+	if (pom_flip_binormal == p_flip) {
+		return;
+	}
 	pom_flip_binormal = p_flip;
 	_update_pom_params();
 }
@@ -2938,6 +3057,9 @@ bool Landscape3D::get_pom_flip_binormal() const {
 }
 
 void Landscape3D::set_pom_self_shadow_enabled(bool p_enable) {
+	if (pom_self_shadow_enabled == p_enable) {
+		return;
+	}
 	pom_self_shadow_enabled = p_enable;
 	_update_pom_params();
 }
@@ -2947,7 +3069,11 @@ bool Landscape3D::is_pom_self_shadow_enabled() const {
 }
 
 void Landscape3D::set_pom_shadow_steps(int p_steps) {
-	pom_shadow_steps = MAX(p_steps, 1);
+	p_steps = MAX(p_steps, 1);
+	if (pom_shadow_steps == p_steps) {
+		return;
+	}
+	pom_shadow_steps = p_steps;
 	_update_pom_params();
 }
 
@@ -2956,7 +3082,11 @@ int Landscape3D::get_pom_shadow_steps() const {
 }
 
 void Landscape3D::set_pom_shadow_strength(float p_strength) {
-	pom_shadow_strength = CLAMP(p_strength, 0.0f, 1.0f);
+	p_strength = CLAMP(p_strength, 0.0f, 1.0f);
+	if (pom_shadow_strength == p_strength) {
+		return;
+	}
+	pom_shadow_strength = p_strength;
 	_update_pom_params();
 }
 
@@ -2965,6 +3095,9 @@ float Landscape3D::get_pom_shadow_strength() const {
 }
 
 void Landscape3D::set_pom_shadow_light_direction(const Vector3 &p_direction) {
+	if (pom_shadow_light_direction == p_direction) {
+		return;
+	}
 	pom_shadow_light_direction = p_direction;
 	_update_pom_params();
 }
@@ -2974,7 +3107,11 @@ Vector3 Landscape3D::get_pom_shadow_light_direction() const {
 }
 
 void Landscape3D::set_pom_fade_start(float p_distance) {
-	pom_fade_start = MAX(p_distance, 0.0f);
+	p_distance = MAX(p_distance, 0.0f);
+	if (pom_fade_start == p_distance) {
+		return;
+	}
+	pom_fade_start = p_distance;
 	_update_pom_params();
 }
 
@@ -2983,7 +3120,11 @@ float Landscape3D::get_pom_fade_start() const {
 }
 
 void Landscape3D::set_pom_fade_end(float p_distance) {
-	pom_fade_end = MAX(p_distance, 0.0f);
+	p_distance = MAX(p_distance, 0.0f);
+	if (pom_fade_end == p_distance) {
+		return;
+	}
+	pom_fade_end = p_distance;
 	_update_pom_params();
 }
 
@@ -3107,10 +3248,41 @@ void Landscape3D::sculpt(const Vector3 &p_local_position, float p_radius, float 
 	_emit_terrain_changed(region);
 }
 
-void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff) {
+float Landscape3D::_get_paint_mask_weight(int p_x, int p_z, const PaintMask &p_mask) const {
+	// The same bands as TerrainData::generate_layer_mask(): each fades out over its own falloff
+	// rather than stopping at a hard line, which would show as a contour around the paint.
+	const auto band = [](float p_value, float p_lo, float p_hi, float p_band_falloff) {
+		if (p_band_falloff <= 0.0f) {
+			return (p_value >= p_lo && p_value <= p_hi) ? 1.0f : 0.0f;
+		}
+		const float rising = Math::smoothstep(p_lo - p_band_falloff, p_lo, p_value);
+		const float falling = 1.0f - Math::smoothstep(p_hi, p_hi + p_band_falloff, p_value);
+		return MIN(rising, falling);
+	};
+	float weight = band(terrain_data->get_height(p_x, p_z), p_mask.height_min, p_mask.height_max, p_mask.height_falloff);
+	if (weight > 0.0f && (p_mask.slope_min > 0.0f || p_mask.slope_max < 90.0f)) {
+		const Vector3 normal = terrain_data->get_normal(p_x, p_z);
+		const float slope = Math::rad_to_deg(Math::acos(CLAMP(normal.y, -1.0f, 1.0f)));
+		weight *= band(slope, p_mask.slope_min, p_mask.slope_max, p_mask.slope_falloff);
+	}
+	return weight;
+}
+
+void Landscape3D::_paint_layer_bind(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff, PaintOperation p_operation, const Vector2 &p_height_range, const Vector2 &p_slope_range, float p_height_falloff, float p_slope_falloff) {
+	PaintMask mask;
+	mask.height_min = p_height_range.x;
+	mask.height_max = p_height_range.y;
+	mask.height_falloff = p_height_falloff;
+	mask.slope_min = p_slope_range.x;
+	mask.slope_max = p_slope_range.y;
+	mask.slope_falloff = p_slope_falloff;
+	paint_layer(p_local_position, p_radius, p_strength, p_layer_index, p_falloff, p_operation, mask);
+}
+
+void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, float p_strength, int p_layer_index, float p_falloff, PaintOperation p_operation, const PaintMask &p_mask) {
 	ERR_FAIL_COND(terrain_data.is_null());
-	ERR_FAIL_INDEX(p_layer_index, layers.size());
-	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
+	const int layer_count = get_used_layer_count();
+	ERR_FAIL_INDEX_MSG(p_layer_index, layer_count, vformat("Layer %d is not painted: only the first %d layers are used (see the landscape_3d/material_layers/max_layers project setting).", p_layer_index, layer_count));
 
 	const float spacing = terrain_data->get_vertex_spacing();
 	const int resolution = terrain_data->get_resolution();
@@ -3133,11 +3305,22 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 	// class description), so painting one has to read - and, below, write
 	// back - all of them: raising the target layer's weight only means
 	// anything relative to how much weight the others hold at that point.
-	const int layer_count = layers.size();
 	Vector<PackedFloat32Array> layer_weights;
 	layer_weights.resize(layer_count);
 	for (int i = 0; i < layer_count; i++) {
 		layer_weights.write[i] = terrain_data->get_layer_weight_region(region, i);
+	}
+
+	// Blending averages each sample with its neighbors as they were before
+	// this stamp, one sample further out than the brush reaches.
+	Rect2i source_region;
+	Vector<PackedFloat32Array> source_weights;
+	if (p_operation == PAINT_BLEND) {
+		source_region = region.grow(1).intersection(Rect2i(0, 0, resolution, resolution));
+		source_weights.resize(layer_count);
+		for (int i = 0; i < layer_count; i++) {
+			source_weights.write[i] = terrain_data->get_layer_weight_region(source_region, i);
+		}
 	}
 
 	for (int z = z0; z <= z1; z++) {
@@ -3148,10 +3331,42 @@ void Landscape3D::paint_layer(const Vector3 &p_local_position, float p_radius, f
 			if (dist > radius) {
 				continue;
 			}
-			const float amount = p_strength * brush_falloff_weight(dist, radius, p_falloff);
+			float amount = p_strength * brush_falloff_weight(dist, radius, p_falloff);
+			if (amount > 0.0f) {
+				amount *= _get_paint_mask_weight(x, z, p_mask);
+			}
+			if (amount <= 0.0f) {
+				continue;
+			}
 
 			const int local_idx = (z - z0) * region_w + (x - x0);
-			set_layer_weight_renormalized(layer_weights, p_layer_index, local_idx, layer_weights[p_layer_index][local_idx] + amount);
+			switch (p_operation) {
+				case PAINT_ADD: {
+					set_layer_weight_renormalized(layer_weights, p_layer_index, local_idx, layer_weights[p_layer_index][local_idx] + amount);
+				} break;
+				case PAINT_ERASE: {
+					set_layer_weight_erased(layer_weights, p_layer_index, local_idx, layer_weights[p_layer_index][local_idx] - amount);
+				} break;
+				case PAINT_BLEND: {
+					const float t = MIN(amount, 1.0f);
+					const int sx0 = MAX(x - 1, source_region.position.x) - source_region.position.x;
+					const int sx1 = MIN(x + 1, source_region.get_end().x - 1) - source_region.position.x;
+					const int sz0 = MAX(z - 1, source_region.position.y) - source_region.position.y;
+					const int sz1 = MIN(z + 1, source_region.get_end().y - 1) - source_region.position.y;
+					const float inv_count = 1.0f / float((sx1 - sx0 + 1) * (sz1 - sz0 + 1));
+					for (int i = 0; i < layer_count; i++) {
+						const float *source = source_weights[i].ptr();
+						float sum = 0.0f;
+						for (int sz = sz0; sz <= sz1; sz++) {
+							for (int sx = sx0; sx <= sx1; sx++) {
+								sum += source[sz * source_region.size.x + sx];
+							}
+						}
+						PackedFloat32Array &weights = layer_weights.write[i];
+						weights.set(local_idx, Math::lerp(weights[local_idx], sum * inv_count, t));
+					}
+				} break;
+			}
 		}
 	}
 
@@ -3310,11 +3525,10 @@ void Landscape3D::set_layer_weight_regions(const TypedArray<Rect2i> &p_regions, 
 
 void Landscape3D::paint_layer_regions(const TypedArray<Rect2i> &p_regions, int p_layer_index, const TypedArray<PackedFloat32Array> &p_weights) {
 	ERR_FAIL_COND(terrain_data.is_null());
-	ERR_FAIL_INDEX(p_layer_index, layers.size());
-	ERR_FAIL_INDEX(p_layer_index, TerrainData::MAX_LAYERS);
+	const int layer_count = get_used_layer_count();
+	ERR_FAIL_INDEX(p_layer_index, layer_count);
 	ERR_FAIL_COND_MSG(p_regions.size() != p_weights.size(), "Every region needs exactly one array of weights.");
 
-	const int layer_count = MIN(layers.size(), TerrainData::MAX_LAYERS);
 	Vector<PackedFloat32Array> layer_weights;
 	layer_weights.resize(layer_count);
 
@@ -3389,6 +3603,8 @@ PackedStringArray Landscape3D::get_configuration_warnings() const {
 	}
 	if (layers.is_empty()) {
 		warnings.push_back(RTR("No TerrainLayer entries configured. The terrain will render as flat gray until at least one layer is added."));
+	} else if (layers.size() > max_material_layers) {
+		warnings.push_back(vformat(RTR("Only the first %d of these %d layers are drawn and can be painted: that is as many as the \"Landscape3D > Material Layers > Max Layers\" project setting allows."), max_material_layers, layers.size()));
 	}
 
 	return warnings;
@@ -3399,9 +3615,11 @@ Landscape3D::Landscape3D() {
 	// NOTIFICATION_TRANSFORM_CHANGED, which Node3D only sends to nodes that
 	// opt in.
 	set_notify_transform(true);
+	_apply_project_settings();
 }
 
 Landscape3D::~Landscape3D() {
+	_disconnect_project_settings();
 	BlendLandscape3D::remove_landscape_source(get_instance_id());
 	_disconnect_frame_hook();
 	_clear_occluders();

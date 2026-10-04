@@ -1810,6 +1810,89 @@
 			[b]Note:[/b] The driver in use can be overridden at runtime via the [code]--text-driver[/code] [url=$DOCS_URL/tutorials/editor/command_line_tutorial.html]command line argument[/url].
 			[b]Note:[/b] There is an additional [code]Dummy[/code] text driver available, which disables all text rendering and font-related functionality. This driver is not listed in the project settings, but it can be enabled when running the editor or project using the [code]--text-driver Dummy[/code] [url=$DOCS_URL/tutorials/editor/command_line_tutorial.html]command line argument[/url].
 		</member>
+		<member name="landscape_3d/level_of_detail/frustum_culling" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], a [Landscape3D] only draws the patches inside the camera's view (the ones outside it are still drawn into shadow maps; see [member Landscape3D.shadow_distance]). Turn this off when the terrain is seen through several cameras at once - split screen, a [SubViewport] rendering another view, a [ReflectionProbe] updating every frame - since each of them only gets what the one camera the patches are selected for sees. Always off in the editor, which draws the scene through several viewports at once.
+			[b]Note:[/b] The level of detail itself only depends on where the camera is, never on which way it looks, so turning the camera never changes the tessellation.
+		</member>
+		<member name="landscape_3d/level_of_detail/gpu_lod_enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], the patches of a [Landscape3D] to draw are selected on the GPU by compute shaders and drawn through indirect draw commands. If [code]false[/code], or on a renderer without compute shaders (Compatibility), the same selection runs on the CPU and is uploaded every frame the camera moves. Both draw exactly the same patches; this is there to compare them.
+		</member>
+		<member name="landscape_3d/level_of_detail/max_quad_pixels" type="float" setter="" getter="" default="48.0">
+			The largest a quad may appear on screen, in pixels, before its patch is split whatever its error. Flat ground has no error to refine, and without this would be drawn with huge triangles right up to the camera; it also keeps neighboring patches from drawing their shared edge at very different densities.
+		</member>
+		<member name="landscape_3d/level_of_detail/pixel_error" type="float" setter="" getter="" default="2.0">
+			How far, in pixels on screen, the drawn surface of a [Landscape3D] may stray from the full resolution heightmap before its patch is split into four finer ones. This bounds both the error itself and how much the ground can pop when a patch switches level, so lower values look steadier at the cost of more triangles: halving it roughly quadruples the number of patches. Holes count their quad size as error, so their outlines are refined the same way as the ground's shape.
+		</member>
+		<member name="landscape_3d/material_layers/max_layers" type="int" setter="" getter="" default="16">
+			How many of the [TerrainLayer]s in [member Landscape3D.layers] are drawn and can be painted: [code]4[/code], [code]8[/code] or [code]16[/code] ([constant TerrainData.MAX_LAYERS]). A landscape with more layers than this keeps them, and shows a warning, but leaves the rest out. Every four layers share one weight map, a texture as large as the heightmap, so fewer layers take less video memory and fewer texture reads in every pixel the layers are blended in.
+		</member>
+		<member name="landscape_3d/material_layers/texture_size_limit" type="int" setter="" getter="" default="2048">
+			The largest a [TerrainLayer]'s textures are kept at when they have to be resampled to build the shared texture arrays a [Landscape3D] renders from. A GPU texture array needs every layer to share one size and format, so a set that does not already agree is resampled to the largest source in it, capped here; a texture smaller than the cap is never enlarged.
+			Raising this keeps more of a high-resolution texture at the cost of memory, which is considerable: a resampled set is uncompressed, so each 4096×4096 layer costs roughly 67 MB per array (there are four) before mipmaps.
+			[b]This is skipped entirely, and ignored, when a set needs no resampling:[/b] if every layer supplies that texture and they already share a size and format and carry mipmaps, they go to the GPU untouched, keeping whatever VRAM compression they were imported with. That is the only practical way to use 4K layer textures - compressed, they cost a small fraction of the above - so for large textures it is worth making the set uniform and importing it as VRAM Compressed rather than raising this.
+		</member>
+		<member name="landscape_3d/micro_detail/distance" type="float" setter="" getter="" default="48.0">
+			How far from the camera micro detail reaches, in meters. Within it, quads are split down to about [member landscape_3d/micro_detail/triangle_size] pixels on screen (as far as [member landscape_3d/micro_detail/levels] allows), and [member TerrainLayer.displacement] moves the ground, fading out over the last quarter of this distance. [code]0[/code] turns micro detail off.
+		</member>
+		<member name="landscape_3d/micro_detail/levels" type="int" setter="" getter="" default="2">
+			How many quadtree levels of a [Landscape3D] are allowed below the heightmap's own resolution near the camera, each halving the quad size again: at [code]4[/code], down to a sixteenth of [member TerrainData.vertex_spacing]. The heightmap is interpolated smoothly there (a Catmull-Rom spline through its samples) rather than drawn as flat triangles between them, and [member TerrainLayer.displacement] has that many more vertices to move. At [code]0[/code], displacement still moves the heightmap's own vertices.
+		</member>
+		<member name="landscape_3d/micro_detail/triangle_size" type="float" setter="" getter="" default="6.0">
+			The size, in pixels on screen, that quads within [member landscape_3d/micro_detail/distance] are split down to. Displacement textures are sampled no finer than this either (through their mipmaps), which keeps them from aliasing into noise. Lower values show finer displacement detail, at a steep cost in triangles.
+		</member>
+		<member name="landscape_3d/occlusion_culling/detail" type="int" setter="" getter="" default="8">
+			How finely the occluders of a [Landscape3D] follow its surface, as the number of quads along each edge of the occluder of each block of 32×32 quads (always rounded down to a power of two, at most 32). Higher values follow hills and ridges more closely and therefore cull more, at the cost of more triangles to rasterize into the occlusion buffer every frame; lower values are cheaper but flatten the terrain out, which only ever culls less. Has no effect unless [member landscape_3d/occlusion_culling/enabled] is [code]true[/code].
+			Because an occluder may never claim to hide something the terrain does not actually hide, every occluder vertex is pushed down to the lowest heightmap sample within one occluder quad of it. A narrow ridge that is thinner than an occluder quad flattens away entirely at low detail, so terrains made of sharp, narrow features need a higher value here than smooth, rolling ones to occlude as much.
+		</member>
+		<member name="landscape_3d/occlusion_culling/enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], every [Landscape3D] feeds the renderer's occlusion culling a simplified copy of its surface (see [member landscape_3d/occlusion_culling/detail]), so that objects standing behind hills are culled before they are drawn - vegetation especially, which is usually the densest thing a terrain carries.
+			This only does anything while occlusion culling is on ([member rendering/occlusion_culling/use_occlusion_culling], or [member Viewport.use_occlusion_culling] for a custom viewport); until then it costs nothing but the memory of the simplified surface. Holes in the terrain (see [method Landscape3D.set_hole]) never occlude, since they can be seen through, and the occluders sit below whatever [member TerrainLayer.displacement] can sink the ground by.
+			[b]Note:[/b] Individual objects can opt out of being culled this way with [member GeometryInstance3D.ignore_occlusion_culling], or [member FoliageSpawner3D.cell_ignore_occlusion_culling] for a whole spawner's foliage.
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/enabled" type="bool" setter="" getter="" default="false">
+			Master switch for Parallax Occlusion Mapping on [Landscape3D]s (see its description): a [TerrainLayer] also needs its own [member TerrainLayer.pom_enabled] set for POM to apply to it. Off by default: the ray-marching this adds to every fragment covered by a layer that has it isn't free.
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/fade_end" type="float" setter="" getter="" default="60.0">
+			The distance, in meters from the camera, at which [member landscape_3d/parallax_occlusion_mapping/enabled]'s depth reaches fully flat; see [member landscape_3d/parallax_occlusion_mapping/fade_start].
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/fade_start" type="float" setter="" getter="" default="20.0">
+			The distance, in meters from the camera, at which [member landscape_3d/parallax_occlusion_mapping/enabled]'s apparent depth starts fading towards flat, reaching zero at [member landscape_3d/parallax_occlusion_mapping/fade_end]. Keeps distant, minified ground from shimmering/aliasing under parallax; set [member landscape_3d/parallax_occlusion_mapping/fade_end] to a value at or below this to disable the fade and use full depth at any distance.
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/flip_binormal" type="bool" setter="" getter="" default="false">
+			Flips the effective binormal direction used to offset [member landscape_3d/parallax_occlusion_mapping/enabled]'s parallax effect. Toggle this (and/or [member landscape_3d/parallax_occlusion_mapping/flip_tangent]) if the parallax effect looks inverted (bulging instead of recessed, or shifted the wrong way as the camera moves) - equivalent to [member BaseMaterial3D.heightmap_flip_binormal].
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/flip_tangent" type="bool" setter="" getter="" default="false">
+			Flips the effective tangent direction used to offset [member landscape_3d/parallax_occlusion_mapping/enabled]'s parallax effect. See [member landscape_3d/parallax_occlusion_mapping/flip_binormal]; equivalent to [member BaseMaterial3D.heightmap_flip_tangent].
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/max_layers" type="int" setter="" getter="" default="32">
+			The number of ray-marching steps [member landscape_3d/parallax_occlusion_mapping/enabled] uses when looking nearly straight down at the surface. Equivalent to [member BaseMaterial3D.heightmap_max_layers].
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/min_layers" type="int" setter="" getter="" default="8">
+			The number of ray-marching steps [member landscape_3d/parallax_occlusion_mapping/enabled] uses when looking nearly edge-on at the surface (fewer steps are needed at a glancing angle without a visible quality loss, so this saves performance over always using [member landscape_3d/parallax_occlusion_mapping/max_layers] steps). Equivalent to [member BaseMaterial3D.heightmap_min_layers].
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/self_shadow_enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code] (and [member landscape_3d/parallax_occlusion_mapping/enabled] is also [code]true[/code]), darkens points on a POM-enabled layer whose [member TerrainLayer.height_texture] detail would shadow them from [member landscape_3d/parallax_occlusion_mapping/shadow_light_direction]. This is an approximation computed entirely from each layer's own height texture (see [Landscape3D]'s description), not a real shadow from any light in the scene, and only ever applies to a layer that already has [member TerrainLayer.pom_enabled] set.
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/shadow_light_direction" type="Vector3" setter="" getter="" default="Vector3(0.5, 0.75, 0.3)">
+			The world-space direction, from a surface point towards the light, that [member landscape_3d/parallax_occlusion_mapping/self_shadow_enabled] marches towards to find shadowing detail. Point this at whatever your main light's direction is; it does not update automatically if that light moves or rotates.
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/shadow_steps" type="int" setter="" getter="" default="8">
+			The number of ray-marching steps [member landscape_3d/parallax_occlusion_mapping/self_shadow_enabled] uses. Higher values give smoother, more accurate self-shadows at a higher cost.
+		</member>
+		<member name="landscape_3d/parallax_occlusion_mapping/shadow_strength" type="float" setter="" getter="" default="1.0">
+			Scales how dark [member landscape_3d/parallax_occlusion_mapping/self_shadow_enabled]'s shadows can get; [code]0[/code] disables their visible effect (without paying much less than [member landscape_3d/parallax_occlusion_mapping/self_shadow_enabled] [code]= false[/code] would, since the march itself still runs), [code]1[/code] allows a fully dark shadow.
+		</member>
+		<member name="landscape_3d/virtual_texture/enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], every [Landscape3D] is shaded from a runtime virtual texture: its layers are blended once, into pages of a texture covering the whole terrain at [member landscape_3d/virtual_texture/texel_size], and the terrain samples that single texture rather than blending every layer again in every pixel, every frame. Only the pages the camera sees, at the resolution it sees them at, are ever drawn, and they are kept until they are out of view or the terrain changes under them; sculpting and painting redraw what they touch.
+			This makes the cost of shading the terrain independent of its number of layers. It also lets other geometry be drawn into the texture, blended over the ground like decals and costing nothing more once drawn: roads, paths, tire tracks, puddles, painted lines (see [member GeometryInstance3D.virtual_texture_draw_layers]). And it lets what stands on the terrain blend into it where they meet, with a [BlendLandscape3D] material.
+			Within [member landscape_3d/virtual_texture/near_distance] of the camera, and wherever parallax occlusion mapping is on, the layers are still blended in every pixel. Requires the Forward+ or Mobile renderer (see [method RenderingServer.is_virtual_texturing_supported]); elsewhere, this is ignored.
+		</member>
+		<member name="landscape_3d/virtual_texture/near_distance" type="float" setter="" getter="" default="32.0">
+			How close to the camera, in meters, the terrain blends its layers in every pixel rather than sampling its runtime virtual texture, fading from one to the other over the last quarter of the distance. Close to the camera the layers' own textures are much sharper than any virtual texture covering a whole terrain can be (see [member landscape_3d/virtual_texture/texel_size]), while further away, where they would be minified anyway, the virtual texture is as sharp and much cheaper. Geometry drawn into the virtual texture (see [member GeometryInstance3D.virtual_texture_draw_layers]) shows all the way to the camera either way: the layers are only blended where the virtual texture shows bare ground. [BlendLandscape3D] materials find the ground the same way. [code]0[/code] samples the virtual texture everywhere.
+		</member>
+		<member name="landscape_3d/virtual_texture/texel_size" type="float" setter="" getter="" default="0.02">
+			The size of the runtime virtual texture's finest texels on the ground, in meters: the texture covering the whole terrain gets as many pages as it takes for its texels to be no larger than this, up to 1024 pages (131072 texels) a side, which on a 4 km terrain makes texels of about 3 cm whatever this asks for (see [method Landscape3D.get_virtual_texture_size]). Smaller values look sharper close up and take more pages, hence more drawing, whenever the camera moves; the cache they share is set by [member rendering/virtual_texturing/runtime_cache_size]. Closer than [member landscape_3d/virtual_texture/near_distance], the layers' own textures are used instead.
+		</member>
 		<member name="layer_names/2d_navigation/layer_1" type="String" setter="" getter="" default="&quot;&quot;">
 			Optional name for the 2D navigation layer 1. If left empty, the layer will display as "Layer 1".
 		</member>
@@ -3374,7 +3457,7 @@
 		</member>
 		<member name="rendering/occlusion_culling/backend" type="int" setter="" getter="" default="0">
 			How the occlusion culling buffer is filled in.
-			[b]Hierarchical Z-Buffer (Rasterized)[/b] (the default) scan-converts the occluders into the buffer on the CPU, the classic hierarchical Z-buffer approach: the work it does per occluder triangle is proportional to the handful of buffer pixels that triangle covers, which is what makes it cheap enough to keep a whole terrain's worth of occluders on screen (see [member Landscape3D.occluder_enabled]). It is part of the rendering server itself, so it is available in every build, including Web export templates.
+			[b]Hierarchical Z-Buffer (Rasterized)[/b] (the default) scan-converts the occluders into the buffer on the CPU, the classic hierarchical Z-buffer approach: the work it does per occluder triangle is proportional to the handful of buffer pixels that triangle covers, which is what makes it cheap enough to keep a whole terrain's worth of occluders on screen (see [member landscape_3d/occlusion_culling/enabled]). It is part of the rendering server itself, so it is available in every build, including Web export templates.
 			[b]Raycast (Embree)[/b] instead traces one ray per buffer pixel through a [url=https://www.embree.org/]Embree[/url] BVH built from the occluders. It costs the same regardless of how much of the screen the occluders cover, which can be an advantage for a scene with very many large occluders, and is the behavior projects had before the rasterized backend existed. It requires the [code]raycast[/code] module (compiled in by default on desktop platforms, but not in Web export templates); the rasterized backend is used instead where it is missing. See also [member rendering/occlusion_culling/bvh_build_quality].
 			[b]Note:[/b] This property is only read when the project starts.
 		</member>
@@ -3398,7 +3481,7 @@
 		</member>
 		<member name="rendering/occlusion_culling/use_occlusion_culling" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], [OccluderInstance3D] nodes will be usable for occlusion culling in 3D in the root viewport. In custom viewports, [member Viewport.use_occlusion_culling] must be set to [code]true[/code] instead.
-			A [Landscape3D] occludes on its own as well, without any [OccluderInstance3D] (see [member Landscape3D.occluder_enabled]).
+			A [Landscape3D] occludes on its own as well, without any [OccluderInstance3D] (see [member landscape_3d/occlusion_culling/enabled]).
 			[b]Note:[/b] Enabling occlusion culling has a cost on the CPU. Only enable occlusion culling if you actually plan to use it. Large open scenes with few or no objects blocking the view will generally not benefit much from occlusion culling. Large open scenes generally benefit more from mesh LOD and visibility ranges ([member GeometryInstance3D.visibility_range_begin] and [member GeometryInstance3D.visibility_range_end]) compared to occlusion culling.
 		</member>
 		<member name="rendering/reflections/reflection_atlas/reflection_count" type="int" setter="" getter="" default="64">
@@ -3696,16 +3779,16 @@
 			If [code]true[/code], enables [member Viewport.transparent_bg] on the root viewport. This allows per-pixel transparency to be effective after also enabling [member display/window/size/transparent] and [member display/window/per_pixel_transparency/allowed].
 		</member>
 		<member name="rendering/virtual_texturing/enabled" type="bool" setter="" getter="" default="true">
-			If [code]true[/code], virtual textures (see [VirtualTexture2D] and [member Landscape3D.virtual_texture_enabled]) are streamed a page at a time on the Forward+ and Mobile renderers. If [code]false[/code], they are sampled as their small fallback, and runtime virtual textures are not used.
+			If [code]true[/code], virtual textures (see [VirtualTexture2D] and [member landscape_3d/virtual_texture/enabled]) are streamed a page at a time on the Forward+ and Mobile renderers. If [code]false[/code], they are sampled as their small fallback, and runtime virtual textures are not used.
 		</member>
 		<member name="rendering/virtual_texturing/max_page_uploads_per_frame" type="int" setter="" getter="" default="32">
 			The most pages of streamed virtual textures (see [VirtualTexture2D]) copied to video memory in one frame. Higher values sharpen textures faster after the camera moves or cuts, at the cost of longer frames when it does.
 		</member>
 		<member name="rendering/virtual_texturing/max_runtime_pages_per_frame" type="int" setter="" getter="" default="16">
-			The most pages of runtime virtual textures (see [member Landscape3D.virtual_texture_enabled]) drawn in one frame. Each one draws the geometry it covers again, so higher values sharpen and update them faster at the cost of longer frames.
+			The most pages of runtime virtual textures (see [member landscape_3d/virtual_texture/enabled]) drawn in one frame. Each one draws the geometry it covers again, so higher values sharpen and update them faster at the cost of longer frames.
 		</member>
 		<member name="rendering/virtual_texturing/runtime_cache_size" type="int" setter="" getter="" default="20">
-			How many pages a side the cache shared by runtime virtual textures holds (see [member Landscape3D.virtual_texture_enabled]): [code]20[/code] holds 400 pages. Each page costs about 285 KB of video memory, for its three layers and their mipmaps, so [code]20[/code] takes about 115 MB. Raise it if runtime virtual textures stay blurry while the camera stands still, which means the pages in view don't fit.
+			How many pages a side the cache shared by runtime virtual textures holds (see [member landscape_3d/virtual_texture/enabled]): [code]20[/code] holds 400 pages. Each page costs about 285 KB of video memory, for its three layers and their mipmaps, so [code]20[/code] takes about 115 MB. Raise it if runtime virtual textures stay blurry while the camera stands still, which means the pages in view don't fit.
 		</member>
 		<member name="rendering/virtual_texturing/streamed_cache_size" type="int" setter="" getter="" default="24">
 			How many pages a side the cache shared by streamed virtual textures ([VirtualTexture2D]) holds: [code]24[/code] holds 576 pages. Each page costs about 95 KB of video memory, with its mipmaps, so [code]24[/code] takes about 55 MB. Raise it if virtual textures stay blurry while the camera stands still, which means the pages in view don't fit.

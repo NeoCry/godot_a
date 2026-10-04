@@ -4,14 +4,15 @@
 		A large, sculptable, texture-splatted heightmap terrain, in the spirit of CryEngine's terrain system.
 	</brief_description>
 	<description>
-		[Landscape3D] renders a [TerrainData] heightmap ([member terrain_data]) through a GPU-driven quadtree. The whole terrain is drawn from one small grid mesh, a patch of 16×16 quads, instanced once for every quadtree node on screen: each level up the tree covers twice the ground at half the density, from level 0, which draws every heightmap sample, up to a single root node covering the whole terrain. Every frame a compute shader walks the tree and chooses the nodes to draw by their screen-space error ([member lod_pixel_error]): how far each node's surface strays from the full resolution heightmap, projected to pixels at its distance from the camera. Flat ground stays coarse however close it is, while rugged ground keeps its detail far away. The chosen patches are culled against the camera's view and written straight into indirect draw commands, so how many of them are drawn is never even known to the CPU. Where neighboring patches are drawn at different levels, the finer one's edge is fitted onto the coarser one's vertices, which keeps the surface watertight without skirts. Lighting uses per-pixel normals taken from the full resolution heightmap, so a distant, coarsely drawn patch is shaded exactly like a close one. The Compatibility renderer, which has no compute shaders, makes the same selection on the CPU (see [member gpu_lod_enabled]).
-		Near the camera, micro detail refines the ground past the heightmap's own resolution ([member micro_detail_levels]): the heightmap is interpolated smoothly there, and every [TerrainLayer] with a [member TerrainLayer.displacement] raises and sinks the ground along its [member TerrainLayer.height_texture], so that pebbles, cobbles and cracks stand out of the ground in silhouette and cast shadows rather than only showing in its shading.
-		Up to 32 [TerrainLayer]s ([member layers]) can be painted onto the terrain. Every point on the terrain has its own independent weight for every layer (see [TerrainData]'s description); what's actually rendered there is every layer's material mixed in proportion to its share of the total weight, the same "weight-blended" model CryEngine and UE4/5's Landscape layers use, so any number of layers can overlap smoothly at once (not just two at a time) and painting one layer smoothly displaces the others rather than producing hard edges at the vertex grid. A [member Landscape3D.collision_layer] configurable grid of [HeightMapShape3D] tiles, 256 quads a side, is kept in sync automatically so physics bodies collide with the terrain, and an edit only rebuilds the tiles it touches; see [method update_collision].
-		While selected in the editor, a toolbar appears in the 3D viewport with a brush for sculpting (raising, lowering, smoothing, and flattening the heightmap), painting texture layers, and cutting or filling holes (openings in the terrain's geometry itself, e.g. for a cave entrance, that the camera and physics bodies can pass through - see [method TerrainData.is_hole]). The same operations are available from a script through [method sculpt], [method paint_layer], and [method set_hole], for example to carve a crater into the terrain at runtime. The toolbar's [b]Import Heightmap...[/b] button imports a square grayscale image as the whole heightmap (see [method TerrainData.import_heightmap] for format/precision recommendations - EXR or HDR, not PNG or a lossy format), creating a [TerrainData] automatically if [member terrain_data] isn't set yet; this replaces the current heightmap and is not undoable.
+		[Landscape3D] renders a [TerrainData] heightmap ([member terrain_data]) through a GPU-driven quadtree. The whole terrain is drawn from one small grid mesh, a patch of 16×16 quads, instanced once for every quadtree node on screen: each level up the tree covers twice the ground at half the density, from level 0, which draws every heightmap sample, up to a single root node covering the whole terrain. Every frame a compute shader walks the tree and chooses the nodes to draw by their screen-space error ([member ProjectSettings.landscape_3d/level_of_detail/pixel_error]): how far each node's surface strays from the full resolution heightmap, projected to pixels at its distance from the camera. Flat ground stays coarse however close it is, while rugged ground keeps its detail far away. The chosen patches are culled against the camera's view and written straight into indirect draw commands, so how many of them are drawn is never even known to the CPU. Where neighboring patches are drawn at different levels, the finer one's edge is fitted onto the coarser one's vertices, which keeps the surface watertight without skirts. Lighting uses per-pixel normals taken from the full resolution heightmap, so a distant, coarsely drawn patch is shaded exactly like a close one. The Compatibility renderer, which has no compute shaders, makes the same selection on the CPU (see [member ProjectSettings.landscape_3d/level_of_detail/gpu_lod_enabled]).
+		Near the camera, micro detail refines the ground past the heightmap's own resolution ([member ProjectSettings.landscape_3d/micro_detail/levels]): the heightmap is interpolated smoothly there, and every [TerrainLayer] with a [member TerrainLayer.displacement] raises and sinks the ground along its [member TerrainLayer.height_texture], so that pebbles, cobbles and cracks stand out of the ground in silhouette and cast shadows rather than only showing in its shading.
+		Up to 16 [TerrainLayer]s ([member layers]) can be painted onto the terrain, or fewer, as [member ProjectSettings.landscape_3d/material_layers/max_layers] sets. Every point on the terrain has its own independent weight for every layer (see [TerrainData]'s description); what's actually rendered there is every layer's material mixed in proportion to its share of the total weight, the same "weight-blended" model CryEngine and UE4/5's Landscape layers use, so any number of layers can overlap smoothly at once (not just two at a time) and painting one layer smoothly displaces the others rather than producing hard edges at the vertex grid. A [member Landscape3D.collision_layer] configurable grid of [HeightMapShape3D] tiles, 256 quads a side, is kept in sync automatically so physics bodies collide with the terrain, and an edit only rebuilds the tiles it touches; see [method update_collision].
+		While selected in the editor, a toolbar appears in the 3D viewport with two lists of brushes, laid out after Unreal Engine's landscape tools: one for sculpting (raising, lowering, smoothing, and flattening the heightmap, and cutting or filling holes - openings in the terrain's geometry itself, e.g. for a cave entrance, that the camera and physics bodies can pass through, see [method TerrainData.is_hole]), and one for painting, erasing and blending the material layers chosen in its [b]MatLayers[/b] list, optionally only on ground within a range of heights and slopes. Holding [kbd]Shift[/kbd] turns Raise into Lower, Paint into Erase and Hole into Unhole (and back), and the mouse wheel over the terrain sizes the brush. The same operations are available from a script through [method sculpt], [method paint_layer], and [method set_hole], for example to carve a crater into the terrain at runtime. The inspector's [b]Import Heightmap...[/b] button imports a square grayscale image as the whole heightmap (see [method TerrainData.import_heightmap] for format/precision recommendations - EXR or HDR, not PNG or a lossy format), creating a [TerrainData] automatically if [member terrain_data] isn't set yet; this replaces the current heightmap and is not undoable. Next to it, [b]Import Layer Mask...[/b] and [b]Generate Layer Mask...[/b] fill in a layer's weights from an image or from the terrain's own shape (see [method TerrainData.import_layer_mask] and [method TerrainData.generate_layer_mask]).
+		How every landscape in a project is drawn - its level of detail, micro detail, virtual texturing, occlusion culling and parallax occlusion mapping - and how many material layers it may use are project settings, under [b]Landscape3D[/b] in the Project Settings (see [member ProjectSettings.landscape_3d/level_of_detail/pixel_error] and the settings next to it). Every [Landscape3D] follows them as soon as they change.
 		[FoliagePainter3D] and [FoliageSpawner3D] both recognize a [Landscape3D] as a paintable/projectable ground surface alongside [MeshInstance3D], so vegetation can be scattered directly onto it.
 		Roads, rivers and streams are laid over the terrain along splines with [LandscapeSpline3D], and lakes within closed ones; it also shapes the ground under them and paints a layer there.
-		The terrain also acts as an occluder ([member occluder_enabled]): once occlusion culling is enabled (see [member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling], or [member Viewport.use_occlusion_culling] for a custom viewport), whatever stands behind a hill or a ridge is skipped entirely instead of being drawn and then hidden by the terrain. This is what keeps a densely vegetated terrain affordable, since the [FoliagePainter3D]/[FoliageSpawner3D] cells behind a slope are usually most of the vegetation in view. No baking or extra nodes are involved: each block of 32×32 quads hands the renderer a simplified copy of its own surface, kept up to date as the terrain is sculpted.
-		[member pom_enabled] is a master switch for Parallax Occlusion Mapping: it must be [code]true[/code] here [i]and[/i] on each individual [TerrainLayer] ([member TerrainLayer.pom_enabled]) for that layer to use it, so a layer with no real height detail never pays for the ray-marching this adds. An enabled layer's [member TerrainLayer.height_texture] gives it extra apparent surface depth (bumps, grooves) from the shader offsetting its texture lookups, without adding any actual geometry. [member pom_self_shadow_enabled] additionally darkens crevices that would be shadowed by nearby raised detail, approximated using the fixed [member pom_shadow_light_direction] rather than any actual light in the scene (a plain shader can't see scene lights the way a light-processor function can). Independently, [member TerrainLayer.triplanar_enabled] projects a layer's textures from world-space planes instead of a single UV, useful for steep terrain (cliffs) where ordinary UVs would stretch.
+		The terrain also acts as an occluder ([member ProjectSettings.landscape_3d/occlusion_culling/enabled]): once occlusion culling is enabled (see [member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling], or [member Viewport.use_occlusion_culling] for a custom viewport), whatever stands behind a hill or a ridge is skipped entirely instead of being drawn and then hidden by the terrain. This is what keeps a densely vegetated terrain affordable, since the [FoliagePainter3D]/[FoliageSpawner3D] cells behind a slope are usually most of the vegetation in view. No baking or extra nodes are involved: each block of 32×32 quads hands the renderer a simplified copy of its own surface, kept up to date as the terrain is sculpted.
+		[member ProjectSettings.landscape_3d/parallax_occlusion_mapping/enabled] is a master switch for Parallax Occlusion Mapping: it must be [code]true[/code] here [i]and[/i] on each individual [TerrainLayer] ([member TerrainLayer.pom_enabled]) for that layer to use it, so a layer with no real height detail never pays for the ray-marching this adds. An enabled layer's [member TerrainLayer.height_texture] gives it extra apparent surface depth (bumps, grooves) from the shader offsetting its texture lookups, without adding any actual geometry. [member ProjectSettings.landscape_3d/parallax_occlusion_mapping/self_shadow_enabled] additionally darkens crevices that would be shadowed by nearby raised detail, approximated using the fixed [member ProjectSettings.landscape_3d/parallax_occlusion_mapping/shadow_light_direction] rather than any actual light in the scene (a plain shader can't see scene lights the way a light-processor function can). Independently, [member TerrainLayer.triplanar_enabled] projects a layer's textures from world-space planes instead of a single UV, useful for steep terrain (cliffs) where ordinary UVs would stretch.
 		[b]Note:[/b] Everything is laid out in this node's own space: layer textures stay attached to the ground when the node is moved or rotated. Level of detail is measured there too, so a non-uniform scale skews it.
 	</description>
 	<tutorials>
@@ -63,13 +64,13 @@
 		<method name="get_virtual_texture" qualifiers="const">
 			<return type="RID" />
 			<description>
-				Returns the runtime virtual texture the terrain is shaded from (see [member virtual_texture_enabled]), or an empty [RID] while it doesn't use one. It can be sampled by other materials too, with the UV that [method get_virtual_texture_volume] maps to.
+				Returns the runtime virtual texture the terrain is shaded from (see [member ProjectSettings.landscape_3d/virtual_texture/enabled]), or an empty [RID] while it doesn't use one. It can be sampled by other materials too, with the UV that [method get_virtual_texture_volume] maps to.
 			</description>
 		</method>
 		<method name="get_virtual_texture_size" qualifiers="const">
 			<return type="int" />
 			<description>
-				Returns the size of the runtime virtual texture the terrain is shaded from, in texels a side, or [code]0[/code] while it doesn't use one. See [member virtual_texture_texel_size].
+				Returns the size of the runtime virtual texture the terrain is shaded from, in texels a side, or [code]0[/code] while it doesn't use one. See [member ProjectSettings.landscape_3d/virtual_texture/texel_size].
 			</description>
 		</method>
 		<method name="get_virtual_texture_volume" qualifiers="const">
@@ -85,8 +86,18 @@
 			<param index="2" name="strength" type="float" />
 			<param index="3" name="layer_index" type="int" />
 			<param index="4" name="falloff" type="float" default="1.0" />
+			<param index="5" name="operation" type="int" enum="Landscape3D.PaintOperation" default="0" />
+			<param index="6" name="height_range" type="Vector2" default="Vector2(-100000, 100000)" />
+			<param index="7" name="slope_range" type="Vector2" default="Vector2(0, 90)" />
+			<param index="8" name="height_falloff" type="float" default="0.0" />
+			<param index="9" name="slope_falloff" type="float" default="0.0" />
 			<description>
-				Raises the weight of the [TerrainLayer] at [param layer_index] in [member layers] within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), tapering towards the edge of the brush as [param falloff] says (see [method sculpt]). Every other layer's weight at each affected point is lowered proportionally so the total stays roughly constant (see [TerrainData]'s description), so repeatedly painting one layer converges on it fully replacing whatever was there rather than just capping out at an even split with it. Re-uploads only the painted region of the weight maps it changed; painting never changes geometry, so nothing else is rebuilt.
+				Paints the [TerrainLayer] at [param layer_index] in [member layers] within [param radius] meters of [param local_position] (in this node's local space; only the X and Z coordinates matter), by [param strength] per call (a value around [code]0.1[/code] to [code]1.0[/code] is typical), tapering towards the edge of the brush as [param falloff] says (see [method sculpt]). What painting does is up to [param operation]:
+				- [constant PAINT_ADD] raises the layer's weight. Every other layer's weight at each affected point is lowered proportionally so the total stays roughly constant (see [TerrainData]'s description), so repeatedly painting one layer converges on it fully replacing whatever was there rather than just capping out at an even split with it.
+				- [constant PAINT_ERASE] lowers the layer's weight, handing what it loses to the other layers in proportion to their share, which brings back whatever it was painted over. Where no other layer has any weight left, it goes back to the first layer, the ground a new terrain starts out as; erasing the first layer itself there would leave bare ground, so its weight stays.
+				- [constant PAINT_BLEND] averages every layer's weight with its neighbors', softening the edges between layers; [param layer_index] still has to be a layer in use, but does not matter otherwise.
+				Painting can be kept to part of the ground: only where its height (in this node's local space) is within [param height_range] ([code]x[/code] to [code]y[/code]) and its slope within [param slope_range] ([code]x[/code] to [code]y[/code] degrees, [code]0[/code] being flat ground and [code]90[/code] a vertical wall), fading out over [param height_falloff] meters and [param slope_falloff] degrees beyond each end, as with [method TerrainData.generate_layer_mask]. The defaults paint everywhere.
+				Only the layers in use can be painted (see [member ProjectSettings.landscape_3d/material_layers/max_layers]). Re-uploads only the painted region of the weight maps it changed; painting never changes geometry, so nothing else is rebuilt.
 			</description>
 		</method>
 		<method name="paint_layer_regions">
@@ -187,80 +198,11 @@
 		<member name="debug_view" type="int" setter="set_debug_view" getter="get_debug_view" enum="Landscape3D.DebugView" default="0">
 			Shows how the terrain is tessellated; see [enum DebugView].
 		</member>
-		<member name="frustum_culling" type="bool" setter="set_frustum_culling" getter="is_frustum_culling_enabled" default="true">
-			If [code]true[/code], only the patches inside the camera's view are drawn (the ones outside it are still drawn into shadow maps; see [member shadow_distance]). Turn this off when the terrain is seen through several cameras at once - split screen, a [SubViewport] rendering another view, a [ReflectionProbe] updating every frame - since each of them only gets what the one camera the patches are selected for sees. Always off in the editor, which draws the scene through several viewports at once.
-			[b]Note:[/b] The level of detail itself only depends on where the camera is, never on which way it looks, so turning the camera never changes the tessellation.
-		</member>
 		<member name="gi_mode" type="int" setter="set_gi_mode" getter="get_gi_mode" enum="GeometryInstance3D.GIMode" default="1">
 			The terrain's global illumination mode, as [member GeometryInstance3D.gi_mode]. Defaults to [constant GeometryInstance3D.GI_MODE_STATIC], unlike most small scattered geometry, since a terrain is usually a good candidate for baked lighting.
 		</member>
-		<member name="gpu_lod_enabled" type="bool" setter="set_gpu_lod_enabled" getter="is_gpu_lod_enabled" default="true">
-			If [code]true[/code], the patches to draw are selected on the GPU by compute shaders and drawn through indirect draw commands. If [code]false[/code], or on a renderer without compute shaders (Compatibility), the same selection runs on the CPU and is uploaded every frame the camera moves. Both draw exactly the same patches; this is there to compare them.
-		</member>
-		<member name="layer_texture_size_limit" type="int" setter="set_layer_texture_size_limit" getter="get_layer_texture_size_limit" default="2048">
-			The largest a [TerrainLayer]'s textures are kept at when they have to be resampled to build the shared texture arrays this terrain renders from. A GPU texture array needs every layer to share one size and format, so a set that does not already agree is resampled to the largest source in it, capped here; a texture smaller than the cap is never enlarged.
-			Raising this keeps more of a high-resolution texture at the cost of memory, which is considerable: a resampled set is uncompressed, so each 4096×4096 layer costs roughly 67 MB per array (there are four) before mipmaps.
-			[b]This is skipped entirely, and ignored, when a set needs no resampling:[/b] if every layer supplies that texture and they already share a size and format and carry mipmaps, they go to the GPU untouched, keeping whatever VRAM compression they were imported with. That is the only practical way to use 4K layer textures - compressed, they cost a small fraction of the above - so for large textures it is worth making the set uniform and importing it as VRAM Compressed rather than raising this.
-		</member>
 		<member name="layers" type="TerrainLayer[]" setter="set_layers" getter="get_layers" default="[]">
-			The ground materials this terrain can be painted with, in the order the Paint brush's layer picker lists them. See [TerrainLayer] and the class description; up to 32 entries are supported.
-		</member>
-		<member name="lod_max_quad_pixels" type="float" setter="set_lod_max_quad_pixels" getter="get_lod_max_quad_pixels" default="48.0">
-			The largest a quad may appear on screen, in pixels, before its patch is split whatever its error. Flat ground has no error to refine, and without this would be drawn with huge triangles right up to the camera; it also keeps neighboring patches from drawing their shared edge at very different densities.
-		</member>
-		<member name="lod_pixel_error" type="float" setter="set_lod_pixel_error" getter="get_lod_pixel_error" default="2.0">
-			How far, in pixels on screen, the drawn surface may stray from the full resolution heightmap before its patch is split into four finer ones. This bounds both the error itself and how much the ground can pop when a patch switches level, so lower values look steadier at the cost of more triangles: halving it roughly quadruples the number of patches. Holes count their quad size as error, so their outlines are refined the same way as the ground's shape.
-		</member>
-		<member name="micro_detail_distance" type="float" setter="set_micro_detail_distance" getter="get_micro_detail_distance" default="48.0">
-			How far from the camera micro detail reaches, in meters. Within it, quads are split down to about [member micro_detail_triangle_size] pixels on screen (as far as [member micro_detail_levels] allows), and [member TerrainLayer.displacement] moves the ground, fading out over the last quarter of this distance. [code]0[/code] turns micro detail off.
-		</member>
-		<member name="micro_detail_levels" type="int" setter="set_micro_detail_levels" getter="get_micro_detail_levels" default="2">
-			How many quadtree levels are allowed below the heightmap's own resolution near the camera, each halving the quad size again: at [code]4[/code], down to a sixteenth of [member TerrainData.vertex_spacing]. The heightmap is interpolated smoothly there (a Catmull-Rom spline through its samples) rather than drawn as flat triangles between them, and [member TerrainLayer.displacement] has that many more vertices to move. At [code]0[/code], displacement still moves the heightmap's own vertices.
-		</member>
-		<member name="micro_detail_triangle_size" type="float" setter="set_micro_detail_triangle_size" getter="get_micro_detail_triangle_size" default="6.0">
-			The size, in pixels on screen, that quads within [member micro_detail_distance] are split down to. Displacement textures are sampled no finer than this either (through their mipmaps), which keeps them from aliasing into noise. Lower values show finer displacement detail, at a steep cost in triangles.
-		</member>
-		<member name="occluder_detail" type="int" setter="set_occluder_detail" getter="get_occluder_detail" default="8">
-			How finely the terrain's occluders follow its surface, as the number of quads along each edge of the occluder of each block of 32×32 quads (always rounded down to a power of two, at most 32). Higher values follow hills and ridges more closely and therefore cull more, at the cost of more triangles to rasterize into the occlusion buffer every frame; lower values are cheaper but flatten the terrain out, which only ever culls less. Has no effect unless [member occluder_enabled] is [code]true[/code].
-			Because an occluder may never claim to hide something the terrain does not actually hide, every occluder vertex is pushed down to the lowest heightmap sample within one occluder quad of it. A narrow ridge that is thinner than an occluder quad flattens away entirely at low detail, so terrains made of sharp, narrow features need a higher value here than smooth, rolling ones to occlude as much.
-		</member>
-		<member name="occluder_enabled" type="bool" setter="set_occluder_enabled" getter="is_occluder_enabled" default="true">
-			If [code]true[/code], the terrain feeds the renderer's occlusion culling a simplified copy of its surface (see [member occluder_detail]), so that objects standing behind hills are culled before they are drawn - vegetation especially, which is usually the densest thing a terrain carries.
-			This only does anything while occlusion culling is on ([member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling], or [member Viewport.use_occlusion_culling] for a custom viewport); until then it costs nothing but the memory of the simplified surface. Holes in the terrain (see [method set_hole]) never occlude, since they can be seen through, and the occluders sit below whatever [member TerrainLayer.displacement] can sink the ground by.
-			[b]Note:[/b] Individual objects can opt out of being culled this way with [member GeometryInstance3D.ignore_occlusion_culling], or [member FoliageSpawner3D.cell_ignore_occlusion_culling] for a whole spawner's foliage.
-		</member>
-		<member name="pom_enabled" type="bool" setter="set_pom_enabled" getter="is_pom_enabled" default="false">
-			Master switch for Parallax Occlusion Mapping (see the class description): a [TerrainLayer] also needs its own [member TerrainLayer.pom_enabled] set for POM to apply to it. Off by default: the ray-marching this adds to every fragment covered by a layer that has it isn't free.
-		</member>
-		<member name="pom_fade_end" type="float" setter="set_pom_fade_end" getter="get_pom_fade_end" default="60.0">
-			The distance, in meters from the camera, at which [member pom_enabled]'s depth reaches fully flat; see [member pom_fade_start].
-		</member>
-		<member name="pom_fade_start" type="float" setter="set_pom_fade_start" getter="get_pom_fade_start" default="20.0">
-			The distance, in meters from the camera, at which [member pom_enabled]'s apparent depth starts fading towards flat, reaching zero at [member pom_fade_end]. Keeps distant, minified ground from shimmering/aliasing under parallax; set [member pom_fade_end] to a value at or below this to disable the fade and use full depth at any distance.
-		</member>
-		<member name="pom_flip_binormal" type="bool" setter="set_pom_flip_binormal" getter="get_pom_flip_binormal" default="false">
-			Flips the effective binormal direction used to offset [member pom_enabled]'s parallax effect. Toggle this (and/or [member pom_flip_tangent]) if the parallax effect looks inverted (bulging instead of recessed, or shifted the wrong way as the camera moves) - equivalent to [member BaseMaterial3D.heightmap_flip_binormal].
-		</member>
-		<member name="pom_flip_tangent" type="bool" setter="set_pom_flip_tangent" getter="get_pom_flip_tangent" default="false">
-			Flips the effective tangent direction used to offset [member pom_enabled]'s parallax effect. See [member pom_flip_binormal]; equivalent to [member BaseMaterial3D.heightmap_flip_tangent].
-		</member>
-		<member name="pom_max_layers" type="int" setter="set_pom_max_layers" getter="get_pom_max_layers" default="32">
-			The number of ray-marching steps [member pom_enabled] uses when looking nearly straight down at the surface. Equivalent to [member BaseMaterial3D.heightmap_max_layers].
-		</member>
-		<member name="pom_min_layers" type="int" setter="set_pom_min_layers" getter="get_pom_min_layers" default="8">
-			The number of ray-marching steps [member pom_enabled] uses when looking nearly edge-on at the surface (fewer steps are needed at a glancing angle without a visible quality loss, so this saves performance over always using [member pom_max_layers] steps). Equivalent to [member BaseMaterial3D.heightmap_min_layers].
-		</member>
-		<member name="pom_self_shadow_enabled" type="bool" setter="set_pom_self_shadow_enabled" getter="is_pom_self_shadow_enabled" default="true">
-			If [code]true[/code] (and [member pom_enabled] is also [code]true[/code]), darkens points on a POM-enabled layer whose [member TerrainLayer.height_texture] detail would shadow them from [member pom_shadow_light_direction]. This is an approximation computed entirely from each layer's own height texture (see the class description), not a real shadow from any light in the scene, and only ever applies to a layer that already has [member TerrainLayer.pom_enabled] set.
-		</member>
-		<member name="pom_shadow_light_direction" type="Vector3" setter="set_pom_shadow_light_direction" getter="get_pom_shadow_light_direction" default="Vector3(0.5, 0.75, 0.3)">
-			The world-space direction, from a surface point towards the light, that [member pom_self_shadow_enabled] marches towards to find shadowing detail. Point this at whatever your main light's direction is; it does not update automatically if that light moves or rotates.
-		</member>
-		<member name="pom_shadow_steps" type="int" setter="set_pom_shadow_steps" getter="get_pom_shadow_steps" default="8">
-			The number of ray-marching steps [member pom_self_shadow_enabled] uses. Higher values give smoother, more accurate self-shadows at a higher cost.
-		</member>
-		<member name="pom_shadow_strength" type="float" setter="set_pom_shadow_strength" getter="get_pom_shadow_strength" default="1.0">
-			Scales how dark [member pom_self_shadow_enabled]'s shadows can get; [code]0[/code] disables their visible effect (without paying much less than [member pom_self_shadow_enabled] [code]= false[/code] would, since the march itself still runs), [code]1[/code] allows a fully dark shadow.
+			The ground materials this terrain can be painted with, in the order the editor's [b]MatLayers[/b] list shows them. See [TerrainLayer] and the class description. Only the first [member ProjectSettings.landscape_3d/material_layers/max_layers] of them (at most 16) are drawn and can be painted; any more are kept, but left out, with a warning.
 		</member>
 		<member name="shadow_distance" type="float" setter="set_shadow_distance" getter="get_shadow_distance" default="0.0">
 			Patches farther than this from the camera, in meters, cast no shadows; [code]0[/code] means no limit. The terrain is drawn into every shadow map (every split of a [DirectionalLight3D]'s, every other shadowed light's) from its own list of patches, so limiting it can save a lot of vertex work. Keep it at least as large as the largest [member DirectionalLight3D.directional_shadow_max_distance] in use, plus the length of the longest shadows the terrain should cast into it.
@@ -268,19 +210,8 @@
 		<member name="terrain_data" type="TerrainData" setter="set_terrain_data" getter="get_terrain_data">
 			The [TerrainData] this node renders, sculpts, and collides with. A new, empty (flat) [TerrainData] is often the fastest way to start; assign one and use the editor brush to sculpt it, or [method TerrainData.import_heightmap] to start from an existing heightmap image.
 		</member>
-		<member name="virtual_texture_enabled" type="bool" setter="set_virtual_texture_enabled" getter="is_virtual_texture_enabled" default="true">
-			If [code]true[/code], the terrain is shaded from a runtime virtual texture: its layers are blended once, into pages of a texture covering the whole terrain at [member virtual_texture_texel_size], and the terrain samples that single texture rather than blending every layer again in every pixel, every frame. Only the pages the camera sees, at the resolution it sees them at, are ever drawn, and they are kept until they are out of view or the terrain changes under them; sculpting and painting redraw what they touch.
-			This makes the cost of shading the terrain independent of its number of layers. It also lets other geometry be drawn into the texture, blended over the ground like decals and costing nothing more once drawn: roads, paths, tire tracks, puddles, painted lines (see [member GeometryInstance3D.virtual_texture_draw_layers]). And it lets what stands on the terrain blend into it where they meet, with a [BlendLandscape3D] material.
-			Within [member virtual_texture_near_distance] of the camera, and wherever parallax occlusion mapping is on, the layers are still blended in every pixel. Requires the Forward+ or Mobile renderer (see [method RenderingServer.is_virtual_texturing_supported]); elsewhere, this is ignored.
-		</member>
 		<member name="virtual_texture_layers" type="int" setter="set_virtual_texture_layers" getter="get_virtual_texture_layers" default="1">
 			The layers of the terrain's runtime virtual texture: geometry whose [member GeometryInstance3D.virtual_texture_draw_layers] shares a bit with these is drawn into it, over the ground. The terrain draws itself into it through these too, so at least one is always set.
-		</member>
-		<member name="virtual_texture_near_distance" type="float" setter="set_virtual_texture_near_distance" getter="get_virtual_texture_near_distance" default="32.0">
-			How close to the camera, in meters, the terrain blends its layers in every pixel rather than sampling its runtime virtual texture, fading from one to the other over the last quarter of the distance. Close to the camera the layers' own textures are much sharper than any virtual texture covering a whole terrain can be (see [member virtual_texture_texel_size]), while further away, where they would be minified anyway, the virtual texture is as sharp and much cheaper. Geometry drawn into the virtual texture (see [member GeometryInstance3D.virtual_texture_draw_layers]) shows all the way to the camera either way: the layers are only blended where the virtual texture shows bare ground. [BlendLandscape3D] materials find the ground the same way. [code]0[/code] samples the virtual texture everywhere.
-		</member>
-		<member name="virtual_texture_texel_size" type="float" setter="set_virtual_texture_texel_size" getter="get_virtual_texture_texel_size" default="0.02">
-			The size of the runtime virtual texture's finest texels on the ground, in meters: the texture covering the whole terrain gets as many pages as it takes for its texels to be no larger than this, up to 1024 pages (131072 texels) a side, which on a 4 km terrain makes texels of about 3 cm whatever this asks for (see [method get_virtual_texture_size]). Smaller values look sharper close up and take more pages, hence more drawing, whenever the camera moves; the cache they share is set by [member ProjectSettings.rendering/virtual_texturing/runtime_cache_size]. Closer than [member virtual_texture_near_distance], the layers' own textures are used instead.
 		</member>
 	</members>
 	<signals>
@@ -304,6 +235,15 @@
 		<constant name="SCULPT_FLATTEN" value="3" enum="SculptOperation">
 			Moves the height within the brush towards a fixed target height (see [method sculpt]'s [code]flatten_height[/code] parameter), flattening it.
 		</constant>
+		<constant name="PAINT_ADD" value="0" enum="PaintOperation">
+			Raises the layer's weight within the brush, taking it from the other layers.
+		</constant>
+		<constant name="PAINT_ERASE" value="1" enum="PaintOperation">
+			Lowers the layer's weight within the brush, handing it to the other layers (or, where none has any weight left, to the first layer).
+		</constant>
+		<constant name="PAINT_BLEND" value="2" enum="PaintOperation">
+			Averages every layer's weight within the brush with its neighbors', softening the edges between layers.
+		</constant>
 		<constant name="DEBUG_VIEW_DISABLED" value="0" enum="DebugView">
 			The terrain is drawn normally.
 		</constant>
@@ -314,7 +254,7 @@
 			Draws the edges of every triangle over the terrain, colored by quadtree level, with patch borders drawn thicker.
 		</constant>
 		<constant name="DEBUG_VIEW_VIRTUAL_TEXTURE" value="3" enum="DebugView">
-			Tints green the ground shaded from the runtime virtual texture (see [member virtual_texture_enabled]), the more so the more it is; untinted ground blends its layers in every pixel.
+			Tints green the ground shaded from the runtime virtual texture (see [member ProjectSettings.landscape_3d/virtual_texture/enabled]), the more so the more it is; untinted ground blends its layers in every pixel.
 		</constant>
 	</constants>
 </class>

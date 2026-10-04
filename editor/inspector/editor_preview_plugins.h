@@ -36,6 +36,10 @@
 class ScriptLanguage;
 
 void post_process_preview(Ref<Image> p_image);
+// Marks a thumbnail as a virtual texture's (see VirtualTexture2D), with an "RVT"
+// badge in its bottom right corner. Draws it pixel by pixel, so that it can be
+// used from the threads previews are generated on.
+void add_virtual_texture_badge(Ref<Image> p_image);
 
 class EditorTexturePreviewPlugin : public EditorResourcePreviewGenerator {
 	GDCLASS(EditorTexturePreviewPlugin, EditorResourcePreviewGenerator);

@@ -32,6 +32,7 @@
 
 TEST_FORCE_LINK(test_landscape_3d)
 
+#include "core/config/project_settings.h"
 #include "core/object/message_queue.h"
 #include "core/templates/rid_owner.h"
 #include "scene/3d/landscape_3d.h"
@@ -465,6 +466,230 @@ TEST_CASE("[SceneTree][Landscape3D] Editing a layer only rebuilds the textures t
 		// Two layers now: every array has a layer more.
 		CHECK(albedo->reads == 3);
 		CHECK(normal->reads == 2);
+	}
+
+	memdelete(landscape);
+}
+
+// Sets a project setting and lets every landscape know, as the Project Settings dialog does.
+static void set_project_setting(const String &p_name, const Variant &p_value) {
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	ps->set_setting(p_name, p_value);
+	ps->emit_signal(SNAME("settings_changed"));
+	MessageQueue::get_singleton()->flush();
+}
+
+TEST_CASE("[SceneTree][Landscape3D] Landscapes follow the Landscape3D project settings") {
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	const char *settings[] = {
+		"landscape_3d/level_of_detail/pixel_error",
+		"landscape_3d/level_of_detail/max_quad_pixels",
+		"landscape_3d/level_of_detail/gpu_lod_enabled",
+		"landscape_3d/level_of_detail/frustum_culling",
+		"landscape_3d/micro_detail/levels",
+		"landscape_3d/micro_detail/distance",
+		"landscape_3d/micro_detail/triangle_size",
+		"landscape_3d/material_layers/max_layers",
+		"landscape_3d/material_layers/texture_size_limit",
+		"landscape_3d/virtual_texture/enabled",
+		"landscape_3d/virtual_texture/texel_size",
+		"landscape_3d/virtual_texture/near_distance",
+		"landscape_3d/occlusion_culling/enabled",
+		"landscape_3d/occlusion_culling/detail",
+		"landscape_3d/parallax_occlusion_mapping/enabled",
+		"landscape_3d/parallax_occlusion_mapping/min_layers",
+		"landscape_3d/parallax_occlusion_mapping/max_layers",
+		"landscape_3d/parallax_occlusion_mapping/flip_tangent",
+		"landscape_3d/parallax_occlusion_mapping/flip_binormal",
+		"landscape_3d/parallax_occlusion_mapping/self_shadow_enabled",
+		"landscape_3d/parallax_occlusion_mapping/shadow_steps",
+		"landscape_3d/parallax_occlusion_mapping/shadow_strength",
+		"landscape_3d/parallax_occlusion_mapping/shadow_light_direction",
+		"landscape_3d/parallax_occlusion_mapping/fade_start",
+		"landscape_3d/parallax_occlusion_mapping/fade_end",
+	};
+	for (const char *setting : settings) {
+		CHECK_MESSAGE(ps->has_setting(setting), setting);
+	}
+
+	Landscape3D *landscape = memnew(Landscape3D);
+	landscape->set_terrain_data(make_hill_terrain());
+	SceneTree::get_singleton()->get_root()->add_child(landscape);
+
+	// The defaults.
+	CHECK(landscape->get_lod_pixel_error() == doctest::Approx(2.0f));
+	CHECK(landscape->get_micro_detail_levels() == 2);
+	CHECK(landscape->get_max_material_layers() == TerrainData::MAX_LAYERS);
+	CHECK(landscape->is_virtual_texture_enabled());
+	CHECK(landscape->get_occluder_detail() == 8);
+	CHECK_FALSE(landscape->is_pom_enabled());
+	CHECK(landscape->get_pom_shadow_light_direction().is_equal_approx(Vector3(0.5, 0.75, 0.3)));
+
+	set_project_setting("landscape_3d/level_of_detail/pixel_error", 3.0);
+	set_project_setting("landscape_3d/micro_detail/levels", 3);
+	set_project_setting("landscape_3d/material_layers/max_layers", 8);
+	set_project_setting("landscape_3d/occlusion_culling/detail", 4);
+	set_project_setting("landscape_3d/parallax_occlusion_mapping/enabled", true);
+	set_project_setting("landscape_3d/parallax_occlusion_mapping/shadow_light_direction", Vector3(0, 1, 0));
+
+	CHECK(landscape->get_lod_pixel_error() == doctest::Approx(3.0f));
+	CHECK(landscape->get_micro_detail_levels() == 3);
+	CHECK(landscape->get_max_material_layers() == 8);
+	CHECK(landscape->get_occluder_detail() == 4);
+	CHECK(landscape->is_pom_enabled());
+	CHECK(landscape->get_pom_shadow_light_direction().is_equal_approx(Vector3(0, 1, 0)));
+
+	SUBCASE("A new landscape starts out with them") {
+		Landscape3D *other = memnew(Landscape3D);
+		CHECK(other->get_lod_pixel_error() == doctest::Approx(3.0f));
+		CHECK(other->get_max_material_layers() == 8);
+		CHECK(other->is_pom_enabled());
+		memdelete(other);
+	}
+
+	SUBCASE("A landscape out of the tree catches up when it enters it") {
+		SceneTree::get_singleton()->get_root()->remove_child(landscape);
+		ps->set_setting("landscape_3d/occlusion_culling/detail", 16);
+		ps->emit_signal(SNAME("settings_changed"));
+		MessageQueue::get_singleton()->flush();
+		CHECK(landscape->get_occluder_detail() == 4);
+		SceneTree::get_singleton()->get_root()->add_child(landscape);
+		CHECK(landscape->get_occluder_detail() == 16);
+	}
+
+	set_project_setting("landscape_3d/level_of_detail/pixel_error", 2.0);
+	set_project_setting("landscape_3d/micro_detail/levels", 2);
+	set_project_setting("landscape_3d/material_layers/max_layers", TerrainData::MAX_LAYERS);
+	set_project_setting("landscape_3d/occlusion_culling/detail", 8);
+	set_project_setting("landscape_3d/parallax_occlusion_mapping/enabled", false);
+	set_project_setting("landscape_3d/parallax_occlusion_mapping/shadow_light_direction", Vector3(0.5, 0.75, 0.3));
+	CHECK(landscape->get_occluder_detail() == 8);
+
+	memdelete(landscape);
+}
+
+static TypedArray<TerrainLayer> make_layers(int p_count) {
+	TypedArray<TerrainLayer> layers;
+	for (int i = 0; i < p_count; i++) {
+		Ref<TerrainLayer> layer;
+		layer.instantiate();
+		layer->set_layer_name(vformat("Layer %d", i));
+		layers.push_back(layer);
+	}
+	return layers;
+}
+
+static float weight_at(Landscape3D *p_landscape, int p_x, int p_z, int p_layer) {
+	return p_landscape->get_terrain_data()->get_layer_weight(p_x, p_z, p_layer);
+}
+
+TEST_CASE("[SceneTree][Landscape3D] Only as many layers as the project allows are used") {
+	Landscape3D *landscape = memnew(Landscape3D);
+	landscape->set_terrain_data(make_hill_terrain());
+	landscape->set_layers(make_layers(6));
+	SceneTree::get_singleton()->get_root()->add_child(landscape);
+
+	CHECK(TerrainData::MAX_LAYERS == 16);
+	CHECK(landscape->get_used_layer_count() == 6);
+	CHECK(landscape->get_configuration_warnings().is_empty());
+
+	landscape->set_max_material_layers(4);
+	CHECK(landscape->get_max_material_layers() == 4);
+	CHECK(landscape->get_used_layer_count() == 4);
+	CHECK(landscape->get_configuration_warnings().size() == 1);
+
+	SUBCASE("Layers past the limit are not painted") {
+		ERR_PRINT_OFF;
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 1.0f, 5);
+		ERR_PRINT_ON;
+		CHECK(weight_at(landscape, 16, 16, 5) == 0.0f);
+		CHECK(weight_at(landscape, 16, 16, 0) == doctest::Approx(1.0f));
+
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 1.0f, 3);
+		CHECK(weight_at(landscape, 16, 16, 3) == doctest::Approx(1.0f));
+	}
+
+	SUBCASE("Only whole weight maps are offered") {
+		landscape->set_max_material_layers(5);
+		CHECK(landscape->get_max_material_layers() == 8);
+		CHECK(landscape->get_used_layer_count() == 6);
+		CHECK(landscape->get_configuration_warnings().is_empty());
+		landscape->set_max_material_layers(64);
+		CHECK(landscape->get_max_material_layers() == TerrainData::MAX_LAYERS);
+		landscape->set_max_material_layers(1);
+		CHECK(landscape->get_max_material_layers() == 4);
+	}
+
+	memdelete(landscape);
+}
+
+TEST_CASE("[SceneTree][Landscape3D] Painting, erasing and blending layers") {
+	Landscape3D *landscape = memnew(Landscape3D);
+	// Flat but for a hill 8 m high over the samples z = 8 to 24, 2 m apart.
+	landscape->set_terrain_data(make_hill_terrain());
+	landscape->set_layers(make_layers(2));
+	SceneTree::get_singleton()->get_root()->add_child(landscape);
+
+	// A new terrain is all layer 0.
+	REQUIRE(weight_at(landscape, 16, 16, 0) == doctest::Approx(1.0f));
+	REQUIRE(weight_at(landscape, 16, 16, 1) == 0.0f);
+
+	SUBCASE("Erasing a layer brings back what it was painted over") {
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 1.0f, 1, 0.0f);
+		CHECK(weight_at(landscape, 16, 16, 1) == doctest::Approx(1.0f));
+		CHECK(weight_at(landscape, 16, 16, 0) == doctest::Approx(0.0f));
+
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 0.5f, 1, 0.0f, Landscape3D::PAINT_ERASE);
+		CHECK(weight_at(landscape, 16, 16, 1) == doctest::Approx(0.5f).epsilon(0.01));
+		CHECK(weight_at(landscape, 16, 16, 0) == doctest::Approx(0.5f).epsilon(0.01));
+
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 1.0f, 1, 0.0f, Landscape3D::PAINT_ERASE);
+		CHECK(weight_at(landscape, 16, 16, 1) == doctest::Approx(0.0f));
+		CHECK(weight_at(landscape, 16, 16, 0) == doctest::Approx(1.0f));
+	}
+
+	SUBCASE("Erasing the only layer there leaves it, rather than bare ground") {
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 1.0f, 0, 0.0f, Landscape3D::PAINT_ERASE);
+		CHECK(weight_at(landscape, 16, 16, 0) == doctest::Approx(1.0f));
+	}
+
+	SUBCASE("Blending softens the edge between two layers") {
+		// Layer 1 out to x = 19 (6 m from the center at x = 16), none from x = 20 on.
+		landscape->paint_layer(Vector3(32, 0, 32), 6.0f, 1.0f, 1, 0.0f);
+		REQUIRE(weight_at(landscape, 19, 16, 1) == doctest::Approx(1.0f));
+		REQUIRE(weight_at(landscape, 20, 16, 1) == 0.0f);
+
+		landscape->paint_layer(Vector3(39, 0, 32), 3.0f, 1.0f, 0, 0.0f, Landscape3D::PAINT_BLEND);
+		for (int x = 19; x <= 20; x++) {
+			const float layer_1 = weight_at(landscape, x, 16, 1);
+			CHECK(layer_1 > 0.05f);
+			CHECK(layer_1 < 0.9f);
+			// Still adding up.
+			CHECK(layer_1 + weight_at(landscape, x, 16, 0) == doctest::Approx(1.0f).epsilon(0.02));
+		}
+		// Away from the edge, nothing to soften.
+		CHECK(weight_at(landscape, 16, 16, 1) == doctest::Approx(1.0f));
+	}
+
+	SUBCASE("A height mask keeps the paint to high ground") {
+		Landscape3D::PaintMask mask;
+		mask.height_min = 4.0f;
+		landscape->paint_layer(Vector3(32, 0, 14), 8.0f, 1.0f, 1, 0.0f, Landscape3D::PAINT_ADD, mask);
+		// On the hill.
+		CHECK(weight_at(landscape, 16, 9, 1) == doctest::Approx(1.0f));
+		// In front of it, as close to the brush's center.
+		CHECK(weight_at(landscape, 16, 5, 1) == 0.0f);
+	}
+
+	SUBCASE("An angle mask keeps the paint to steep ground") {
+		Landscape3D::PaintMask mask;
+		mask.slope_min = 30.0f;
+		landscape->paint_layer(Vector3(32, 0, 16), 10.0f, 1.0f, 1, 0.0f, Landscape3D::PAINT_ADD, mask);
+		// The foot of the hill's face.
+		CHECK(weight_at(landscape, 16, 8, 1) == doctest::Approx(1.0f));
+		// Flat ground in front of it, and the flat top of the hill.
+		CHECK(weight_at(landscape, 16, 4, 1) == 0.0f);
+		CHECK(weight_at(landscape, 16, 12, 1) == 0.0f);
 	}
 
 	memdelete(landscape);

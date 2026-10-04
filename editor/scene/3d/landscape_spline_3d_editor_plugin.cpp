@@ -107,7 +107,7 @@ void LandscapeSpline3DEditorPlugin::_apply_pressed() {
 		EditorNode::get_singleton()->show_warning(TTR("No Landscape3D with TerrainData found to apply this spline to. Set landscape_path, or place the spline under the landscape or next to it."));
 		return;
 	}
-	const int layer_count = MIN(landscape->get_layers().size(), TerrainData::MAX_LAYERS);
+	const int layer_count = landscape->get_used_layer_count();
 	const bool paint = spline->get_paint_layer() >= 0 && spline->get_paint_layer() < layer_count && spline->get_paint_strength() > 0.0f;
 	if (!spline->is_carve_enabled() && !paint) {
 		EditorNode::get_singleton()->show_warning(TTR("Nothing to apply: carving is off and no valid paint layer is set. Enable Carve, or set Paint > Layer to one of the landscape's layers."));
