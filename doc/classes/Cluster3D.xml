@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Cluster3D" inherits="GeometryInstance3D" api_type="core" keywords="group, prefab, assembly, rocks, kitbash" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		A level piece put together from meshes, placed and used as one.
+	</brief_description>
+	<description>
+		A [Cluster3D] puts several meshes together into one node: a rock out of a few stones, a group of trees, a ruin out of wall pieces. Each of its parts is a [Mesh] with its own transform, relative to the cluster, and optionally its own surface materials. The cluster is selected, moved, duplicated and saved as a whole, like a single [MeshInstance3D], and its origin can be put wherever its pivot makes sense (see [method move_origin]), instead of wherever the meshes were modeled, as with a scene the meshes were assembled in.
+		Each part is drawn with its own rendering instance of its mesh, so a cluster costs no more memory than the meshes it uses, keeps their LODs and shadow meshes, and its parts are culled one by one. Everything [Cluster3D] inherits from [GeometryInstance3D] and [VisualInstance3D] (shadow casting, GI mode, visibility range, material override and overlay, layers...) applies to all of its parts. With [member use_collision], it also collides as a static body, every part with a shape made from its mesh and shared with every other cluster using that mesh. It takes part in navigation mesh baking, and in [LightmapGI], [VoxelGI] and [OccluderInstance3D] baking.
+		In the editor, with the cluster selected and [b]Edit Parts[/b] on in the 3D editor's toolbar, its parts are picked in the viewport by clicking them (Shift to pick more, or a box dragged around them), and moved, rotated and scaled with the usual gizmo, snapping and shortcuts. [kbd]Ctrl + D[/kbd] duplicates the picked parts in place, [kbd]Delete[/kbd] removes them, and clicking empty space unpicks them, so that the gizmo moves the whole cluster again. Meshes and scenes dragged from the FileSystem dock into the viewport become parts of the selected cluster. The [b]Cluster[/b] menu next to it adds meshes or scenes, turns [MeshInstance3D] nodes put under the cluster into parts ([b]Pack Child Meshes[/b]) and back ([b]Unpack[/b]), moves the origin to the parts' center, bottom or a picked part, and saves the cluster as one [ArrayMesh] (see [method bake_mesh]).
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="add_part">
+			<return type="int" />
+			<param index="0" name="mesh" type="Mesh" />
+			<param index="1" name="transform" type="Transform3D" default="Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)" />
+			<param index="2" name="materials" type="Material[]" default="[]" />
+			<description>
+				Adds a part drawing [param mesh] at [param transform], in the cluster's space, with [param materials] over its surfaces (see [method set_part_materials]). Returns its index.
+			</description>
+		</method>
+		<method name="add_parts_from_node">
+			<return type="int" />
+			<param index="0" name="node" type="Node" />
+			<param index="1" name="transform" type="Transform3D" default="Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)" />
+			<description>
+				Adds a part for every [MeshInstance3D], every part of a [Cluster3D] and every instance of a [MultiMeshInstance3D] in the branch of [param node], [param node] included, where they are relative to [param node], then moved by [param transform]. A [MeshInstance3D]'s surface override materials, or its material override, become the part's materials. [param node] does not need to be in the scene tree, so this can take the meshes of a scene just instantiated. Returns how many parts were added.
+			</description>
+		</method>
+		<method name="bake_mesh" qualifiers="const">
+			<return type="ArrayMesh" />
+			<param index="0" name="generate_lods" type="bool" default="true" />
+			<description>
+				Returns all of the parts as one mesh, in the cluster's space: their triangle surfaces merged into one surface per material they are drawn with (see [method get_part_active_material]), with a shadow mesh and, if [param generate_lods] is [code]true[/code], LODs generated for it, as the scene importer does. The result can be used wherever a [Mesh] can, such as in a [MeshInstance3D], a [MultiMesh] or a [MeshLibrary].
+				[b]Note:[/b] Unlike the cluster, the baked mesh holds a copy of every part's vertices, and its UV2s overlap where parts repeat a mesh, so it needs a new UV2 unwrap before it can be lightmapped.
+			</description>
+		</method>
+		<method name="clear_parts">
+			<return type="void" />
+			<description>
+				Removes every part.
+			</description>
+		</method>
+		<method name="get_bake_mesh_instance" qualifiers="const">
+			<return type="RID" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns the rendering instance of the part at [param index] in [method get_bake_meshes], for [LightmapGI] to apply the lightmap baked for it.
+			</description>
+		</method>
+		<method name="get_bake_meshes" qualifiers="const">
+			<return type="Array" />
+			<description>
+				Returns the parts [LightmapGI] can bake, as [code][mesh, transform, mesh, transform, ...][/code]: the parts whose meshes have normals and a UV2 on every triangle surface, if [member GeometryInstance3D.gi_mode] is [constant GeometryInstance3D.GI_MODE_STATIC], and none otherwise.
+			</description>
+		</method>
+		<method name="get_collision_layer_value" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="layer_number" type="int" />
+			<description>
+				Returns whether or not the specified layer of the [member collision_layer] is enabled, given a [param layer_number] between 1 and 32.
+			</description>
+		</method>
+		<method name="get_collision_mask_value" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="layer_number" type="int" />
+			<description>
+				Returns whether or not the specified layer of the [member collision_mask] is enabled, given a [param layer_number] between 1 and 32.
+			</description>
+		</method>
+		<method name="get_collision_rid" qualifiers="const">
+			<return type="RID" />
+			<description>
+				Returns the [PhysicsServer3D] body the cluster collides with, while [member use_collision] is on and it is in the scene tree, and an empty [RID] otherwise.
+			</description>
+		</method>
+		<method name="get_meshes" qualifiers="const">
+			<return type="Array" />
+			<description>
+				Returns every part that has a mesh, as [code][transform, mesh, transform, mesh, ...][/code], for [VoxelGI] and [GPUParticlesCollisionSDF3D] baking.
+			</description>
+		</method>
+		<method name="get_part_aabb" qualifiers="const">
+			<return type="AABB" />
+			<param index="0" name="part" type="int" />
+			<description>
+				Returns the bounds of the part at index [param part], in the cluster's space.
+			</description>
+		</method>
+		<method name="get_part_active_material" qualifiers="const">
+			<return type="Material" />
+			<param index="0" name="part" type="int" />
+			<param index="1" name="surface" type="int" />
+			<description>
+				Returns the material the surface [param surface] of the part at index [param part] is drawn with: [member GeometryInstance3D.material_override] if set, else the part's own material for that surface (see [method set_part_surface_material]), else the mesh's.
+			</description>
+		</method>
+		<method name="get_part_instance" qualifiers="const">
+			<return type="RID" />
+			<param index="0" name="part" type="int" />
+			<description>
+				Returns the [RenderingServer] instance the part at index [param part] is drawn with.
+			</description>
+		</method>
+		<method name="get_part_materials" qualifiers="const">
+			<return type="Material[]" />
+			<param index="0" name="part" type="int" />
+			<description>
+				Returns the materials the part at index [param part] draws its mesh's surfaces with, one per surface (see [method set_part_materials]).
+			</description>
+		</method>
+		<method name="get_part_mesh" qualifiers="const">
+			<return type="Mesh" />
+			<param index="0" name="part" type="int" />
+			<description>
+				Returns the mesh of the part at index [param part].
+			</description>
+		</method>
+		<method name="get_part_surface_material" qualifiers="const">
+			<return type="Material" />
+			<param index="0" name="part" type="int" />
+			<param index="1" name="surface" type="int" />
+			<description>
+				Returns the part's own material for the surface [param surface] of its mesh, or [code]null[/code] if it draws that surface with the mesh's.
+			</description>
+		</method>
+		<method name="get_part_transform" qualifiers="const">
+			<return type="Transform3D" />
+			<param index="0" name="part" type="int" />
+			<description>
+				Returns the transform of the part at index [param part], relative to the cluster.
+			</description>
+		</method>
+		<method name="move_origin">
+			<return type="void" />
+			<param index="0" name="offset" type="Vector3" />
+			<description>
+				Moves the cluster's origin by [param offset], in the cluster's own space, without moving any of its parts in the world: the cluster's transform moves by [param offset] and every part's moves back by it. For example, to put the origin at the bottom center of the parts, where a rock or a tree meets the ground:
+				[codeblock]
+				var bounds = $Cluster3D.get_aabb()
+				var bottom = bounds.get_center()
+				bottom.y = bounds.position.y
+				$Cluster3D.move_origin(bottom)
+				[/codeblock]
+			</description>
+		</method>
+		<method name="remove_part">
+			<return type="void" />
+			<param index="0" name="part" type="int" />
+			<description>
+				Removes the part at index [param part]. The parts after it move down by one index.
+			</description>
+		</method>
+		<method name="set_collision_layer_value">
+			<return type="void" />
+			<param index="0" name="layer_number" type="int" />
+			<param index="1" name="value" type="bool" />
+			<description>
+				Based on [param value], enables or disables the specified layer in the [member collision_layer], given a [param layer_number] between 1 and 32.
+			</description>
+		</method>
+		<method name="set_collision_mask_value">
+			<return type="void" />
+			<param index="0" name="layer_number" type="int" />
+			<param index="1" name="value" type="bool" />
+			<description>
+				Based on [param value], enables or disables the specified layer in the [member collision_mask], given a [param layer_number] between 1 and 32.
+			</description>
+		</method>
+		<method name="set_part_materials">
+			<return type="void" />
+			<param index="0" name="part" type="int" />
+			<param index="1" name="materials" type="Material[]" />
+			<description>
+				Sets the materials the part at index [param part] draws its mesh's surfaces with, one per surface, as a [MeshInstance3D]'s surface override materials do. A [code]null[/code] entry, or a surface past the end of [param materials], is drawn with the mesh's own material.
+			</description>
+		</method>
+		<method name="set_part_mesh">
+			<return type="void" />
+			<param index="0" name="part" type="int" />
+			<param index="1" name="mesh" type="Mesh" />
+			<description>
+				Sets the mesh of the part at index [param part].
+			</description>
+		</method>
+		<method name="set_part_surface_material">
+			<return type="void" />
+			<param index="0" name="part" type="int" />
+			<param index="1" name="surface" type="int" />
+			<param index="2" name="material" type="Material" />
+			<description>
+				Sets the part's own material for the surface [param surface] of its mesh. [code]null[/code] draws that surface with the mesh's material again.
+			</description>
+		</method>
+		<method name="set_part_transform">
+			<return type="void" />
+			<param index="0" name="part" type="int" />
+			<param index="1" name="transform" type="Transform3D" />
+			<description>
+				Sets the transform of the part at index [param part], relative to the cluster.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="collision_layer" type="int" setter="set_collision_layer" getter="get_collision_layer" default="1">
+			The physics layers the cluster is in, when [member use_collision] is on. Collision objects can exist in one or more of 32 different layers. See also [member collision_mask].
+			[b]Note:[/b] An object A can detect a contact with object B only if object B is in any of the layers that object A scans. See [url=$DOCS_URL/tutorials/physics/physics_introduction.html#collision-layers-and-masks]Collision layers and masks[/url] in the documentation for more information.
+		</member>
+		<member name="collision_mask" type="int" setter="set_collision_mask" getter="get_collision_mask" default="1">
+			The physics layers the cluster scans for collisions, when [member use_collision] is on. See [url=$DOCS_URL/tutorials/physics/physics_introduction.html#collision-layers-and-masks]Collision layers and masks[/url] in the documentation for more information.
+		</member>
+		<member name="collision_priority" type="float" setter="set_collision_priority" getter="get_collision_priority" default="1.0">
+			The priority used to solve colliding when occurring penetration, when [member use_collision] is on. The higher the priority is, the lower the penetration into the cluster will be. This can for example be used to prevent the player from breaking through the boundaries of a level.
+		</member>
+		<member name="collision_shape_type" type="int" setter="set_collision_shape_type" getter="get_collision_shape_type" enum="Cluster3D.CollisionShapeType" default="0">
+			The kind of shape each part collides with, made from its mesh, when [member use_collision] is on.
+		</member>
+		<member name="part_count" type="int" setter="set_part_count" getter="get_part_count" default="0">
+			The number of parts. Raising it adds parts with no mesh at the cluster's origin; lowering it removes the last ones.
+		</member>
+		<member name="part_{index}/materials" type="Array" setter="" getter="" default="[]">
+			The materials of the part at [code]index[/code] (see [method set_part_materials]).
+			[b]Note:[/b] [code]index[/code] is a value in the [code]0 .. part_count - 1[/code] range.
+		</member>
+		<member name="part_{index}/mesh" type="Mesh" setter="" getter="">
+			The mesh of the part at [code]index[/code].
+			[b]Note:[/b] [code]index[/code] is a value in the [code]0 .. part_count - 1[/code] range.
+		</member>
+		<member name="part_{index}/transform" type="Transform3D" setter="" getter="" default="Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)">
+			The transform of the part at [code]index[/code], relative to the cluster.
+			[b]Note:[/b] [code]index[/code] is a value in the [code]0 .. part_count - 1[/code] range.
+		</member>
+		<member name="use_collision" type="bool" setter="set_use_collision" getter="is_using_collision" default="false">
+			If [code]true[/code], the cluster collides as a static body, every part with a shape of [member collision_shape_type] made from its mesh. Every cluster using the same mesh shares that shape.
+		</member>
+	</members>
+	<constants>
+		<constant name="COLLISION_SHAPE_TRIMESH" value="0" enum="CollisionShapeType">
+			Each part collides with its mesh's triangles, as with [method Mesh.create_trimesh_shape]: exact, for static level geometry.
+		</constant>
+		<constant name="COLLISION_SHAPE_CONVEX" value="1" enum="CollisionShapeType">
+			Each part collides with its mesh's convex hull, as with [method Mesh.create_convex_shape]: cheaper, and close enough for rounded rocks and boulders.
+		</constant>
+	</constants>
+</class>

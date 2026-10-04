@@ -464,7 +464,9 @@ void LightmapGI::_find_meshes_and_lights(Node *p_at_node, Vector<MeshesFound> &m
 				mf.xform = xf * mesh_xf;
 				mf.node_path = get_path_to(s);
 				mf.subindex = i / 2;
-				mf.lightmap_scale = 1.0;
+				// A Cluster3D's parts take its texel scale, as a MeshInstance3D's mesh does.
+				GeometryInstance3D *gi = Object::cast_to<GeometryInstance3D>(s);
+				mf.lightmap_scale = gi ? gi->get_lightmap_texel_scale() : 1.0;
 				mf.mesh = mesh;
 
 				meshes.push_back(mf);

@@ -38,6 +38,7 @@
 #include "core/math/triangulate.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "scene/3d/cluster_3d.h"
 #include "scene/3d/importer_mesh_instance_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/resources/3d/importer_mesh.h"
@@ -597,6 +598,22 @@ void OccluderInstance3D::_bake_node(Node *p_node, PackedVector3Array &r_vertices
 
 			for (int i = 0; i < mesh->get_surface_count(); i++) {
 				_bake_surface(global_to_local, mesh->surface_get_arrays(i), mi->get_active_material(i), bake_simplification_dist, r_vertices, r_indices);
+			}
+		}
+	}
+
+	Cluster3D *cluster = Object::cast_to<Cluster3D>(p_node);
+	if (cluster && cluster->is_visible_in_tree() && (cluster->get_layer_mask() & bake_mask) != 0 && _bake_material_check(cluster->get_material_override())) {
+		Transform3D global_to_local = get_global_transform().affine_inverse() * cluster->get_global_transform();
+
+		for (int i = 0; i < cluster->get_part_count(); i++) {
+			Ref<Mesh> mesh = cluster->get_part_mesh(i);
+			if (mesh.is_null()) {
+				continue;
+			}
+			Transform3D part_to_local = global_to_local * cluster->get_part_transform(i);
+			for (int j = 0; j < mesh->get_surface_count(); j++) {
+				_bake_surface(part_to_local, mesh->surface_get_arrays(j), cluster->get_part_active_material(i, j), bake_simplification_dist, r_vertices, r_indices);
 			}
 		}
 	}

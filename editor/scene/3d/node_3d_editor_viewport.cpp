@@ -51,6 +51,7 @@
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/plugins/editor_plugin_list.h"
 #include "editor/run/editor_run_bar.h"
+#include "editor/scene/3d/cluster_3d_editor_plugin.h"
 #include "editor/scene/3d/node_3d_editor_constants.h"
 #include "editor/scene/3d/node_3d_editor_gizmos.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
@@ -868,7 +869,7 @@ bool Node3DEditorViewport::_find_closest_vertex_on_node(const Point2 &p_screen_p
 	bool use_collision = Node3DEditor::get_singleton()->is_vertex_snap_use_collision();
 	bool walk_collision_segments = use_collision && Object::cast_to<CollisionShape3D>(p_node);
 
-	Transform3D gt = p_node->get_global_transform();
+	const Transform3D node_gt = p_node->get_global_transform();
 	Vector<Ref<Node3DGizmo>> gizmos = p_node->get_gizmos();
 
 	for (int i = 0; i < gizmos.size(); i++) {
@@ -880,7 +881,7 @@ bool Node3DEditorViewport::_find_closest_vertex_on_node(const Point2 &p_screen_p
 		if (walk_collision_segments) {
 			const Vector<Vector3> &segments = seg->get_collision_segments();
 			for (int si = 0; si < segments.size(); si++) {
-				Vector3 world_v = gt.xform(segments[si]);
+				Vector3 world_v = node_gt.xform(segments[si]);
 				if (camera->is_position_behind(world_v)) {
 					continue;
 				}
@@ -896,10 +897,13 @@ bool Node3DEditorViewport::_find_closest_vertex_on_node(const Point2 &p_screen_p
 
 		if (!use_collision || seg->get_collision_meshes_are_snap_source()) {
 			const LocalVector<Ref<TriangleMesh>> &meshes = seg->get_collision_meshes();
-			for (const Ref<TriangleMesh> &tm : meshes) {
+			const LocalVector<Transform3D> &mesh_transforms = seg->get_collision_mesh_transforms();
+			for (uint32_t mi = 0; mi < meshes.size(); mi++) {
+				const Ref<TriangleMesh> &tm = meshes[mi];
 				if (tm.is_null() || !tm->is_valid()) {
 					continue;
 				}
+				const Transform3D gt = node_gt * mesh_transforms[mi];
 
 				const Vector<TriangleMesh::BVH> &bvh = tm->get_bvh();
 				const Vector<TriangleMesh::Triangle> &triangles = tm->get_triangles();
@@ -5983,6 +5987,12 @@ void Node3DEditorViewport::_perform_drop_data() {
 
 	_remove_preview_node();
 
+	Cluster3D *cluster = Object::cast_to<Cluster3D>(target_node);
+	if (cluster && Cluster3DEditorPlugin::get_singleton() && Cluster3DEditorPlugin::get_singleton()->can_drop_files(cluster, selected_files)) {
+		Cluster3DEditorPlugin::get_singleton()->add_files(cluster, selected_files, preview_node_pos);
+		return;
+	}
+
 	PackedStringArray error_files;
 
 	undo_redo->create_action(TTR("Create Node"), UndoRedo::MERGE_DISABLE, target_node);
@@ -6261,6 +6271,12 @@ void Node3DEditorViewport::drop_data_fw(const Point2 &p_point, const Variant &p_
 			SceneTreeDock::get_singleton()->add_root_node(memnew(Node3D));
 			target_node = get_tree()->get_edited_scene_root();
 		}
+	}
+
+	// A Cluster3D whose parts are being edited takes meshes and scenes as
+	// parts, instead of as nodes next to it (Alt still drops them at the root).
+	if (!is_alt && selected_nodes.size() == 1 && Cluster3DEditorPlugin::get_singleton() && Cluster3DEditorPlugin::get_singleton()->can_drop_files(selected_nodes.front()->get(), selected_files)) {
+		target_node = selected_nodes.front()->get();
 	}
 
 	drop_pos = p_point;

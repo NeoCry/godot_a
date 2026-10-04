@@ -51,6 +51,13 @@ protected:
 	void set_instance_use_identity_transform(bool p_enable);
 	virtual void fti_update_servers_xform() override;
 
+	// Called after any VisualInstance3D or GeometryInstance3D setting that is
+	// sent to the RenderingServer instance has changed, and after the
+	// visibility parent has: a node that draws with more instances than its
+	// own (see Cluster3D) copies them onto those.
+	virtual void _instance_settings_changed() {}
+	friend class Node3D;
+
 	void _notification(int p_what);
 	static void _bind_methods();
 
@@ -151,6 +158,8 @@ private:
 	const StringName *_instance_uniform_get_remap(const StringName &p_name) const;
 
 protected:
+	const HashMap<StringName, Variant> &_get_instance_shader_parameters() const { return instance_shader_parameters; }
+
 	bool _set(const StringName &p_name, const Variant &p_value);
 	bool _get(const StringName &p_name, Variant &r_ret) const;
 	void _get_property_list(List<PropertyInfo> *p_list) const;

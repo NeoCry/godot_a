@@ -196,6 +196,7 @@ protected:
 	_FORCE_INLINE_ void _update_rotation_and_scale() const;
 
 	void _set_vi_visible(bool p_visible) { data.vi_visible = p_visible; }
+	RID _get_visibility_parent_instance() const { return data.visibility_parent; }
 	bool _is_vi_visible() const { return data.vi_visible; }
 	Transform3D _get_global_transform_interpolated(real_t p_interpolation_fraction);
 	const Transform3D &_get_cached_global_transform_interpolated() const { return data.global_transform_interpolated; }

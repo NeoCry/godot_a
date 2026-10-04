@@ -1326,6 +1326,7 @@ void Node3D::_update_visibility_parent(bool p_update_root) {
 	VisualInstance3D *vi = Object::cast_to<VisualInstance3D>(this);
 	if (vi) {
 		RS::get_singleton()->instance_set_visibility_parent(vi->get_instance(), data.visibility_parent);
+		vi->_instance_settings_changed();
 	}
 
 	for (Node3D *c : data.node3d_children) {
