@@ -443,6 +443,22 @@ bool LightStorage::light_directional_get_shadow_cache_enabled(RID p_light) const
 	return light->directional_shadow_cache_enabled;
 }
 
+void LightStorage::light_directional_set_shadow_cache_splits(RID p_light, bool p_enable) {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL(light);
+
+	light->directional_shadow_cache_splits = p_enable;
+	light->version++;
+	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
+}
+
+bool LightStorage::light_directional_get_shadow_cache_splits(RID p_light) const {
+	const Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL_V(light, false);
+
+	return light->directional_shadow_cache_splits;
+}
+
 void LightStorage::light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) {
 	Light *light = light_owner.get_or_null(p_light);
 	ERR_FAIL_NULL(light);
@@ -2917,6 +2933,9 @@ void LightStorage::directional_shadow_atlas_set_size(int p_size, bool p_16_bits)
 		directional_shadow.depth = RID();
 		RendererSceneRenderRD::get_singleton()->base_uniforms_changed();
 	}
+
+	// The splits' caches follow the splits.
+	_free_directional_shadow_split_cache();
 }
 
 void LightStorage::set_directional_shadow_count(int p_count) {
@@ -2972,6 +2991,29 @@ int LightStorage::get_directional_light_shadow_size(RID p_light_instance) {
 	return MAX(r.size.width, r.size.height);
 }
 
+Size2i LightStorage::get_directional_light_shadow_split_size(RID p_light_instance) {
+	ERR_FAIL_COND_V(directional_shadow.light_count == 0, Size2i());
+
+	Rect2i r = _get_directional_shadow_rect(directional_shadow.size, directional_shadow.light_count, 0);
+
+	LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+	ERR_FAIL_NULL_V(light_instance, Size2i());
+
+	// Split the same way RenderForwardClustered::_render_shadow_pass() does.
+	switch (light_directional_get_shadow_mode(light_instance->light)) {
+		case RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL:
+			break;
+		case RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_2_SPLITS:
+			r.size.height /= 2;
+			break;
+		case RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_4_SPLITS:
+			r.size /= 2;
+			break;
+	}
+
+	return r.size;
+}
+
 /* DIRECTIONAL SHADOW CACHE */
 // Second, independent atlas for the cached far cascade. It never shares a tile or a clear with
 // `directional_shadow` above, so redraw scheduling for one can never bleed into the other. Each
@@ -2994,28 +3036,39 @@ void LightStorage::update_directional_shadow_cache_atlas() {
 	}
 }
 
-RID LightStorage::directional_shadow_cache_get_scroll_fb(const Size2i &p_size) {
-	if (directional_shadow_cache.scroll_depth.is_valid() && directional_shadow_cache.scroll_size != p_size) {
-		RD::get_singleton()->free_rid(directional_shadow_cache.scroll_depth);
-		directional_shadow_cache.scroll_depth = RID();
+RID LightStorage::directional_cache_atlas_get_texture(DirectionalCacheAtlas p_atlas) {
+	return _get_directional_cache_atlas(p_atlas).depth;
+}
+
+RID LightStorage::directional_cache_atlas_get_fb(DirectionalCacheAtlas p_atlas) {
+	return _get_directional_cache_atlas(p_atlas).fb;
+}
+
+RID LightStorage::directional_cache_atlas_get_scroll_fb(DirectionalCacheAtlas p_atlas, const Size2i &p_size, RID &r_texture) {
+	DirectionalShadowCache &atlas = _get_directional_cache_atlas(p_atlas);
+
+	if (atlas.scroll_depth.is_valid() && atlas.scroll_size != p_size) {
+		RD::get_singleton()->free_rid(atlas.scroll_depth);
+		atlas.scroll_depth = RID();
 	}
 
-	if (directional_shadow_cache.scroll_depth.is_null()) {
+	if (atlas.scroll_depth.is_null()) {
 		RD::TextureFormat tf;
-		tf.format = get_shadow_atlas_depth_format(directional_shadow_cache.use_16_bits);
+		tf.format = get_shadow_atlas_depth_format(atlas.use_16_bits);
 		tf.width = p_size.width;
 		tf.height = p_size.height;
 		tf.usage_bits = get_shadow_atlas_depth_usage_bits();
 
-		directional_shadow_cache.scroll_depth = RD::get_singleton()->texture_create(tf, RD::TextureView());
-		RD::get_singleton()->set_resource_name(directional_shadow_cache.scroll_depth, "Directional Shadow Cache Scroll Band");
+		atlas.scroll_depth = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		RD::get_singleton()->set_resource_name(atlas.scroll_depth, "Directional Shadow Cache Scroll Band");
 		Vector<RID> fb_tex;
-		fb_tex.push_back(directional_shadow_cache.scroll_depth);
-		directional_shadow_cache.scroll_fb = RD::get_singleton()->framebuffer_create(fb_tex);
-		directional_shadow_cache.scroll_size = p_size;
+		fb_tex.push_back(atlas.scroll_depth);
+		atlas.scroll_fb = RD::get_singleton()->framebuffer_create(fb_tex);
+		atlas.scroll_size = p_size;
 	}
 
-	return directional_shadow_cache.scroll_fb;
+	r_texture = atlas.scroll_depth;
+	return atlas.scroll_fb;
 }
 
 void LightStorage::directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits) {
@@ -3028,7 +3081,7 @@ void LightStorage::directional_shadow_cache_atlas_set_size(int p_size, bool p_16
 	directional_shadow_cache.size = p_size;
 	directional_shadow_cache.use_16_bits = p_16_bits;
 	// Whatever the tiles held is gone (or has to be redrawn at the new size).
-	directional_shadow_cache.generation++;
+	directional_shadow_cache_generation++;
 
 	if (directional_shadow_cache.scroll_depth.is_valid()) {
 		RD::get_singleton()->free_rid(directional_shadow_cache.scroll_depth);
@@ -3061,21 +3114,96 @@ Size2i LightStorage::get_directional_shadow_cache_tile_size() {
 }
 
 uint64_t LightStorage::get_directional_shadow_cache_generation() {
-	return directional_shadow_cache.generation;
+	return directional_shadow_cache_generation;
 }
 
-void LightStorage::light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) {
+void LightStorage::light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_cache, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) {
 	LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
 	ERR_FAIL_NULL(light_instance);
+	ERR_FAIL_INDEX(p_cache, DIRECTIONAL_SHADOW_CACHE_MAX);
 
-	light_instance->directional_cache_tile = p_tile;
-	light_instance->directional_cache_scroll = p_scroll;
-	light_instance->directional_cache_depth_scroll = p_depth_scroll;
-	light_instance->directional_cache_scroll_pending = p_scroll != Vector2i() || p_depth_scroll != 0.0f;
-	light_instance->directional_cache_regions.resize(p_region_count);
+	LightInstance::DirectionalCache &cache = light_instance->directional_caches[p_cache];
+	cache.tile = p_tile;
+	cache.scroll = p_scroll;
+	cache.depth_scroll = p_depth_scroll;
+	cache.scroll_pending = p_scroll != Vector2i() || p_depth_scroll != 0.0f;
+	cache.regions.resize(p_region_count);
 	for (int i = 0; i < p_region_count; i++) {
-		light_instance->directional_cache_regions[i] = p_regions[i];
+		cache.regions[i] = p_regions[i];
 	}
+}
+
+void LightStorage::light_instance_set_directional_shadow_split_cache(RID p_light_instance, int p_split, bool p_enabled, const Vector2i &p_offset) {
+	LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+	ERR_FAIL_NULL(light_instance);
+	ERR_FAIL_INDEX(p_split, 4);
+
+	light_instance->directional_split_cached[p_split] = p_enabled;
+	light_instance->directional_split_cache_offset[p_split] = p_offset;
+}
+
+/* DIRECTIONAL SHADOW SPLIT CACHE */
+
+void LightStorage::_free_directional_shadow_split_cache() {
+	if (directional_shadow_split_cache.scroll_depth.is_valid()) {
+		RD::get_singleton()->free_rid(directional_shadow_split_cache.scroll_depth);
+		directional_shadow_split_cache.scroll_depth = RID();
+	}
+	if (directional_shadow_split_cache.depth.is_valid()) {
+		RD::get_singleton()->free_rid(directional_shadow_split_cache.depth);
+		directional_shadow_split_cache.depth = RID();
+	}
+	directional_shadow_cache_generation++;
+}
+
+void LightStorage::update_directional_shadow_split_cache_atlas() {
+	if (directional_shadow_split_cache.depth.is_null() && directional_shadow.size > 0) {
+		// Same shape and format as the directional atlas, a quarter larger to fit the margins.
+		directional_shadow_split_cache.size = directional_shadow.size + directional_shadow.size / 4;
+		directional_shadow_split_cache.use_16_bits = directional_shadow.use_16_bits;
+
+		RD::TextureFormat tf;
+		tf.format = get_shadow_atlas_depth_format(directional_shadow_split_cache.use_16_bits);
+		tf.width = directional_shadow_split_cache.size;
+		tf.height = directional_shadow_split_cache.size;
+		tf.usage_bits = get_shadow_atlas_depth_usage_bits();
+
+		directional_shadow_split_cache.depth = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		RD::get_singleton()->set_resource_name(directional_shadow_split_cache.depth, "Directional Shadow Split Cache Atlas");
+		Vector<RID> fb_tex;
+		fb_tex.push_back(directional_shadow_split_cache.depth);
+		directional_shadow_split_cache.fb = RD::get_singleton()->framebuffer_create(fb_tex);
+	}
+}
+
+void LightStorage::set_directional_shadow_split_cache_count(int p_count) {
+	directional_shadow_split_cache.light_count = p_count;
+}
+
+Rect2i LightStorage::get_directional_shadow_split_cache_tile_rect(int p_tile, int p_split, RSE::LightDirectionalShadowMode p_mode, const Size2i &p_split_size) {
+	const int size = directional_shadow.size + directional_shadow.size / 4;
+	Rect2i rect = _get_directional_shadow_rect(size, MAX(1, directional_shadow_split_cache.light_count), p_tile);
+
+	// Laid out like the directional atlas' splits.
+	if (p_mode == RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_4_SPLITS) {
+		rect.size /= 2;
+		if (p_split == 1) {
+			rect.position.x += rect.size.width;
+		} else if (p_split == 2) {
+			rect.position.y += rect.size.height;
+		} else if (p_split == 3) {
+			rect.position += rect.size;
+		}
+	} else if (p_mode == RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_2_SPLITS) {
+		rect.size.height /= 2;
+		if (p_split == 1) {
+			rect.position.y += rect.size.height;
+		}
+	}
+
+	Size2i tile_size = get_directional_shadow_split_cache_tile_size(p_split_size);
+	ERR_FAIL_COND_V(tile_size.width > rect.size.width || tile_size.height > rect.size.height, Rect2i());
+	return Rect2i(rect.position, tile_size);
 }
 
 /* SHADOW CUBEMAPS */

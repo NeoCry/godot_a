@@ -1014,6 +1014,10 @@ void RendererSceneCull::instance_geometry_set_transparency(RID p_instance, float
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 		ERR_FAIL_NULL(geom->geometry_instance);
 		geom->geometry_instance->set_transparency(p_transparency);
+
+		if (instance->scenario && instance->indexer_id.is_valid()) {
+			_shadow_static_changed(instance); // Its shadows fade with it.
+		}
 	}
 }
 
@@ -2019,6 +2023,10 @@ void RendererSceneCull::_update_instance(Instance *p_instance) const {
 
 	pair.pair();
 
+	if ((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
+		_shadow_static_changed(p_instance);
+	}
+
 	p_instance->prev_transformed_aabb = p_instance->transformed_aabb;
 }
 
@@ -2033,10 +2041,109 @@ void RendererSceneCull::_sdfgi_mark_dirty(Scenario *p_scenario, const AABB &p_aa
 	p_scenario->sdfgi_dirty_aabbs.push_back(p_aabb);
 }
 
+// How many frames geometry has to go without changing before its shadows go into the caches of
+// static objects (see _update_shadow_static()).
+static constexpr uint64_t SHADOW_STATIC_FRAMES = 30;
+
+bool RendererSceneCull::_instance_can_be_shadow_static(const Instance *p_instance) {
+	if (!((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) || p_instance->base_type == RSE::INSTANCE_PARTICLES) {
+		return false;
+	}
+	// Skinned, or with blend shapes: its surfaces change on their own.
+	if (p_instance->mesh_instance.is_valid()) {
+		return false;
+	}
+	// Its materials move it on their own (with TIME, for instance).
+	const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(p_instance->base_data);
+	if (geom->material_is_animated) {
+		return false;
+	}
+	// Whether it shows depends on where the camera is.
+	if (p_instance->visibility_index != -1 || p_instance->visibility_parent != nullptr) {
+		return false;
+	}
+	// Its instances are picked on the GPU, every frame.
+	if (p_instance->base_type == RSE::INSTANCE_MULTIMESH && RSG::mesh_storage->multimesh_get_command_buffer_rd_rid(p_instance->base).is_valid()) {
+		return false;
+	}
+	return true;
+}
+
+void RendererSceneCull::_shadow_static_mark_dirty(Scenario *p_scenario, const AABB &p_aabb) const {
+	if (p_scenario->shadow_static_dirty_all) {
+		return;
+	}
+	if (p_scenario->shadow_static_dirty_aabbs.size() >= 4096) {
+		// Too much changed to keep track of: the caches are drawn again whole.
+		p_scenario->shadow_static_dirty_aabbs.clear();
+		p_scenario->shadow_static_dirty_all = true;
+		return;
+	}
+	p_scenario->shadow_static_dirty_aabbs.push_back(p_aabb);
+}
+
+void RendererSceneCull::_shadow_static_changed(Instance *p_instance) const {
+	// Anything that changes takes its shadows out of the caches of static objects, and is drawn
+	// every frame instead, until it hasn't changed for a while.
+	Scenario *scenario = p_instance->scenario;
+	if (p_instance->shadow_static) {
+		p_instance->shadow_static = false;
+		if (p_instance->array_index >= 0) {
+			scenario->instance_data[p_instance->array_index].flags &= ~InstanceData::FLAG_SHADOW_STATIC;
+		}
+		_shadow_static_mark_dirty(scenario, p_instance->shadow_static_aabb);
+	}
+
+	if (_instance_can_be_shadow_static(p_instance)) {
+		p_instance->shadow_static_frame = RSG::rasterizer->get_frame_number() + SHADOW_STATIC_FRAMES;
+		scenario->shadow_static_pending.insert(p_instance);
+	} else {
+		scenario->shadow_static_pending.erase(p_instance);
+	}
+}
+
+void RendererSceneCull::_shadow_static_removed(Instance *p_instance) const {
+	if (p_instance->scenario == nullptr) {
+		return;
+	}
+	if (p_instance->shadow_static) {
+		p_instance->shadow_static = false;
+		_shadow_static_mark_dirty(p_instance->scenario, p_instance->shadow_static_aabb);
+	}
+	p_instance->scenario->shadow_static_pending.erase(p_instance);
+}
+
+void RendererSceneCull::_update_shadow_static(Scenario *p_scenario) {
+	if (p_scenario->shadow_static_pending.is_empty()) {
+		return;
+	}
+
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	LocalVector<Instance *> settled;
+	for (Instance *instance : p_scenario->shadow_static_pending) {
+		if (frame >= instance->shadow_static_frame) {
+			settled.push_back(instance);
+		}
+	}
+
+	for (Instance *instance : settled) {
+		p_scenario->shadow_static_pending.erase(instance);
+		if (instance->array_index < 0 || !_instance_can_be_shadow_static(instance)) {
+			continue;
+		}
+		instance->shadow_static = true;
+		instance->shadow_static_aabb = instance->transformed_aabb;
+		p_scenario->instance_data[instance->array_index].flags |= InstanceData::FLAG_SHADOW_STATIC;
+		_shadow_static_mark_dirty(p_scenario, instance->shadow_static_aabb);
+	}
+}
+
 void RendererSceneCull::_unpair_instance(Instance *p_instance) {
 	if (!p_instance->indexer_id.is_valid()) {
 		return; //nothing to do
 	}
+
+	_shadow_static_removed(p_instance);
 
 	if (sdfgi_dynamic_objects && p_instance->dynamic_gi && p_instance->scenario && ((1 << p_instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
 		_sdfgi_mark_dirty(p_instance->scenario, p_instance->transformed_aabb); // Gone from where it was.
@@ -2267,7 +2374,7 @@ void RendererSceneCull::_update_instance_lightmap_captures(Instance *p_instance)
 	geom->geometry_instance->set_lightmap_capture(p_instance->lightmap_sh.ptr());
 }
 
-void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh, int p_shadow_cache_tile) {
+void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_allow_shadow_cache_refresh, int p_shadow_cache_tile, int p_split_cache_tile) {
 	// For later tight culling, the light culler needs to know the details of the directional light.
 	light_culler->prepare_directional_light_begin(p_instance, p_shadow_index);
 
@@ -2318,6 +2425,24 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 	cull.shadows[p_shadow_index].cascade_count = splits;
 	cull.shadows[p_shadow_index].light_instance = light->instance;
 	cull.shadows[p_shadow_index].caster_mask = RSG::light_storage->light_get_shadow_caster_mask(p_instance->base);
+
+	// The splits start from their caches of static objects only in the first view drawn in a frame,
+	// for the same reasons the far cascade's cache only moves there (see
+	// _update_directional_shadow_cache()). Other views draw the splits whole, as before.
+	bool use_split_cache = false;
+	if (p_split_cache_tile >= 0 && p_allow_shadow_cache_refresh) {
+		const uint64_t frame = Engine::get_singleton()->get_frames_drawn();
+		use_split_cache = light->split_cache_frame != frame;
+		light->split_cache_frame = frame;
+	} else if (p_allow_shadow_cache_refresh) {
+		// What the tiles hold goes stale while the caches aren't used.
+		for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; i++) {
+			light->split_caches[i].valid = false;
+		}
+	}
+	for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; i++) {
+		cull.shadows[p_shadow_index].split_cache_region_count[i] = 0;
+	}
 
 	for (int i = 0; i < splits; i++) {
 		RENDER_TIMESTAMP("Cull DirectionalLight3D, Split " + itos(i));
@@ -2487,6 +2612,16 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 			cull.shadows[p_shadow_index].cascades[i].bias_scale = (z_max - z_min_cam);
 			cull.shadows[p_shadow_index].cascades[i].range_begin = z_max - z_vec.dot(p_cam_transform.origin);
 			cull.shadows[p_shadow_index].cascades[i].uv_scale = uv_scale;
+			cull.shadows[p_shadow_index].cascades[i].split_cached = false;
+		}
+
+		if (use_split_cache) {
+			float soft_shadow_angle = RSG::light_storage->light_get_param(p_instance->base, RSE::LIGHT_PARAM_SIZE);
+			real_t soft_shadow_tan = soft_shadow_angle > 0.0 ? Math::tan(Math::deg_to_rad(soft_shadow_angle)) : 0.0;
+			_update_directional_split_cache(p_shadow_index, i, p_instance, light_transform, endpoints, center, radius, pancake_size, soft_shadow_tan, p_cam_transform, p_split_cache_tile);
+		}
+		if (!cull.shadows[p_shadow_index].cascades[i].split_cached) {
+			RSG::light_storage->light_instance_set_directional_shadow_split_cache(light->instance, i, false, Vector2i());
 		}
 	}
 
@@ -2510,10 +2645,141 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 	}
 }
 
-// The cached far cascade's depth range is split into this many steps: the depths a UNORM16 shadow
-// map stores exactly, so that moving the range by whole steps moves every depth the shadow map
-// holds by an amount it can store without rounding, however many times it moves.
+// A cache's depth range is split into this many steps: the depths a UNORM16 shadow map stores
+// exactly, so that moving the range by whole steps moves every depth the shadow map holds by an
+// amount it can store without rounding, however many times it moves.
 static constexpr double SHADOW_CACHE_DEPTH_STEPS = 65535.0;
+
+// The regions of a directional shadow cache's tile drawn in a frame, each culled against its own
+// box: the casters that can draw into a region are those in its texels' column of light space,
+// between two depths along the light.
+struct DirectionalShadowCacheRegions {
+	Vector3 x_vec;
+	Vector3 y_vec;
+	Vector3 z_vec; // Points towards the light.
+	Size2i tile_size;
+	double texel_x = 0.0;
+	double texel_y = 0.0;
+	// Where the tile's first texel starts along x_vec and y_vec, and where its far plane is along
+	// z_vec.
+	double tile_x = 0.0;
+	double tile_y = 0.0;
+	double depth_far = 0.0;
+	double depth_range = 0.0;
+
+	RendererLightStorage::DirectionalShadowCacheRegion regions[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
+	RendererSceneCull::Frustum *frustums = nullptr;
+	int count = 0;
+
+	// Casters can be anywhere between the light and the far plane, since the near plane is only
+	// where they get pancaked onto.
+	double depth_light() const {
+		return depth_far + depth_range + 1e6;
+	}
+
+	void add(const Rect2i &p_rect, bool p_clear, double p_depth_from, double p_depth_to) {
+		ERR_FAIL_COND(count >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS);
+
+		RendererLightStorage::DirectionalShadowCacheRegion &region = regions[count];
+		region.rect = p_rect;
+		region.clear = p_clear;
+		const double left = (p_rect.position.x - 0.5 * tile_size.width) * texel_x;
+		const double bottom = (p_rect.position.y - 0.5 * tile_size.height) * texel_y;
+		region.projection.set_orthogonal(left, left + p_rect.size.width * texel_x, bottom, bottom + p_rect.size.height * texel_y, 0.0, depth_range);
+
+		const double x_min = tile_x + p_rect.position.x * texel_x;
+		const double y_min = tile_y + p_rect.position.y * texel_y;
+		Vector<Plane> planes;
+		planes.resize(6);
+		planes.write[0] = Plane(x_vec, x_min + p_rect.size.width * texel_x);
+		planes.write[1] = Plane(-x_vec, -x_min);
+		planes.write[2] = Plane(y_vec, y_min + p_rect.size.height * texel_y);
+		planes.write[3] = Plane(-y_vec, -y_min);
+		planes.write[4] = Plane(z_vec, p_depth_to);
+		planes.write[5] = Plane(-z_vec, -p_depth_from);
+		frustums[count] = RendererSceneCull::Frustum(planes);
+
+		count++;
+	}
+
+	// What a tile that has just scrolled has to draw: the strips that scrolled into view, which
+	// hold what used to be on the other side of the tile, and what came into its depth range.
+	void add_scroll(int64_t p_scroll_x, int64_t p_scroll_y, int64_t p_depth_scroll, double p_previous_depth_far) {
+		if (p_scroll_x != 0) {
+			const int width = (int)Math::abs(p_scroll_x);
+			add(Rect2i(p_scroll_x > 0 ? tile_size.width - width : 0, 0, width, tile_size.height), true, depth_far, depth_light());
+		}
+		if (p_scroll_y != 0) {
+			const int height = (int)Math::abs(p_scroll_y);
+			add(Rect2i(p_scroll_x < 0 ? (int)-p_scroll_x : 0, p_scroll_y > 0 ? tile_size.height - height : 0, tile_size.width - (int)Math::abs(p_scroll_x), height), true, depth_far, depth_light());
+		}
+
+		// What came into the depth range is drawn over what the tile already holds: where it is
+		// closer to the light than what the tile holds there, it shadows more. Moving away from
+		// the light, that is what is between the new far plane and the old one. Moving towards it,
+		// what is past the old near plane, which was pancaked onto it, and now has to be pancaked
+		// onto the new one.
+		if (p_depth_scroll < 0) {
+			add(Rect2i(Point2i(), tile_size), false, depth_far, p_previous_depth_far);
+		} else if (p_depth_scroll > 0) {
+			add(Rect2i(Point2i(), tile_size), false, p_previous_depth_far + depth_range, depth_light());
+		}
+	}
+
+	// Draws again where these boxes are in the tile, in at most p_max_regions regions.
+	void add_boxes(const LocalVector<AABB> &p_boxes, int p_max_regions) {
+		LocalVector<Rect2i> rects;
+		for (const AABB &box : p_boxes) {
+			// A box's footprint along the light, and a texel more on each side.
+			const Vector3 center = box.get_center();
+			const Vector3 half = box.size * 0.5;
+			const double center_x = x_vec.dot(center);
+			const double center_y = y_vec.dot(center);
+			const double half_x = Math::abs(x_vec.x) * half.x + Math::abs(x_vec.y) * half.y + Math::abs(x_vec.z) * half.z;
+			const double half_y = Math::abs(y_vec.x) * half.x + Math::abs(y_vec.y) * half.y + Math::abs(y_vec.z) * half.z;
+			const int from_x = (int)CLAMP(Math::floor((center_x - half_x - tile_x) / texel_x) - 1.0, 0.0, (double)tile_size.width);
+			const int to_x = (int)CLAMP(Math::ceil((center_x + half_x - tile_x) / texel_x) + 1.0, 0.0, (double)tile_size.width);
+			const int from_y = (int)CLAMP(Math::floor((center_y - half_y - tile_y) / texel_y) - 1.0, 0.0, (double)tile_size.height);
+			const int to_y = (int)CLAMP(Math::ceil((center_y + half_y - tile_y) / texel_y) + 1.0, 0.0, (double)tile_size.height);
+			if (from_x < to_x && from_y < to_y) {
+				rects.push_back(Rect2i(from_x, from_y, to_x - from_x, to_y - from_y));
+			}
+		}
+
+		if (rects.size() > 16) {
+			// Too many to pair up: draw again around all of them.
+			Rect2i all = rects[0];
+			for (const Rect2i &rect : rects) {
+				all = all.merge(rect);
+			}
+			rects.clear();
+			rects.push_back(all);
+		}
+
+		// Merge the two rectangles whose union adds the least area, until few enough are left.
+		while ((int)rects.size() > MAX(1, p_max_regions)) {
+			uint32_t best_a = 0;
+			uint32_t best_b = 1;
+			int64_t best_growth = INT64_MAX;
+			for (uint32_t a = 0; a < rects.size(); a++) {
+				for (uint32_t b = a + 1; b < rects.size(); b++) {
+					const int64_t growth = (int64_t)rects[a].merge(rects[b]).get_area() - rects[a].get_area() - rects[b].get_area();
+					if (growth < best_growth) {
+						best_growth = growth;
+						best_a = a;
+						best_b = b;
+					}
+				}
+			}
+			rects[best_a] = rects[best_a].merge(rects[best_b]);
+			rects.remove_at_unordered(best_b);
+		}
+
+		for (const Rect2i &rect : rects) {
+			add(rect, true, depth_far, depth_light());
+		}
+	}
+};
 
 void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Instance *p_instance, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, real_t p_near, real_t p_far, int p_tile, bool p_allow_update) {
 	// The cached far cascade extends shadows past the live splits, out to shadow_cache_max_distance,
@@ -2609,22 +2875,25 @@ void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Ins
 			cache.soft_shadow_expand = soft_shadow_tan * (2.0 * cache.extent + pancake_size);
 		}
 
-		const Vector3 x_vec = cache.basis.get_column(Vector3::AXIS_X);
-		const Vector3 y_vec = cache.basis.get_column(Vector3::AXIS_Y);
-		const Vector3 z_vec = cache.basis.get_column(Vector3::AXIS_Z); // Points towards the light.
+		DirectionalShadowCacheRegions regions;
+		regions.x_vec = cache.basis.get_column(Vector3::AXIS_X);
+		regions.y_vec = cache.basis.get_column(Vector3::AXIS_Y);
+		regions.z_vec = cache.basis.get_column(Vector3::AXIS_Z);
+		regions.tile_size = tile_size;
+		regions.frustums = shadow.cached_region_frustums;
 
 		const double half_size = cache.extent + cache.soft_shadow_expand;
-		const double texel_x = 2.0 * half_size / tile_size.width;
-		const double texel_y = 2.0 * half_size / tile_size.height;
-		const double depth_range = 2.0 * cache.extent + cache.pancake_size;
-		const double depth_step = depth_range / SHADOW_CACHE_DEPTH_STEPS;
+		regions.texel_x = 2.0 * half_size / tile_size.width;
+		regions.texel_y = 2.0 * half_size / tile_size.height;
+		regions.depth_range = 2.0 * cache.extent + cache.pancake_size;
+		const double depth_step = regions.depth_range / SHADOW_CACHE_DEPTH_STEPS;
 
 		// Where the tile would be, centered on the sphere.
-		const double center_x = x_vec.dot(center);
-		const double center_y = y_vec.dot(center);
-		const double center_z = z_vec.dot(center);
-		const int64_t target_x = (int64_t)Math::round((center_x - half_size) / texel_x);
-		const int64_t target_y = (int64_t)Math::round((center_y - half_size) / texel_y);
+		const double center_x = regions.x_vec.dot(center);
+		const double center_y = regions.y_vec.dot(center);
+		const double center_z = regions.z_vec.dot(center);
+		const int64_t target_x = (int64_t)Math::round((center_x - half_size) / regions.texel_x);
+		const int64_t target_y = (int64_t)Math::round((center_y - half_size) / regions.texel_y);
 		const int64_t target_z = (int64_t)Math::round((center_z - cache.extent) / depth_step);
 
 		bool redraw = refit;
@@ -2636,8 +2905,8 @@ void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Ins
 			// The tile still covers the sphere for as long as it hasn't moved further from the
 			// tile's center than the slack the margin leaves around it.
 			const double slack = cache.extent - radius;
-			const double offset_x = center_x - ((double)cache.grid_x * texel_x + half_size);
-			const double offset_y = center_y - ((double)cache.grid_y * texel_y + half_size);
+			const double offset_x = center_x - ((double)cache.grid_x * regions.texel_x + half_size);
+			const double offset_y = center_y - ((double)cache.grid_y * regions.texel_y + half_size);
 			const double offset_z = center_z - ((double)cache.grid_z * depth_step + cache.extent);
 			if (Math::abs(offset_x) > slack || Math::abs(offset_y) > slack) {
 				scroll_x = target_x - cache.grid_x;
@@ -2645,7 +2914,7 @@ void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Ins
 			}
 			// Along the light, up to a texel of drift is let go, so that a margin of 1 doesn't make
 			// the depth range move every frame.
-			if (Math::abs(offset_z) > MAX(slack, MAX(texel_x, texel_y))) {
+			if (Math::abs(offset_z) > MAX(slack, MAX(regions.texel_x, regions.texel_y))) {
 				depth_scroll = target_z - cache.grid_z;
 			}
 			// Past half the tile, scrolling would save little over drawing it whole, and past half
@@ -2667,72 +2936,16 @@ void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Ins
 			cache.grid_z = target_z;
 		}
 
-		const double tile_x = (double)cache.grid_x * texel_x;
-		const double tile_y = (double)cache.grid_y * texel_y;
-		const double depth_far = (double)cache.grid_z * depth_step;
-		const double depth_near = depth_far + depth_range;
-		// Casters can be anywhere between the light and the far plane, since the near plane is
-		// only where they get pancaked onto.
-		const double depth_light = depth_near + 1e6;
-
-		RendererLightStorage::DirectionalShadowCacheRegion regions[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS];
-		int region_count = 0;
-
-		// Adds a region of the tile, culled against its own box: the casters that can draw into it
-		// are the ones in its texels' column of light space, between p_depth_from and p_depth_to.
-		auto add_region = [&](const Rect2i &p_rect, bool p_clear, double p_depth_from, double p_depth_to) {
-			ERR_FAIL_COND(region_count >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS);
-
-			RendererLightStorage::DirectionalShadowCacheRegion &region = regions[region_count];
-			region.rect = p_rect;
-			region.clear = p_clear;
-			const double left = -half_size + p_rect.position.x * texel_x;
-			const double bottom = -half_size + p_rect.position.y * texel_y;
-			region.projection.set_orthogonal(left, left + p_rect.size.width * texel_x, bottom, bottom + p_rect.size.height * texel_y, 0.0, depth_range);
-
-			const double x_min = tile_x + p_rect.position.x * texel_x;
-			const double y_min = tile_y + p_rect.position.y * texel_y;
-			Vector<Plane> planes;
-			planes.resize(6);
-			planes.write[0] = Plane(x_vec, x_min + p_rect.size.width * texel_x);
-			planes.write[1] = Plane(-x_vec, -x_min);
-			planes.write[2] = Plane(y_vec, y_min + p_rect.size.height * texel_y);
-			planes.write[3] = Plane(-y_vec, -y_min);
-			planes.write[4] = Plane(z_vec, p_depth_to);
-			planes.write[5] = Plane(-z_vec, -p_depth_from);
-			shadow.cached_region_frustums[region_count] = Frustum(planes);
-
-			region_count++;
-		};
-
-		const Rect2i whole_tile(Point2i(), tile_size);
+		regions.tile_x = (double)cache.grid_x * regions.texel_x;
+		regions.tile_y = (double)cache.grid_y * regions.texel_y;
+		regions.depth_far = (double)cache.grid_z * depth_step;
 
 		if (redraw) {
 			RENDER_TIMESTAMP("Cull DirectionalLight3D, Cached Cascade");
-			add_region(whole_tile, true, depth_far, depth_light);
+			regions.add(Rect2i(Point2i(), tile_size), true, regions.depth_far, regions.depth_light());
 			cache.refresh_row = 0;
 		} else {
-			// The strips that scrolled into view hold what used to be on the other side of the
-			// tile, until they are drawn.
-			if (scroll_x != 0) {
-				const int width = (int)Math::abs(scroll_x);
-				add_region(Rect2i(scroll_x > 0 ? tile_size.width - width : 0, 0, width, tile_size.height), true, depth_far, depth_light);
-			}
-			if (scroll_y != 0) {
-				const int height = (int)Math::abs(scroll_y);
-				add_region(Rect2i(scroll_x < 0 ? (int)-scroll_x : 0, scroll_y > 0 ? tile_size.height - height : 0, tile_size.width - (int)Math::abs(scroll_x), height), true, depth_far, depth_light);
-			}
-
-			// What came into the depth range is drawn over what the tile already holds: where it
-			// is closer to the light than what the tile holds there, it shadows more. Moving away
-			// from the light, that is what is between the new far plane and the old one. Moving
-			// towards it, what is past the old near plane, which was pancaked onto it, and now has
-			// to be pancaked onto the new one.
-			if (depth_scroll < 0) {
-				add_region(whole_tile, false, depth_far, previous_depth_far);
-			} else if (depth_scroll > 0) {
-				add_region(whole_tile, false, previous_depth_far + depth_range, depth_light);
-			}
+			regions.add_scroll(scroll_x, scroll_y, depth_scroll, previous_depth_far);
 
 			// A band of rows is drawn again every frame, so that what moves in the tile shows up
 			// there within update_interval frames, without ever drawing the whole tile at once.
@@ -2742,14 +2955,14 @@ void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Ins
 					cache.refresh_row = 0;
 				}
 				const int rows = MIN((tile_size.height + update_interval - 1) / update_interval, tile_size.height - cache.refresh_row);
-				add_region(Rect2i(0, cache.refresh_row, tile_size.width, rows), true, depth_far, depth_light);
+				regions.add(Rect2i(0, cache.refresh_row, tile_size.width, rows), true, regions.depth_far, regions.depth_light());
 				cache.refresh_row += rows;
 			}
 		}
 
 		cache.valid = true;
-		shadow.cached_region_count = region_count;
-		RSG::light_storage->light_instance_set_directional_shadow_cache_update(light->instance, p_tile, Vector2i((int32_t)scroll_x, (int32_t)scroll_y), float(depth_scroll / SHADOW_CACHE_DEPTH_STEPS), regions, region_count);
+		shadow.cached_region_count = regions.count;
+		RSG::light_storage->light_instance_set_directional_shadow_cache_update(light->instance, RendererLightStorage::DIRECTIONAL_SHADOW_CACHE_FAR, p_tile, Vector2i((int32_t)scroll_x, (int32_t)scroll_y), float(depth_scroll / SHADOW_CACHE_DEPTH_STEPS), regions.regions, regions.count);
 	}
 
 	if (!cache.valid) {
@@ -2791,6 +3004,173 @@ void RendererSceneCull::_update_directional_shadow_cache(int p_shadow_index, Ins
 	cascade.range_begin = depth_near - z_vec.dot(p_cam_transform.origin);
 	cascade.uv_scale = Vector2(1.0, 1.0) / (2.0 * half_size);
 	shadow.cached_cascade_count = 1;
+}
+
+void RendererSceneCull::_update_directional_split_cache(int p_shadow_index, int p_split, Instance *p_instance, const Transform3D &p_light_transform, const Vector3 *p_endpoints, const Vector3 &p_center, real_t p_radius, real_t p_pancake_size, real_t p_soft_shadow_tan, const Transform3D &p_cam_transform, int p_tile) {
+	// A split's cache of static objects: what the split gets from objects that don't move (see
+	// Instance::shadow_static), kept from frame to frame, so that only the objects that do move
+	// are drawn into the split every frame, over a copy of the cache. The cache's tile is pinned to
+	// the same kind of grid as the far cascade's (see _update_directional_shadow_cache()), with the
+	// split's texels, and covers a margin of an eighth of the split on each side. The split's
+	// frustum is fitted to the camera every frame as before, but on that grid, as a part of the
+	// tile, at whole texels from its corner, and with the tile's depth range. Once the split
+	// reaches the edge of the tile, the tile scrolls to be centered on it again. Where static
+	// objects change (see _shadow_static_mark_dirty()), the tile is drawn again there.
+	InstanceLightData *light = static_cast<InstanceLightData *>(p_instance->base_data);
+	InstanceLightData::ShadowCache &cache = light->split_caches[p_split];
+	Cull::Shadow &shadow = cull.shadows[p_shadow_index];
+	Cull::Shadow::Cascade &cascade = shadow.cascades[p_split];
+	Scenario *scenario = p_instance->scenario;
+
+	const Size2i split_size = RSG::light_storage->get_directional_light_shadow_split_size(light->instance);
+	if (split_size.width <= 2 || split_size.height <= 2) {
+		cache.valid = false;
+		return;
+	}
+	const Size2i margin = RendererLightStorage::get_directional_shadow_split_cache_margin(split_size);
+	const Size2i tile_size = RendererLightStorage::get_directional_shadow_split_cache_tile_size(split_size);
+	const uint64_t atlas_generation = RSG::light_storage->get_directional_shadow_cache_generation();
+
+	bool refit = !cache.valid || cache.tile != p_tile || cache.split_size != split_size || cache.atlas_generation != atlas_generation || scenario->shadow_static_dirty_all;
+	// The light has turned meaningfully (a moving sun, for instance).
+	refit = refit || p_light_transform.basis.get_column(Vector3::AXIS_Z).dot(cache.basis.get_column(Vector3::AXIS_Z)) < 0.9998;
+	// The settings the split's extent and depth range come from have changed.
+	refit = refit || cache.pancake_size != p_pancake_size || cache.soft_shadow_tan != p_soft_shadow_tan;
+	// The camera's projection or the split's distances have changed, so that the split's texels
+	// can't cover it anymore, or would be noticeably smaller fitted to it again.
+	refit = refit || p_radius > cache.extent * 1.0001 || p_radius < cache.extent * 0.97;
+
+	if (refit) {
+		cache.tile = p_tile;
+		cache.split_size = split_size;
+		cache.tile_size = tile_size;
+		cache.atlas_generation = atlas_generation;
+		cache.basis = p_light_transform.basis;
+		cache.pancake_size = p_pancake_size;
+		cache.soft_shadow_tan = p_soft_shadow_tan;
+		cache.extent = p_radius;
+		// Receivers can be further from the near plane than in a split of its own by the depth
+		// slack below, which soft shadows look further out for.
+		cache.soft_shadow_expand = p_soft_shadow_tan * (2.5 * p_radius + p_pancake_size);
+	}
+
+	DirectionalShadowCacheRegions regions;
+	regions.x_vec = cache.basis.get_column(Vector3::AXIS_X);
+	regions.y_vec = cache.basis.get_column(Vector3::AXIS_Y);
+	regions.z_vec = cache.basis.get_column(Vector3::AXIS_Z);
+	regions.tile_size = tile_size;
+	regions.frustums = shadow.split_cache_region_frustums[p_split];
+
+	// The split's texels, and the tile's half size, an eighth of the split larger on each side.
+	const double split_half_size = cache.extent + cache.soft_shadow_expand;
+	regions.texel_x = 2.0 * split_half_size / split_size.width;
+	regions.texel_y = 2.0 * split_half_size / split_size.height;
+	const double half_x = 0.5 * tile_size.width * regions.texel_x;
+	const double half_y = 0.5 * tile_size.height * regions.texel_y;
+	// Receivers can drift along the light by as much as the margin before the depth range scrolls.
+	const double depth_slack = 0.25 * cache.extent;
+	regions.depth_range = 2.0 * (cache.extent + depth_slack) + cache.pancake_size;
+	const double depth_step = regions.depth_range / SHADOW_CACHE_DEPTH_STEPS;
+
+	// Where the split is on the grid this frame.
+	const double center_x = regions.x_vec.dot(p_center);
+	const double center_y = regions.y_vec.dot(p_center);
+	const double center_z = regions.z_vec.dot(p_center);
+	const int64_t split_x = (int64_t)Math::round((center_x - split_half_size) / regions.texel_x);
+	const int64_t split_y = (int64_t)Math::round((center_y - split_half_size) / regions.texel_y);
+	const int64_t target_z = (int64_t)Math::round((center_z - cache.extent - depth_slack) / depth_step);
+
+	bool redraw = refit;
+	int64_t scroll_x = 0;
+	int64_t scroll_y = 0;
+	int64_t depth_scroll = 0;
+
+	if (!redraw) {
+		const int64_t offset_x = split_x - cache.grid_x;
+		const int64_t offset_y = split_y - cache.grid_y;
+		if (offset_x < 0 || offset_x > 2 * margin.width || offset_y < 0 || offset_y > 2 * margin.height) {
+			scroll_x = split_x - margin.width - cache.grid_x;
+			scroll_y = split_y - margin.height - cache.grid_y;
+		}
+		const double offset_z = center_z - ((double)cache.grid_z * depth_step + cache.extent + depth_slack);
+		if (Math::abs(offset_z) > depth_slack) {
+			depth_scroll = target_z - cache.grid_z;
+		}
+		if (Math::abs(scroll_x) * 2 >= tile_size.width || Math::abs(scroll_y) * 2 >= tile_size.height || Math::abs(depth_scroll) * 2 >= (int64_t)SHADOW_CACHE_DEPTH_STEPS) {
+			redraw = true;
+			scroll_x = 0;
+			scroll_y = 0;
+			depth_scroll = 0;
+		}
+	}
+
+	const double previous_depth_far = (double)cache.grid_z * depth_step;
+	if (redraw) {
+		cache.grid_x = split_x - margin.width;
+		cache.grid_y = split_y - margin.height;
+		cache.grid_z = target_z;
+	} else {
+		cache.grid_x += scroll_x;
+		cache.grid_y += scroll_y;
+		cache.grid_z += depth_scroll;
+	}
+
+	regions.tile_x = (double)cache.grid_x * regions.texel_x;
+	regions.tile_y = (double)cache.grid_y * regions.texel_y;
+	regions.depth_far = (double)cache.grid_z * depth_step;
+
+	if (redraw) {
+		RENDER_TIMESTAMP("Cull DirectionalLight3D, Split Cache " + itos(p_split));
+		regions.add(Rect2i(Point2i(), tile_size), true, regions.depth_far, regions.depth_light());
+	} else {
+		regions.add_scroll(scroll_x, scroll_y, depth_scroll, previous_depth_far);
+		// Where static objects appeared, went away or changed.
+		regions.add_boxes(scenario->shadow_static_dirty_aabbs, RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS - regions.count);
+	}
+
+	cache.valid = true;
+	shadow.split_cache_region_count[p_split] = regions.count;
+	RSG::light_storage->light_instance_set_directional_shadow_cache_update(light->instance, RendererLightStorage::DIRECTIONAL_SHADOW_CACHE_SPLIT + p_split, p_tile, Vector2i((int32_t)scroll_x, (int32_t)scroll_y), float(depth_scroll / SHADOW_CACHE_DEPTH_STEPS), regions.regions, regions.count);
+
+	// The split itself: the part of the tile it covers, at whole texels from the tile's corner.
+	const Vector2i offset((int32_t)(split_x - cache.grid_x), (int32_t)(split_y - cache.grid_y));
+	const double left = offset.x * regions.texel_x - half_x;
+	const double bottom = offset.y * regions.texel_y - half_y;
+	const double depth_near = regions.depth_far + regions.depth_range;
+	cascade.projection.set_orthogonal(left, left + split_size.width * regions.texel_x, bottom, bottom + split_size.height * regions.texel_y, 0.0, regions.depth_range);
+	// What isn't static is culled the way a split of its own culls casters (see
+	// _light_instance_setup_directional_shadow()), but along the light the tile was drawn for, which
+	// can be up to a degree away from the light's current direction: against the footprint of the
+	// split's part of the camera's frustum, widened by how far soft shadows look for blockers, and
+	// from its lowest point up.
+	double x_min = 0.0, x_max = 0.0, y_min = 0.0, y_max = 0.0, z_min = 0.0, z_max = 0.0;
+	for (int i = 0; i < 8; i++) {
+		const double x = regions.x_vec.dot(p_endpoints[i]);
+		const double y = regions.y_vec.dot(p_endpoints[i]);
+		const double z = regions.z_vec.dot(p_endpoints[i]);
+		x_min = i == 0 ? x : MIN(x_min, x);
+		x_max = i == 0 ? x : MAX(x_max, x);
+		y_min = i == 0 ? y : MIN(y_min, y);
+		y_max = i == 0 ? y : MAX(y_max, y);
+		z_min = i == 0 ? z : MIN(z_min, z);
+		z_max = i == 0 ? z : MAX(z_max, z);
+	}
+	Vector<Plane> planes;
+	planes.resize(6);
+	planes.write[0] = Plane(regions.x_vec, x_max + cache.soft_shadow_expand);
+	planes.write[1] = Plane(-regions.x_vec, -(x_min - cache.soft_shadow_expand));
+	planes.write[2] = Plane(regions.y_vec, y_max + cache.soft_shadow_expand);
+	planes.write[3] = Plane(-regions.y_vec, -(y_min - cache.soft_shadow_expand));
+	planes.write[4] = Plane(regions.z_vec, z_max + 1e6);
+	planes.write[5] = Plane(-regions.z_vec, -z_min);
+	cascade.frustum = Frustum(planes);
+	cascade.transform.basis = cache.basis;
+	cascade.transform.origin = regions.x_vec * (regions.tile_x + half_x) + regions.y_vec * (regions.tile_y + half_y) + regions.z_vec * depth_near;
+	cascade.zfar = regions.depth_range;
+	cascade.range_begin = depth_near - regions.z_vec.dot(p_cam_transform.origin);
+	cascade.uv_scale = Vector2(1.0, 1.0) / (2.0 * split_half_size);
+	cascade.split_cached = true;
+	RSG::light_storage->light_instance_set_directional_shadow_split_cache(light->instance, p_split, true, offset);
 }
 
 bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers) {
@@ -3660,7 +4040,14 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 
 			for (uint32_t j = 0; j < cull_data.cull->shadow_count; j++) {
 				for (uint32_t k = 0; k < cull_data.cull->shadows[j].cascade_count; k++) {
-					if (!light_culler->cull_directional_light(cull_data.scenario->instance_aabbs[i], j, k)) { // pass the cascade index
+					if (cull_data.cull->shadows[j].cascades[k].split_cached) {
+						// The split starts from its cache, which static objects are drawn into instead.
+						// Its frustum follows the cache's light direction, not the light's current one,
+						// so tighter culling, which follows the latter, can't be used for it.
+						if (idata.flags & InstanceData::FLAG_SHADOW_STATIC) {
+							continue;
+						}
+					} else if (!light_culler->cull_directional_light(cull_data.scenario->instance_aabbs[i], j, k)) { // pass the cascade index
 						continue;
 					}
 					if (IN_FRUSTUM(cull_data.cull->shadows[j].cascades[k].frustum) && VIS_CHECK) {
@@ -3681,6 +4068,17 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 						if (((1 << base_type) & RSE::INSTANCE_GEOMETRY_MASK) && idata.flags & InstanceData::FLAG_CAST_SHADOWS && (LAYER_CHECK & cull_data.cull->shadows[j].caster_mask) && !is_inactive_particle) {
 							cull_result.directional_shadows[j].cached_cascade_geometry_instances[k].push_back(idata.instance_geometry);
 							mesh_visible = true;
+						}
+					}
+				}
+				if ((idata.flags & InstanceData::FLAG_SHADOW_STATIC) && (idata.flags & InstanceData::FLAG_CAST_SHADOWS) && (LAYER_CHECK & cull_data.cull->shadows[j].caster_mask)) {
+					// Static objects only (which are never particles), for the regions of the
+					// splits' caches drawn this frame.
+					for (uint32_t k = 0; k < cull_data.cull->shadows[j].cascade_count; k++) {
+						for (uint32_t l = 0; l < cull_data.cull->shadows[j].split_cache_region_count[k]; l++) {
+							if (IN_FRUSTUM(cull_data.cull->shadows[j].split_cache_region_frustums[k][l])) {
+								cull_result.directional_shadows[j].split_cache_geometry_instances[k * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS + l].push_back(idata.instance_geometry);
+							}
 						}
 					}
 				}
@@ -3823,16 +4221,30 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		// Each light with a cached cascade gets a tile of the cache atlas, in the order they come
 		// in, which stays the same for as long as the same lights cast shadows.
+		// The same goes for lights that cache their splits' static objects, in their own atlas.
 		LocalVector<int> shadow_cache_tiles;
+		LocalVector<int> split_cache_tiles;
 		shadow_cache_tiles.resize(lights_with_shadow.size());
+		split_cache_tiles.resize(lights_with_shadow.size());
 		int lights_with_cached_shadow = 0;
+		int lights_with_cached_splits = 0;
+		const bool split_cache_supported = scene_render->is_directional_shadow_split_cache_supported();
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
 			shadow_cache_tiles[i] = RSG::light_storage->light_directional_get_shadow_cache_enabled(lights_with_shadow[i]->base) ? lights_with_cached_shadow++ : -1;
+			split_cache_tiles[i] = split_cache_supported && RSG::light_storage->light_directional_get_shadow_cache_splits(lights_with_shadow[i]->base) ? lights_with_cached_splits++ : -1;
 		}
 		RSG::light_storage->set_directional_shadow_cache_count(lights_with_cached_shadow);
+		RSG::light_storage->set_directional_shadow_split_cache_count(lights_with_cached_splits);
 
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
-			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_reflection_probe.is_null(), shadow_cache_tiles[i]);
+			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_reflection_probe.is_null(), shadow_cache_tiles[i], split_cache_tiles[i]);
+		}
+
+		if (p_reflection_probe.is_null()) {
+			// The splits' caches have taken in what changed in static objects (see
+			// _shadow_static_mark_dirty()). Other views drawn this frame don't move the caches.
+			scenario->shadow_static_dirty_aabbs.clear();
+			scenario->shadow_static_dirty_all = false;
 		}
 	}
 
@@ -3945,8 +4357,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				int pass = RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES + j;
 				RSG::light_storage->light_instance_set_shadow_transform(cull.shadows[i].light_instance, c.projection, c.transform, c.zfar, c.split, pass, c.shadow_texel_size, c.bias_scale, c.range_begin, c.uv_scale);
 			}
-			// Each region of the cached cascade's tile drawn this frame takes the pass past the live
-			// cascades that matches its index (see RenderForwardClustered::_render_shadow_pass()).
+			// Each region of a cache's tile drawn this frame takes the pass that matches its cache and
+			// index (see RenderForwardClustered::_render_shadow_pass()).
 			for (uint32_t j = 0; j < cull.shadows[i].cached_region_count; j++) {
 				if (max_shadows_used == MAX_UPDATE_SHADOWS) {
 					// The tile can't be trusted once a region it was meant to get is left out.
@@ -3954,9 +4366,22 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 					continue;
 				}
 				render_shadow_data[max_shadows_used].light = cull.shadows[i].light_instance;
-				render_shadow_data[max_shadows_used].pass = RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES + j;
+				render_shadow_data[max_shadows_used].pass = RendererSceneRender::DIRECTIONAL_SHADOW_PASS_CACHE + j;
 				render_shadow_data[max_shadows_used].instances.merge_unordered(scene_cull_result.directional_shadows[i].cached_cascade_geometry_instances[j]);
 				max_shadows_used++;
+			}
+			for (uint32_t j = 0; j < cull.shadows[i].cascade_count; j++) {
+				for (uint32_t k = 0; k < cull.shadows[i].split_cache_region_count[j]; k++) {
+					if (max_shadows_used == MAX_UPDATE_SHADOWS) {
+						cull.shadows[i].light_data->split_caches[j].valid = false;
+						continue;
+					}
+					const uint32_t region = j * RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS + k;
+					render_shadow_data[max_shadows_used].light = cull.shadows[i].light_instance;
+					render_shadow_data[max_shadows_used].pass = RendererSceneRender::DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE + region;
+					render_shadow_data[max_shadows_used].instances.merge_unordered(scene_cull_result.directional_shadows[i].split_cache_geometry_instances[region]);
+					max_shadows_used++;
+				}
 			}
 		}
 
@@ -4901,6 +5326,10 @@ void RendererSceneCull::update() {
 	scene_render->update();
 	update_dirty_instances();
 	render_particle_colliders();
+
+	for (uint32_t i = 0; i < rid_count; i++) {
+		_update_shadow_static(scenario_owner.get_or_null(rids[i]));
+	}
 }
 
 bool RendererSceneCull::free(RID p_rid) {

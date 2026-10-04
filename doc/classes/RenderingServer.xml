@@ -2247,6 +2247,15 @@
 			<param index="0" name="light" type="RID" />
 			<param index="1" name="enabled" type="bool" />
 			<description>
+				If [code]true[/code], this directional light extends its shadows with a far cascade whose shadow map is kept from frame to frame. Equivalent to [member DirectionalLight3D.directional_shadow_cache_enabled].
+			</description>
+		</method>
+		<method name="light_directional_set_shadow_cache_splits">
+			<return type="void" />
+			<param index="0" name="light" type="RID" />
+			<param index="1" name="enabled" type="bool" />
+			<description>
+				If [code]true[/code], each split of this directional light keeps a cache of the shadows static objects cast into it. Equivalent to [member DirectionalLight3D.directional_shadow_cache_splits].
 			</description>
 		</method>
 		<method name="light_directional_set_shadow_mode">

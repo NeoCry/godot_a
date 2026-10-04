@@ -1742,7 +1742,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			RID base = light_storage->light_instance_get_base_light(li);
 
 			if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL) {
-				if (p_render_data->render_shadows[i].pass >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES) {
+				if (p_render_data->render_shadows[i].pass >= RendererSceneRender::DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE) {
+					p_render_data->directional_shadows_split_cached.push_back(i);
+				} else if (p_render_data->render_shadows[i].pass >= RendererSceneRender::DIRECTIONAL_SHADOW_PASS_CACHE) {
 					p_render_data->directional_shadows_cached.push_back(i);
 				} else {
 					p_render_data->directional_shadows.push_back(i);
@@ -1775,11 +1777,23 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			// (if it clears at all, see DirectionalShadowCacheRegion::clear).
 			light_storage->update_directional_shadow_cache_atlas();
 		}
+
+		// Splits start from their caches of static objects even on frames none of the caches'
+		// regions are drawn, so look at the splits too.
+		bool use_split_cache = p_render_data->directional_shadows_split_cached.size() > 0;
+		for (uint32_t i = 0; i < p_render_data->directional_shadows.size() && !use_split_cache; i++) {
+			const RendererSceneRender::RenderShadowData &shadow = p_render_data->render_shadows[p_render_data->directional_shadows[i]];
+			Vector2i offset;
+			use_split_cache = light_storage->light_instance_get_directional_split_cache(shadow.light, shadow.pass, offset);
+		}
+		if (use_split_cache) {
+			light_storage->update_directional_shadow_split_cache_atlas();
+		}
 	}
 
 	// Render GI
 
-	bool render_shadows = p_render_data->directional_shadows.size() || p_render_data->shadows.size() || p_render_data->directional_shadows_cached.size();
+	bool render_shadows = p_render_data->directional_shadows.size() || p_render_data->shadows.size() || p_render_data->directional_shadows_cached.size() || p_render_data->directional_shadows_split_cached.size();
 	bool render_gi = rb.is_valid() && p_use_gi;
 
 	if (render_shadows && render_gi) {
@@ -1793,6 +1807,11 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	//prepare shadow rendering
 	if (render_shadows) {
 		_render_shadow_begin();
+
+		// Regions of the splits' caches of static objects first: the splits start from them.
+		for (uint32_t i = 0; i < p_render_data->directional_shadows_split_cached.size(); i++) {
+			_render_shadow_pass(p_render_data->render_shadows[p_render_data->directional_shadows_split_cached[i]].light, p_render_data->shadow_atlas, p_render_data->render_shadows[p_render_data->directional_shadows_split_cached[i]].pass, p_render_data->render_shadows[p_render_data->directional_shadows_split_cached[i]].instances, lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, false, false, true, p_render_data->render_info, viewport_size, p_render_data->scene_data->cam_transform);
+		}
 
 		//render directional shadows
 		for (uint32_t i = 0; i < p_render_data->directional_shadows.size(); i++) {
@@ -2906,45 +2925,68 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	bool clear_region = p_clear_region;
 	bool open_pass = p_open_pass;
 
-	if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL && p_pass >= RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES) {
-		// Cached far cascade: own atlas, and its own tile, which the light keeps from frame to
-		// frame since what it holds is carried over. Each pass draws one region of that tile (see
-		// RendererSceneCull::_update_directional_shadow_cache()); the cascade itself, which is what
-		// gets sampled, is in the first cached slot.
-		const int cache_pass = RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES;
-		const RendererLightStorage::DirectionalShadowCacheRegion *region = light_storage->light_instance_get_directional_cache_region(p_light, p_pass - cache_pass);
+	// Where a split starting from its cache of static objects takes the cache's depths from.
+	RID split_cache_source;
+	Vector2i split_cache_offset;
+
+	if (light_storage->light_get_type(base) == RSE::LIGHT_DIRECTIONAL && p_pass >= RendererSceneRender::DIRECTIONAL_SHADOW_PASS_CACHE) {
+		// A region of one of the light's caches, which have atlases of their own: the far cascade's
+		// cache, or a split's cache of static objects. A light keeps its tile in an atlas from frame
+		// to frame, since what the tile holds is carried over. Each pass draws one region of the
+		// tile (see RendererSceneCull::_update_directional_shadow_cache()).
+		int cache;
+		int region_index;
+		int transform_slot;
+		Rect2i tile_rect;
+		RendererRD::LightStorage::DirectionalCacheAtlas cache_atlas;
+		if (p_pass >= RendererSceneRender::DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE) {
+			const int split = (p_pass - RendererSceneRender::DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE) / RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS;
+			region_index = (p_pass - RendererSceneRender::DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE) % RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS;
+			cache = RendererLightStorage::DIRECTIONAL_SHADOW_CACHE_SPLIT + split;
+			cache_atlas = RendererRD::LightStorage::DIRECTIONAL_CACHE_ATLAS_SPLIT;
+			// The split's cache is drawn from the split's own frustum: the split is a part of it.
+			transform_slot = split;
+			tile_rect = light_storage->get_directional_shadow_split_cache_tile_rect(light_storage->light_instance_get_directional_cache_tile(p_light, cache), split, light_storage->light_directional_get_shadow_mode(base), light_storage->get_directional_light_shadow_split_size(p_light));
+		} else {
+			region_index = p_pass - RendererSceneRender::DIRECTIONAL_SHADOW_PASS_CACHE;
+			cache = RendererLightStorage::DIRECTIONAL_SHADOW_CACHE_FAR;
+			cache_atlas = RendererRD::LightStorage::DIRECTIONAL_CACHE_ATLAS_FAR;
+			// The far cascade, which is what gets sampled, is in the first cached slot.
+			transform_slot = RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES;
+			tile_rect = light_storage->get_directional_shadow_cache_tile_rect(light_storage->light_instance_get_directional_cache_tile(p_light, cache));
+		}
+		ERR_FAIL_COND(tile_rect.size == Size2i());
+
+		const RendererLightStorage::DirectionalShadowCacheRegion *region = light_storage->light_instance_get_directional_cache_region(p_light, cache, region_index);
 		ERR_FAIL_NULL(region);
 
-		Rect2i tile_rect = light_storage->get_directional_shadow_cache_tile_rect(light_storage->light_instance_get_directional_cache_tile(p_light));
+		if (light_storage->light_instance_begin_directional_cache_pass(p_light, cache, get_scene_pass())) {
+			if (cache == RendererLightStorage::DIRECTIONAL_SHADOW_CACHE_FAR) {
+				float directional_shadow_cache_size = light_storage->directional_shadow_cache_get_size();
+				Rect2 atlas_rect_norm = tile_rect;
+				atlas_rect_norm.position /= directional_shadow_cache_size;
+				atlas_rect_norm.size /= directional_shadow_cache_size;
+				light_storage->light_instance_set_directional_shadow_atlas_rect(p_light, transform_slot, atlas_rect_norm);
+			}
 
-		uint64_t last_scene_cache_shadow_pass = light_storage->light_instance_get_shadow_cache_pass(p_light);
-		if (last_scene_cache_shadow_pass != get_scene_pass()) {
-			light_storage->light_instance_set_shadow_cache_pass(p_light, get_scene_pass());
-
-			float directional_shadow_cache_size = light_storage->directional_shadow_cache_get_size();
-			Rect2 atlas_rect_norm = tile_rect;
-			atlas_rect_norm.position /= directional_shadow_cache_size;
-			atlas_rect_norm.size /= directional_shadow_cache_size;
-			light_storage->light_instance_set_directional_shadow_atlas_rect(p_light, cache_pass, atlas_rect_norm);
-
-			// Before any region is drawn, move what the tile holds to where the cascade's frustum
+			// Before any region is drawn, move what the tile holds to where the cache's frustum
 			// has moved since the last frame it was drawn in.
 			Vector2i scroll;
 			float depth_scroll = 0.0;
-			if (light_storage->light_instance_take_directional_cache_scroll(p_light, scroll, depth_scroll)) {
-				_scroll_directional_shadow_cache(tile_rect, scroll, depth_scroll);
+			if (light_storage->light_instance_take_directional_cache_scroll(p_light, cache, scroll, depth_scroll)) {
+				_scroll_directional_shadow_cache(cache_atlas, tile_rect, scroll, depth_scroll);
 			}
 		}
 
 		use_pancake = light_storage->light_get_param(base, RSE::LIGHT_PARAM_SHADOW_PANCAKE_SIZE) > 0;
 		light_projection = region->projection;
-		light_transform = light_storage->light_instance_get_shadow_transform(p_light, cache_pass);
+		light_transform = light_storage->light_instance_get_shadow_transform(p_light, transform_slot);
 
 		atlas_rect = Rect2i(tile_rect.position + region->rect.position, region->rect.size);
 
 		zfar = RSG::light_storage->light_get_param(base, RSE::LIGHT_PARAM_RANGE);
 
-		render_fb = light_storage->direction_shadow_cache_get_fb();
+		render_fb = light_storage->directional_cache_atlas_get_fb(cache_atlas);
 		render_texture = RID();
 		flip_y = true;
 
@@ -2985,6 +3027,19 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 			if (p_pass == 0) {
 			} else {
 				atlas_rect.position.y += atlas_rect.size.height;
+			}
+		}
+
+		// A split that starts from its cache of static objects: its frustum is a part of the
+		// cache's (see RendererSceneCull::_update_directional_split_cache()), so the depths are
+		// taken as they are, texel for texel, and only what isn't static is drawn over them.
+		Vector2i offset_in_tile;
+		if (light_storage->light_instance_get_directional_split_cache(p_light, p_pass, offset_in_tile)) {
+			const int cache = RendererLightStorage::DIRECTIONAL_SHADOW_CACHE_SPLIT + p_pass;
+			Rect2i tile_rect = light_storage->get_directional_shadow_split_cache_tile_rect(light_storage->light_instance_get_directional_cache_tile(p_light, cache), p_pass, light_storage->light_directional_get_shadow_mode(base), atlas_rect.size);
+			if (tile_rect.size != Size2i()) {
+				split_cache_source = light_storage->directional_cache_atlas_get_texture(RendererRD::LightStorage::DIRECTIONAL_CACHE_ATLAS_SPLIT);
+				split_cache_offset = tile_rect.position + offset_in_tile - atlas_rect.position;
 			}
 		}
 
@@ -3113,10 +3168,14 @@ void RenderForwardClustered::_render_shadow_pass(RID p_light, RID p_shadow_atlas
 	} else {
 		//render shadow
 		_render_shadow_append(render_fb, p_instances, light_projection, light_transform, zfar, 0, 0, reverse_cull_face, using_dual_paraboloid, using_dual_paraboloid_flip, use_pancake, p_lod_distance_multiplier, p_screen_mesh_lod_threshold, atlas_rect, flip_y, clear_region, open_pass, p_close_pass, p_render_info, p_viewport_size, p_main_cam_transform);
+		if (split_cache_source.is_valid()) {
+			scene_state.shadow_passes[scene_state.shadow_passes.size() - 1].copy_source = split_cache_source;
+			scene_state.shadow_passes[scene_state.shadow_passes.size() - 1].copy_offset = split_cache_offset;
+		}
 	}
 }
 
-void RenderForwardClustered::_scroll_directional_shadow_cache(const Rect2i &p_tile_rect, const Vector2i &p_scroll, float p_depth_scroll) {
+void RenderForwardClustered::_scroll_directional_shadow_cache(RendererRD::LightStorage::DirectionalCacheAtlas p_atlas, const Rect2i &p_tile_rect, const Vector2i &p_scroll, float p_depth_scroll) {
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 
 	// The texels of the tile that take what another texel of the tile held.
@@ -3132,10 +3191,10 @@ void RenderForwardClustered::_scroll_directional_shadow_cache(const Rect2i &p_ti
 	// read: from the top when rows move up (each row takes one further down), from the bottom
 	// otherwise.
 	const int band_height = MIN(p_tile_rect.size.height, 512);
-	RID scroll_fb = light_storage->directional_shadow_cache_get_scroll_fb(Size2i(p_tile_rect.size.width, band_height));
-	RID scroll_texture = light_storage->directional_shadow_cache_get_scroll_texture();
-	RID cache_texture = light_storage->directional_shadow_cache_get_texture();
-	RID cache_fb = light_storage->direction_shadow_cache_get_fb();
+	RID scroll_texture;
+	RID scroll_fb = light_storage->directional_cache_atlas_get_scroll_fb(p_atlas, Size2i(p_tile_rect.size.width, band_height), scroll_texture);
+	RID cache_texture = light_storage->directional_cache_atlas_get_texture(p_atlas);
+	RID cache_fb = light_storage->directional_cache_atlas_get_fb(p_atlas);
 
 	const int band_count = (dst.size.height + band_height - 1) / band_height;
 	for (int i = 0; i < band_count; i++) {
@@ -3257,6 +3316,9 @@ void RenderForwardClustered::_render_shadow_end() {
 	RD::get_singleton()->draw_command_begin_label("Shadow Render");
 
 	for (SceneState::ShadowPass &shadow_pass : scene_state.shadow_passes) {
+		if (shadow_pass.copy_source.is_valid()) {
+			copy_effects->copy_shadow_cache_scroll(shadow_pass.copy_source, shadow_pass.framebuffer, shadow_pass.rect, shadow_pass.copy_offset, 0.0);
+		}
 		RenderListParameters render_list_parameters(render_list[RENDER_LIST_SECONDARY].elements.ptr() + shadow_pass.element_from, render_list[RENDER_LIST_SECONDARY].element_info.ptr() + shadow_pass.element_from, shadow_pass.element_count, shadow_pass.flip_cull, shadow_pass.pass_mode, 0, true, false, shadow_pass.rp_uniform_set, false, Vector2(), shadow_pass.lod_distance_multiplier, shadow_pass.screen_mesh_lod_threshold, 1, shadow_pass.element_from);
 		_render_list_with_draw_list(&render_list_parameters, shadow_pass.framebuffer, shadow_pass.clear_depth ? RD::DRAW_CLEAR_DEPTH : RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0, shadow_pass.rect);
 	}

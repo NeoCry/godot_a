@@ -2623,6 +2623,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("directional_soft_shadow_filter_set_quality", "quality"), &RenderingServer::directional_soft_shadow_filter_set_quality);
 	ClassDB::bind_method(D_METHOD("directional_shadow_atlas_set_size", "size", "is_16bits"), &RenderingServer::directional_shadow_atlas_set_size);
 	ClassDB::bind_method(D_METHOD("light_directional_set_shadow_cache_enabled", "light", "enabled"), &RenderingServer::light_directional_set_shadow_cache_enabled);
+	ClassDB::bind_method(D_METHOD("light_directional_set_shadow_cache_splits", "light", "enabled"), &RenderingServer::light_directional_set_shadow_cache_splits);
 
 	BIND_ENUM_CONSTANT(RSE::SHADOW_QUALITY_HARD);
 	BIND_ENUM_CONSTANT(RSE::SHADOW_QUALITY_SOFT_VERY_LOW);

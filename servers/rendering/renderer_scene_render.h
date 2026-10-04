@@ -53,9 +53,16 @@ public:
 		// additional cached slot needs its own struct fields, atlas rect and shader branch.
 		MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES = 1,
 		// How many regions of a cached cascade's tile can be drawn in a frame: the two strips that
-		// scrolled into view, a pass for what came into its depth range, and a band of rows drawn
-		// again to pick up what moved. Each takes a shadow pass slot past the live cascades.
-		MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS = 4,
+		// scrolled into view, a pass for what came into its depth range, and either a band of rows
+		// drawn again to pick up what moved (the far cascade) or the places where static objects
+		// changed (the splits' caches, see DirectionalLight3D's shadow_cache_splits). Each takes
+		// a shadow pass of its own.
+		MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS = 5,
+		// The shadow passes of a directional light: its live splits first, then the regions of its
+		// far cascade's cache, then the regions of each split's cache of static objects.
+		DIRECTIONAL_SHADOW_PASS_CACHE = MAX_DIRECTIONAL_LIGHT_CASCADES,
+		DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE = DIRECTIONAL_SHADOW_PASS_CACHE + MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS,
+		DIRECTIONAL_SHADOW_PASS_MAX = DIRECTIONAL_SHADOW_PASS_SPLIT_CACHE + MAX_DIRECTIONAL_LIGHT_CASCADES * MAX_DIRECTIONAL_LIGHT_CACHE_REGIONS,
 		MAX_RENDER_VIEWS = 2
 	};
 
@@ -79,6 +86,10 @@ public:
 	virtual void sdfgi_update(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, const Vector3 &p_world_position) = 0;
 	// World-space boxes where dynamic objects moved, appeared or went away: SDFGI voxelizes them again.
 	virtual void sdfgi_mark_dirty(const Ref<RenderSceneBuffers> &p_render_buffers, const LocalVector<AABB> &p_aabbs) = 0;
+
+	// Whether the renderer can start a directional split's shadow pass from that split's cache of
+	// static objects (see DirectionalLight3D's shadow_cache_splits).
+	virtual bool is_directional_shadow_split_cache_supported() const { return false; }
 	virtual int sdfgi_get_pending_region_count(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
 	virtual AABB sdfgi_get_pending_region_bounds(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const = 0;
 	virtual uint32_t sdfgi_get_pending_region_cascade(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const = 0;

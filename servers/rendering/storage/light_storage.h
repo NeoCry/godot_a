@@ -75,6 +75,8 @@ public:
 	virtual bool light_directional_get_blend_splits(RID p_light) const = 0;
 	virtual void light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) = 0;
 	virtual bool light_directional_get_shadow_cache_enabled(RID p_light) const = 0;
+	virtual void light_directional_set_shadow_cache_splits(RID p_light, bool p_enable) = 0;
+	virtual bool light_directional_get_shadow_cache_splits(RID p_light) const = 0;
 	virtual void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) = 0;
 	virtual RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const = 0;
 
@@ -219,13 +221,34 @@ public:
 	virtual int get_directional_light_shadow_size(RID p_light_instance) = 0;
 	virtual void set_directional_shadow_count(int p_count) = 0;
 
+	// The size of each of a light's splits in the directional shadow atlas.
+	virtual Size2i get_directional_light_shadow_split_size(RID p_light_instance) = 0;
+
 	// Second, independent atlas for the cached far cascade (see MAX_DIRECTIONAL_LIGHT_CACHED_CASCADES).
 	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) = 0;
 	virtual void set_directional_shadow_cache_count(int p_count) = 0;
 	// Every light with a cached cascade gets a tile of this size in the cache atlas.
 	virtual Size2i get_directional_shadow_cache_tile_size() = 0;
-	// Changes whenever the cache atlas is resized or recreated, losing what its tiles held.
+	// How many lights keep a cache of their splits' static objects, in a third atlas.
+	virtual void set_directional_shadow_split_cache_count(int p_count) = 0;
+	// Changes whenever a cache atlas is resized or recreated, losing what its tiles held.
 	virtual uint64_t get_directional_shadow_cache_generation() = 0;
+
+	// A split's cache covers a margin of an eighth of the split on each side, so that the split can
+	// move that far in it before it scrolls.
+	static Size2i get_directional_shadow_split_cache_margin(const Size2i &p_split_size) {
+		return p_split_size / 8;
+	}
+	static Size2i get_directional_shadow_split_cache_tile_size(const Size2i &p_split_size) {
+		return p_split_size + get_directional_shadow_split_cache_margin(p_split_size) * 2;
+	}
+
+	// The caches of a directional light: its far cascade's, and one for each split.
+	enum {
+		DIRECTIONAL_SHADOW_CACHE_FAR = 0,
+		DIRECTIONAL_SHADOW_CACHE_SPLIT = 1, // Split i's is DIRECTIONAL_SHADOW_CACHE_SPLIT + i.
+		DIRECTIONAL_SHADOW_CACHE_MAX = DIRECTIONAL_SHADOW_CACHE_SPLIT + 4,
+	};
 
 	// A rectangle of a cached cascade's tile to draw this frame.
 	struct DirectionalShadowCacheRegion {
@@ -234,8 +257,11 @@ public:
 		bool clear = true; // When false, drawn over what the tile holds there instead.
 	};
 
-	// What the renderer has to do to a light's cached cascade this frame: before drawing p_regions,
+	// What the renderer has to do to one of a light's caches this frame: before drawing p_regions,
 	// shift what tile p_tile holds so that each texel takes what the texel p_scroll away from it
 	// held, and lower every depth it holds by p_depth_scroll.
-	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) = 0;
+	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_cache, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) = 0;
+	// Whether split p_split's pass starts from what the split's cache holds, drawing only what isn't
+	// static over it, and where in the cache's tile the split sits.
+	virtual void light_instance_set_directional_shadow_split_cache(RID p_light_instance, int p_split, bool p_enabled, const Vector2i &p_offset) = 0;
 };

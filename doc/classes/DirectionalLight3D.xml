@@ -26,6 +26,12 @@
 		<member name="directional_shadow_cache_max_distance" type="float" setter="set_param" getter="get_param" default="500.0">
 			The distance up to which the cached cascade extends shadows. Only used when greater than [member directional_shadow_max_distance].
 		</member>
+		<member name="directional_shadow_cache_splits" type="bool" setter="set_shadow_cache_splits" getter="is_shadow_cache_splits_enabled" default="false">
+			If [code]true[/code], each split keeps a cache of the shadows static objects cast into it, kept from frame to frame like the far cascade of [member directional_shadow_cache_enabled]. Every frame, a split starts from a copy of its cache, and only the objects that move or change are drawn over it.
+			Objects count as static once they haven't moved or changed for 30 frames, unless they are skinned, have blend shapes, use materials animated with [code]TIME[/code], use visibility ranges, or have their instances picked on the GPU. Where static objects appear, move, change or go away, the caches are drawn again there. When the camera moves, the caches scroll along with the splits, and only the strips that come into view are drawn.
+			This saves most of the cost of drawing the splits in scenes made mostly of static objects, at the cost of memory: the caches have an atlas of their own, a quarter larger on each side than the directional shadow atlas (see [member ProjectSettings.rendering/lights_and_shadows/directional_shadow/size]).
+			[b]Note:[/b] Only supported by the Forward+ renderer. Only the first viewport drawn in a frame uses the caches; the others draw the splits whole.
+		</member>
 		<member name="directional_shadow_cache_update_interval" type="float" setter="set_param" getter="get_param" default="4.0">
 			The cached cascade's shadow map is drawn again a band of rows at a time, one band every frame, so that objects that move show up in it. This is the number of frames a full sweep of it takes: lower values make moving objects' shadows follow sooner, higher values cost less per frame. At [code]0[/code], it is never drawn again on its own, which suits scenes where nothing moves that far away.
 		</member>

@@ -94,6 +94,8 @@ public:
 	virtual bool light_directional_get_blend_splits(RID p_light) const override { return false; }
 	virtual void light_directional_set_shadow_cache_enabled(RID p_light, bool p_enable) override {}
 	virtual bool light_directional_get_shadow_cache_enabled(RID p_light) const override { return false; }
+	virtual void light_directional_set_shadow_cache_splits(RID p_light, bool p_enable) override {}
+	virtual bool light_directional_get_shadow_cache_splits(RID p_light) const override { return false; }
 	virtual void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) override {}
 	virtual RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const override { return RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_AND_SKY; }
 
@@ -238,8 +240,11 @@ public:
 	virtual void directional_shadow_cache_atlas_set_size(int p_size, bool p_16_bits = true) override {}
 	virtual void set_directional_shadow_cache_count(int p_count) override {}
 	virtual Size2i get_directional_shadow_cache_tile_size() override { return Size2i(); }
+	virtual Size2i get_directional_light_shadow_split_size(RID p_light_instance) override { return Size2i(); }
+	virtual void set_directional_shadow_split_cache_count(int p_count) override {}
 	virtual uint64_t get_directional_shadow_cache_generation() override { return 0; }
-	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) override {}
+	virtual void light_instance_set_directional_shadow_cache_update(RID p_light_instance, int p_cache, int p_tile, const Vector2i &p_scroll, float p_depth_scroll, const DirectionalShadowCacheRegion *p_regions, int p_region_count) override {}
+	virtual void light_instance_set_directional_shadow_split_cache(RID p_light_instance, int p_split, bool p_enabled, const Vector2i &p_offset) override {}
 };
 
 } // namespace RendererDummy

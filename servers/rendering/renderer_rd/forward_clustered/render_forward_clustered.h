@@ -471,6 +471,11 @@ private:
 			bool flip_cull;
 
 			uint32_t uniform_buffer_index;
+
+			// When valid, the pass first fills its rect with the depths of this texture, from
+			// copy_offset texels away: a split starting from its cache of static objects.
+			RID copy_source;
+			Vector2i copy_offset;
 		};
 
 		LocalVector<ShadowPass> shadow_passes;
@@ -812,8 +817,8 @@ private:
 	/* Render shadows */
 
 	void _render_shadow_pass(RID p_light, RID p_shadow_atlas, int p_pass, const PagedArray<RenderGeometryInstance *> &p_instances, float p_lod_distance_multiplier = 0, float p_screen_mesh_lod_threshold = 0.0, bool p_open_pass = true, bool p_close_pass = true, bool p_clear_region = true, RenderingServerTypes::RenderInfo *p_render_info = nullptr, const Size2i &p_viewport_size = Size2i(1, 1), const Transform3D &p_main_cam_transform = Transform3D());
-	// Shifts what a light's tile of the directional shadow cache holds by whole texels and depth steps.
-	void _scroll_directional_shadow_cache(const Rect2i &p_tile_rect, const Vector2i &p_scroll, float p_depth_scroll);
+	// Shifts what a tile of a directional shadow cache atlas holds by whole texels and depth steps.
+	void _scroll_directional_shadow_cache(RendererRD::LightStorage::DirectionalCacheAtlas p_atlas, const Rect2i &p_tile_rect, const Vector2i &p_scroll, float p_depth_scroll);
 	void _render_shadow_begin();
 	void _render_shadow_append(RID p_framebuffer, const PagedArray<RenderGeometryInstance *> &p_instances, const Projection &p_projection, const Transform3D &p_transform, float p_zfar, float p_bias, float p_normal_bias, bool p_reverse_cull_face, bool p_use_dp, bool p_use_dp_flip, bool p_use_pancake, float p_lod_distance_multiplier = 0.0, float p_screen_mesh_lod_threshold = 0.0, const Rect2i &p_rect = Rect2i(), bool p_flip_y = false, bool p_clear_region = true, bool p_begin = true, bool p_end = true, RenderingServerTypes::RenderInfo *p_render_info = nullptr, const Size2i &p_viewport_size = Size2i(1, 1), const Transform3D &p_main_cam_transform = Transform3D());
 	void _render_shadow_process();
@@ -904,6 +909,8 @@ public:
 	virtual bool free(RID p_rid) override;
 
 	virtual void update() override;
+
+	virtual bool is_directional_shadow_split_cache_supported() const override { return true; }
 
 	RenderForwardClustered();
 	~RenderForwardClustered();
