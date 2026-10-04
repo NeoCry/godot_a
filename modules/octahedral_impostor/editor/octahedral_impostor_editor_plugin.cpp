@@ -69,8 +69,9 @@
 
 static const int atlas_sizes[] = { 256, 512, 1024, 2048, 4096, 8192 };
 static const int supersampling_factors[] = { 1, 2, 4 };
-// Largest atlas of the preview, which bakes again at each change of the settings.
-static const int PREVIEW_ATLAS_SIZE = 1024;
+// Largest atlas of the preview, which bakes again at each change of the settings: the default size,
+// so that the preview shows the result.
+static const int PREVIEW_ATLAS_SIZE = 2048;
 
 // Size on screen of the objects replaced by billboards: they're flat, unlike the objects.
 static const int BILLBOARD_LOD_PIXELS = 128;
@@ -81,6 +82,11 @@ static float _get_lod_distance(float p_pixel_size) {
 	const float pixel_angle = 2.0 * Math::tan(Math::deg_to_rad(75.0 / 2.0)) / 1080.0;
 	return p_pixel_size / pixel_angle;
 }
+
+// The pixels of the frames of an impostor are shown smaller than the pixels of the screen from this
+// factor of the distance where they have the same size: the blend of the frames, their filtering and
+// mipmaps soften them, they look as sharp as the meshes from there.
+static const float IMPOSTOR_LOD_SHARPNESS = 1.5;
 
 static Node3D *_instantiate_scene(const String &p_path) {
 	const Ref<PackedScene> scene = ResourceLoader::load(p_path, "PackedScene");
@@ -172,6 +178,8 @@ Ref<OctahedralImpostorBaker> OctahedralImpostorDialog::_create_baker() const {
 	baker->set_atlas_size(atlas_size_option->get_selected_id());
 	baker->set_supersampling(supersampling_option->get_selected_id());
 	baker->set_bake_orm(orm_check->is_pressed());
+	baker->set_bake_ambient_occlusion(ambient_occlusion_check->is_pressed());
+	baker->set_bake_translucency(translucency_check->is_pressed());
 	return baker;
 }
 
@@ -257,8 +265,9 @@ void OctahedralImpostorDialog::_update_type_settings() {
 	cross_planes_label->set_visible(cross);
 	cross_planes_spin->set_visible(cross);
 	atlas_size_label->set_text(billboard ? TTR("Texture Size:") : TTR("Atlas Size:"));
-	atlas_size_option->set_tooltip_text(billboard ? TTR("Size of the longest side of the textures. The other side fits the shape of the object.") : TTR("Size of the atlases of the views."));
+	atlas_size_option->set_tooltip_text(billboard ? TTR("Size of the longest side of the textures. The other side is the smallest power of two that fits the shape of the object.") : TTR("Size of the atlases of the views."));
 	orm_check->set_text(billboard ? TTR("ORM Texture") : TTR("ORM Atlas"));
+	translucency_check->set_text(billboard ? TTR("Translucency Texture") : TTR("Translucency Atlas"));
 
 	if (_is_batch()) {
 		path_edit->set_tooltip_text(billboard ? TTR("The billboards are saved in this folder as \"<name>_billboard.tres\", with their textures.") : TTR("The impostors are saved in this folder as \"<name>_impostor.tres\", with their atlases."));
@@ -271,15 +280,29 @@ void OctahedralImpostorDialog::_update_type_settings() {
 	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_IMPOSTOR), billboard ? TTR("Billboard") : TTR("Impostor"));
 	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_ALBEDO), billboard ? TTR("Albedo Texture") : TTR("Albedo Atlas"));
 	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_NORMAL), billboard ? TTR("Normal Map") : TTR("Normal Atlas"));
-	// Billboards are flat.
+	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_ORM), billboard ? TTR("ORM Texture") : TTR("ORM Atlas"));
+	preview_mode_option->set_item_text(preview_mode_option->get_item_index(PREVIEW_TRANSLUCENCY), billboard ? TTR("Translucency Texture") : TTR("Translucency Atlas"));
+	_update_preview_modes();
+}
+
+void OctahedralImpostorDialog::_update_preview_modes() {
+	// Billboards are flat. The optional textures are shown when they're baked.
+	const bool billboard = _is_billboard();
+	const bool has_orm = preview_baker.is_valid() && preview_baker->get_orm_image().is_valid();
+	const bool has_translucency = preview_baker.is_valid() && preview_baker->get_translucency_image().is_valid();
 	preview_mode_option->set_item_disabled(preview_mode_option->get_item_index(PREVIEW_DEPTH), billboard);
-	if (billboard && preview_mode_option->get_selected_id() == PREVIEW_DEPTH) {
+	preview_mode_option->set_item_disabled(preview_mode_option->get_item_index(PREVIEW_ORM), !has_orm);
+	preview_mode_option->set_item_disabled(preview_mode_option->get_item_index(PREVIEW_TRANSLUCENCY), !has_translucency);
+	const int selected = preview_mode_option->get_selected_id();
+	if ((billboard && selected == PREVIEW_DEPTH) || (preview_baker.is_valid() && ((selected == PREVIEW_ORM && !has_orm) || (selected == PREVIEW_TRANSLUCENCY && !has_translucency)))) {
 		preview_mode_option->select(preview_mode_option->get_item_index(PREVIEW_IMPOSTOR));
 		_update_preview_mode();
 	}
 }
 
 void OctahedralImpostorDialog::_settings_changed(int p_value) {
+	// The ambient occlusion is in the ORM textures.
+	ambient_occlusion_check->set_disabled(!orm_check->is_pressed());
 	_update_info();
 	_queue_preview();
 }
@@ -296,16 +319,20 @@ void OctahedralImpostorDialog::_add_to_scene_toggled(bool p_pressed) {
 
 void OctahedralImpostorDialog::_update_info() {
 	const Ref<OctahedralImpostorBaker> baker = _create_baker();
-	const int maps = baker->is_baking_orm() ? 3 : 2;
+	// The textures of the (first) object: the translucency is baked when its materials have a
+	// backlight.
+	Node3D *first_node = _get_source_node(0);
+	const LocalVector<OctahedralImpostorBaker::Geometry> geometry = first_node ? OctahedralImpostorBaker::collect_geometry(first_node) : LocalVector<OctahedralImpostorBaker::Geometry>();
+	const bool translucency = baker->is_baking_translucency() && OctahedralImpostorBaker::has_translucency(geometry);
+	const int maps = 2 + (baker->is_baking_orm() ? 1 : 0) + (translucency ? 1 : 0);
 	String warning;
 	bool can_bake = true;
 	if (_is_billboard()) {
-		// The textures fit the shape of the (first) object.
-		Node3D *node = _get_source_node(0);
+		// The textures fit the shape of the object.
 		LocalVector<OctahedralImpostorBaker::View> views;
 		Size2i texture_size;
 		real_t texel_size = 0.0;
-		if (node && OctahedralImpostorBaker::compute_billboard_views(OctahedralImpostorBaker::collect_geometry(node), baker->get_billboard_mode(), baker->get_cross_planes(), baker->get_atlas_size(), views, texture_size, texel_size)) {
+		if (first_node && OctahedralImpostorBaker::compute_billboard_views(geometry, baker->get_billboard_mode(), baker->get_cross_planes(), baker->get_atlas_size(), views, texture_size, texel_size)) {
 			// VRAM compressed at one byte per pixel (BPTC/ASTC 4x4), with mipmaps.
 			const float memory = float(texture_size.x) * texture_size.y * maps * 4.0 / 3.0 / (1024.0 * 1024.0);
 			if (_is_batch()) {
@@ -317,16 +344,17 @@ void OctahedralImpostorDialog::_update_info() {
 			info_label->set_text(vformat(TTR("Textures: %d px on the longest side."), baker->get_atlas_size()));
 		}
 	} else {
-		const int frame_size = baker->get_frame_size();
+		// The frames fill the atlas, they may begin and end between pixels.
 		const int atlas_size = baker->get_baked_atlas_size();
+		const String frame_size = String::num(float(atlas_size) / baker->get_frames(), 1);
 		// VRAM compressed at one byte per pixel (BPTC/ASTC 4x4), with mipmaps.
 		const float memory = float(atlas_size) * atlas_size * maps * 4.0 / 3.0 / (1024.0 * 1024.0);
-		info_label->set_text(vformat(TTR("Frames: %d x %d px. Atlas: %d x %d px.\nVideo memory: %.1f MiB (compressed)."), frame_size, frame_size, atlas_size, atlas_size, memory));
+		info_label->set_text(vformat(TTR("Frames: %s x %s px. Atlas: %d x %d px.\nVideo memory: %.1f MiB (compressed)."), frame_size, frame_size, atlas_size, atlas_size, memory));
 
-		if (frame_size < 4 * OctahedralImpostorBaker::FRAME_PADDING) {
+		if (baker->get_frame_size() < 4 * OctahedralImpostorBaker::FRAME_PADDING) {
 			warning = TTR("The frames are too small: increase the atlas size or reduce the number of frames.");
 			can_bake = false;
-		} else if (frame_size < 32) {
+		} else if (baker->get_frame_size() < 32) {
 			warning = TTR("The frames are small, the impostor will look blurry: increase the atlas size or reduce the number of frames.");
 		}
 	}
@@ -363,7 +391,6 @@ void OctahedralImpostorDialog::_update_preview() {
 	preview_baker = _create_baker();
 	preview_baker->set_atlas_size(MIN(preview_baker->get_atlas_size(), PREVIEW_ATLAS_SIZE));
 	preview_baker->set_supersampling(MIN(preview_baker->get_supersampling(), 2));
-	preview_baker->set_bake_orm(false);
 	if (preview_baker->bake(node, false) != OK) {
 		preview_baker.unref();
 		preview_status->set_text(TTR("The preview couldn't be baked, see the Output panel."));
@@ -377,16 +404,19 @@ void OctahedralImpostorDialog::_update_preview() {
 		// Where the pixels of the bake with the settings are shown at about their resolution (the
 		// preview is baked at a lower resolution). Billboards also wait for the object to be small.
 		float distance = 0.0;
+		const Ref<OctahedralImpostorBaker> baker = _create_baker();
 		if (preview_baker->get_baked_type() == OctahedralImpostorBaker::TYPE_BILLBOARD) {
-			const float texel_size = preview_baker->get_texel_size() * preview_baker->get_atlas_size() / MAX(_create_baker()->get_atlas_size(), 1);
+			const float texel_size = preview_baker->get_texel_size() * preview_baker->get_atlas_size() / MAX(baker->get_atlas_size(), 1);
 			distance = MAX(_get_lod_distance(texel_size), _get_lod_distance(2.0 * preview_baker->get_sphere_radius() / BILLBOARD_LOD_PIXELS));
 		} else {
-			distance = _get_lod_distance(2.0 * preview_baker->get_sphere_radius() / MAX(_create_baker()->get_frame_size(), 1));
+			const float frame_size = float(baker->get_baked_atlas_size()) / baker->get_frames();
+			distance = _get_lod_distance(2.0 * preview_baker->get_sphere_radius() / frame_size) * IMPOSTOR_LOD_SHARPNESS;
 		}
 		lod_distance_spin->set_value_no_signal(Math::snapped(distance, distance > 20.0 ? 1.0 : 0.1));
 	}
 
 	_update_preview_camera();
+	_update_preview_modes();
 	_update_preview_mode(preview_mode_option->get_selected_id());
 }
 
@@ -402,6 +432,10 @@ void OctahedralImpostorDialog::_update_preview_mode(int p_mode) {
 	Ref<Image> image;
 	if (preview_mode == PREVIEW_ALBEDO) {
 		image = preview_baker->get_albedo_image();
+	} else if (preview_mode == PREVIEW_ORM) {
+		image = preview_baker->get_orm_image();
+	} else if (preview_mode == PREVIEW_TRANSLUCENCY) {
+		image = preview_baker->get_translucency_image();
 	} else if (preview_baker->get_baked_type() == OctahedralImpostorBaker::TYPE_BILLBOARD) {
 		// A normal map.
 		image = preview_baker->get_normal_depth_image();
@@ -418,7 +452,7 @@ void OctahedralImpostorDialog::_update_preview_mode(int p_mode) {
 			pixel[3] = 255;
 		}
 	}
-	preview_texture->set_texture(ImageTexture::create_from_image(image));
+	preview_texture->set_texture(image.is_valid() ? Ref<Texture2D>(ImageTexture::create_from_image(image)) : Ref<Texture2D>());
 }
 
 void OctahedralImpostorDialog::_update_preview_camera() {
@@ -483,6 +517,8 @@ void OctahedralImpostorDialog::_save_settings() {
 	settings->set_project_metadata("octahedral_impostor", "atlas_size", atlas_size_option->get_selected_id());
 	settings->set_project_metadata("octahedral_impostor", "supersampling", supersampling_option->get_selected_id());
 	settings->set_project_metadata("octahedral_impostor", "orm", orm_check->is_pressed());
+	settings->set_project_metadata("octahedral_impostor", "ambient_occlusion", ambient_occlusion_check->is_pressed());
+	settings->set_project_metadata("octahedral_impostor", "translucency", translucency_check->is_pressed());
 	settings->set_project_metadata("octahedral_impostor", "add_to_scene", add_to_scene_check->is_pressed());
 	settings->set_project_metadata("octahedral_impostor", "fade", fade_check->is_pressed());
 }
@@ -780,6 +816,23 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	orm_check->connect(SceneStringName(toggled), callable_mp(this, &OctahedralImpostorDialog::_settings_changed).unbind(1).bind(0));
 	grid->add_child(orm_check);
 
+	grid->add_child(memnew(Control));
+	ambient_occlusion_check = memnew(CheckBox);
+	ambient_occlusion_check->set_text(TTR("Ambient Occlusion"));
+	ambient_occlusion_check->set_tooltip_text(TTR("Also bakes the ambient occlusion of the object on itself (e.g. inside the foliage of a tree) into the ORM textures, with the ambient occlusion of the materials."));
+	ambient_occlusion_check->set_pressed(settings->get_project_metadata("octahedral_impostor", "ambient_occlusion", true));
+	ambient_occlusion_check->set_disabled(!orm_check->is_pressed());
+	ambient_occlusion_check->connect(SceneStringName(toggled), callable_mp(this, &OctahedralImpostorDialog::_settings_changed).unbind(1).bind(0));
+	grid->add_child(ambient_occlusion_check);
+
+	grid->add_child(memnew(Control));
+	translucency_check = memnew(CheckBox);
+	translucency_check->set_text(TTR("Translucency Atlas"));
+	translucency_check->set_tooltip_text(TTR("Also bakes the backlight of the materials (the light that goes through the leaves of a tree...), when they have one. The result shows it with its backlight."));
+	translucency_check->set_pressed(settings->get_project_metadata("octahedral_impostor", "translucency", true));
+	translucency_check->connect(SceneStringName(toggled), callable_mp(this, &OctahedralImpostorDialog::_settings_changed).unbind(1).bind(0));
+	grid->add_child(translucency_check);
+
 	info_label = memnew(Label);
 	info_label->set_theme_type_variation("HeaderSmall");
 	settings_vbox->add_child(info_label);
@@ -860,6 +913,8 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	preview_mode_option->add_item(TTR("Albedo Atlas"), PREVIEW_ALBEDO);
 	preview_mode_option->add_item(TTR("Normal Atlas"), PREVIEW_NORMAL);
 	preview_mode_option->add_item(TTR("Depth Atlas"), PREVIEW_DEPTH);
+	preview_mode_option->add_item(TTR("ORM Atlas"), PREVIEW_ORM);
+	preview_mode_option->add_item(TTR("Translucency Atlas"), PREVIEW_TRANSLUCENCY);
 	preview_mode_option->connect(SceneStringName(item_selected), callable_mp(this, &OctahedralImpostorDialog::_update_preview_mode));
 	preview_hbox->add_child(preview_mode_option);
 
@@ -872,7 +927,7 @@ OctahedralImpostorDialog::OctahedralImpostorDialog() {
 	preview_container = memnew(SubViewportContainer);
 	preview_container->set_stretch(true);
 	preview_container->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
-	preview_container->set_tooltip_text(TTR("Drag to rotate, scroll to zoom. The preview is baked at a lower resolution."));
+	preview_container->set_tooltip_text(TTR("Drag to rotate, scroll to zoom. The preview is baked with at most 2048 pixels and 4x supersampling."));
 	preview_container->connect(SceneStringName(gui_input), callable_mp(this, &OctahedralImpostorDialog::_preview_input));
 	preview_panel->add_child(preview_container);
 
@@ -1014,7 +1069,7 @@ Ref<Resource> OctahedralImpostorMaterialConversionPlugin::convert(const Ref<Reso
 	ERR_FAIL_COND_V(shader_material.is_null(), Ref<Resource>());
 
 	// The textures are stored as RIDs in the material, the shader material needs the resources.
-	static const char *texture_names[OctahedralImpostorMaterial3D::TEXTURE_MAX] = { "texture_albedo", "texture_normal_depth", "texture_orm" };
+	static const char *texture_names[OctahedralImpostorMaterial3D::TEXTURE_MAX] = { "texture_albedo", "texture_normal_depth", "texture_orm", "texture_backlight" };
 	List<PropertyInfo> parameters;
 	RS::get_singleton()->get_shader_parameter_list(material->get_shader_rid(), &parameters);
 	for (const PropertyInfo &parameter : parameters) {

@@ -39,7 +39,11 @@
 #include "scene/resources/3d/primitive_meshes.h"
 #endif
 
+#include "core/math/math_funcs_binary.h"
 #include "core/math/random_number_generator.h"
+#include "scene/resources/image_texture.h"
+#include "servers/rendering/shader_language.h"
+#include "servers/rendering/shader_types.h"
 #include "tests/test_macros.h"
 
 namespace TestOctahedralImpostor {
@@ -152,6 +156,17 @@ TEST_CASE("[OctahedralImpostor] Material properties") {
 	other->set_layout(OctahedralImpostorMaterial3D::LAYOUT_HEMISPHERE);
 	CHECK(other->get_shader_rid() == material->get_shader_rid());
 
+	// The translucency atlas is used with the backlight.
+	Ref<OctahedralImpostorMaterial3D> backlit;
+	backlit.instantiate();
+	backlit->set_backlight_enabled(true);
+	const RID backlight_shader = backlit->get_shader_rid();
+	CHECK(backlight_shader != material->get_shader_rid());
+	backlit->set_texture(OctahedralImpostorMaterial3D::TEXTURE_BACKLIGHT, ImageTexture::create_from_image(Image::create_empty(4, 4, false, Image::FORMAT_RGB8)));
+	CHECK(backlit->get_shader_rid() != backlight_shader);
+	backlit->set_backlight_enabled(false);
+	CHECK(backlit->get_shader_rid() == material->get_shader_rid());
+
 	// The quad turns toward the camera around the bounding sphere.
 	material->set_sphere_center(Vector3(1, 2, 3));
 	material->set_sphere_radius(2.0);
@@ -223,11 +238,20 @@ TEST_CASE("[OctahedralImpostor][Editor] Frame size") {
 	baker->set_frames(16);
 	CHECK(baker->get_frame_size() == 128);
 	CHECK(baker->get_baked_atlas_size() == 2048);
-	// Rounded down to a multiple of the frames and of the blocks of compressed textures.
+	// The frames fill the atlas, a power of two, even when they don't have whole pixels.
 	baker->set_frames(12);
-	CHECK(baker->get_frame_size() == 168);
-	CHECK(baker->get_baked_atlas_size() == 2016);
-	CHECK(baker->get_frame_size() % 4 == 0);
+	CHECK(baker->get_frame_size() == 170);
+	CHECK(baker->get_baked_atlas_size() == 2048);
+
+	// The atlases are powers of two.
+	baker->set_atlas_size(3000);
+	CHECK(baker->get_atlas_size() == 2048);
+	baker->set_atlas_size(3100);
+	CHECK(baker->get_atlas_size() == 4096);
+	baker->set_atlas_size(100000);
+	CHECK(baker->get_atlas_size() == OctahedralImpostorBaker::MAX_ATLAS_SIZE);
+	baker->set_atlas_size(1);
+	CHECK(baker->get_atlas_size() == OctahedralImpostorBaker::MIN_ATLAS_SIZE);
 }
 
 TEST_CASE("[OctahedralImpostor][Editor] Billboard settings") {
@@ -261,16 +285,15 @@ TEST_CASE("[OctahedralImpostor][Editor] Billboard views") {
 		CHECK(view.basis.get_column(2).is_equal_approx(Vector3(0, 0, 1)));
 		CHECK(view.basis.get_column(1).is_equal_approx(Vector3(0, 1, 0)));
 		CHECK(view.center.is_equal_approx(Vector3(1, 2, 0)));
-		// The textures fit the shape: the longest side is the size, in blocks of 4 pixels.
+		// The textures fit the shape: the longest side is the size, the sides are powers of two.
 		CHECK(atlas_size.y == 512);
-		CHECK(atlas_size.x < 256);
-		CHECK(atlas_size.x % 4 == 0);
+		CHECK(atlas_size.x == 256);
 		CHECK(view.rect == Rect2i(Point2i(), atlas_size));
-		// The view contains the geometry with a border.
+		CHECK(view.pixel_center.is_equal_approx(Vector2(128, 256)));
+		// The view contains the geometry with a border, tight along the longest side.
 		const Size2 world_size = Size2(view.rect.size) * texel;
 		CHECK(world_size.x > 1.0);
 		CHECK(world_size.y > 4.0);
-		CHECK(world_size.x - 1.0 < 20.0 * texel);
 		CHECK(world_size.y - 4.0 < 20.0 * texel);
 	}
 
@@ -281,6 +304,8 @@ TEST_CASE("[OctahedralImpostor][Editor] Billboard views") {
 		REQUIRE(OctahedralImpostorBaker::compute_billboard_views(geometry, OctahedralImpostorBaker::BILLBOARD_CROSS, 3, 1024, views, atlas_size, texel));
 		REQUIRE(views.size() == 3);
 		CHECK(MAX(atlas_size.x, atlas_size.y) == 1024);
+		CHECK(Math::is_power_of_2(atlas_size.x));
+		CHECK(Math::is_power_of_2(atlas_size.y));
 		int width = 0;
 		for (uint32_t i = 0; i < views.size(); i++) {
 			const OctahedralImpostorBaker::View &view = views[i];
@@ -300,6 +325,131 @@ TEST_CASE("[OctahedralImpostor][Editor] Billboard views") {
 		CHECK(views[0].rect.size.x < views[1].rect.size.x);
 	}
 
+	memdelete(root);
+}
+
+TEST_CASE("[OctahedralImpostor][Editor] Billboard textures are powers of two") {
+	Node3D *root = memnew(Node3D);
+	MeshInstance3D *box = _make_box(Vector3(), Vector3(1, 1, 1));
+	root->add_child(box);
+	const Vector3 sizes[] = { Vector3(1, 1, 1), Vector3(1, 2.48, 1), Vector3(3, 1, 0.2), Vector3(0.1, 5, 0.1), Vector3(10, 0.5, 10) };
+	for (const Vector3 &size : sizes) {
+		Ref<BoxMesh> mesh;
+		mesh.instantiate();
+		mesh->set_size(size);
+		box->set_mesh(mesh);
+		const LocalVector<OctahedralImpostorBaker::Geometry> geometry = OctahedralImpostorBaker::collect_geometry(root);
+		for (int mode = 0; mode < OctahedralImpostorBaker::BILLBOARD_MAX; mode++) {
+			LocalVector<OctahedralImpostorBaker::View> views;
+			Size2i atlas_size;
+			real_t texel = 0.0;
+			REQUIRE(OctahedralImpostorBaker::compute_billboard_views(geometry, OctahedralImpostorBaker::BillboardMode(mode), 3, 1000, views, atlas_size, texel));
+			CHECK(MAX(atlas_size.x, atlas_size.y) == 1024);
+			CHECK(Math::is_power_of_2(atlas_size.x));
+			CHECK(Math::is_power_of_2(atlas_size.y));
+			// The views fill the textures.
+			int width = 0;
+			for (const OctahedralImpostorBaker::View &view : views) {
+				CHECK(view.rect.size.y == atlas_size.y);
+				CHECK(view.rect.size.x % 4 == 0);
+				width += view.rect.size.x;
+			}
+			CHECK(width == atlas_size.x);
+		}
+	}
+	memdelete(root);
+}
+
+static Error _compile_spatial_shader(const String &p_code, String &r_error) {
+	ShaderLanguage::ShaderCompileInfo info;
+	info.functions = ShaderTypes::get_singleton()->get_functions(RSE::SHADER_SPATIAL);
+	info.render_modes = ShaderTypes::get_singleton()->get_modes(RSE::SHADER_SPATIAL);
+	info.stencil_modes = ShaderTypes::get_singleton()->get_stencil_modes(RSE::SHADER_SPATIAL);
+	info.shader_types = ShaderTypes::get_singleton()->get_types();
+	ShaderLanguage parser;
+	const Error err = parser.compile(p_code, info);
+	r_error = parser.get_error_text();
+	return err;
+}
+
+TEST_CASE("[OctahedralImpostor][Editor] Shaders that capture the data of the materials") {
+	// A foliage shader: transparent, both sides, normal map, roughness and backlight.
+	const String code = R"(shader_type spatial;
+render_mode blend_mix, cull_disabled, depth_draw_always, depth_prepass_alpha, diffuse_burley;
+stencil_mode read, compare_always, 1;
+
+uniform sampler2D texture_albedo : source_color;
+uniform sampler2D texture_normal : hint_normal;
+uniform vec4 backlight : source_color = vec4(0.2, 0.4, 0.1, 1.0);
+/* A comment with void fragment() { return; } in it. */
+const vec3 strings_in_hints = vec3(1.0); // "void fragment() {"
+
+void vertex() {
+	VERTEX.y += sin(TIME) * 0.0;
+}
+
+void fragment() {
+	vec4 tex = texture(texture_albedo, UV);
+	ALBEDO = tex.rgb;
+	ALPHA = tex.a;
+	if (ALPHA < 0.01) {
+		discard;
+	}
+	NORMAL_MAP = texture(texture_normal, UV).rgb;
+	ROUGHNESS = 0.8;
+	BACKLIGHT = backlight.rgb;
+}
+
+void light() {
+	DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR;
+}
+)";
+	const String capture = OctahedralImpostorBaker::make_capture_shader_code(code);
+	REQUIRE_FALSE(capture.is_empty());
+	String error;
+	CHECK_MESSAGE(_compile_spatial_shader(capture, error) == OK, error);
+	// Unshaded and alpha tested, the geometry modes are kept.
+	CHECK(capture.contains("render_mode unshaded, depth_draw_opaque, shadows_disabled, fog_disabled, cull_disabled;"));
+	CHECK_FALSE(capture.contains("blend_mix"));
+	CHECK_FALSE(capture.contains("depth_draw_always"));
+	CHECK_FALSE(capture.contains("depth_prepass_alpha"));
+	CHECK_FALSE(capture.contains("stencil_mode"));
+	CHECK(capture.contains("ALPHA_SCISSOR_THRESHOLD = 0.5;"));
+	// The data is written at the end of the fragment function, with its normal map.
+	const int fragment = capture.find("void fragment()");
+	const int light = capture.find("void light()");
+	CHECK(capture.find("uniform int impostor_bake_mode") < fragment);
+	CHECK(capture.find("NORMAL_MAP.xy * 2.0 - 1.0") > capture.find("BACKLIGHT = backlight.rgb;"));
+	CHECK(capture.find("ALBEDO = vec3(AO, ROUGHNESS, METALLIC);") > fragment);
+	CHECK(capture.find("ALBEDO = BACKLIGHT;") < light);
+	CHECK(capture.contains("void vertex() {\n\tVERTEX.y += sin(TIME) * 0.0;\n}"));
+
+	// Without fragment function.
+	const String vertex_only = OctahedralImpostorBaker::make_capture_shader_code("shader_type spatial;\nvoid vertex() {\n}\n");
+	REQUIRE_FALSE(vertex_only.is_empty());
+	CHECK(_compile_spatial_shader(vertex_only, error) == OK);
+	CHECK(vertex_only.contains("void fragment() {"));
+	CHECK(vertex_only.contains("render_mode unshaded, depth_draw_opaque, shadows_disabled, fog_disabled;"));
+
+	// The data is written at the end, which a return would skip.
+	CHECK(OctahedralImpostorBaker::make_capture_shader_code("shader_type spatial;\nvoid fragment() {\n\tif (UV.x > 0.5) {\n\t\treturn;\n\t}\n\tALBEDO = vec3(1.0);\n}\n").is_empty());
+	// Not a shader.
+	CHECK(OctahedralImpostorBaker::make_capture_shader_code("").is_empty());
+}
+
+TEST_CASE("[OctahedralImpostor][Editor] Translucency of the materials") {
+	Node3D *root = memnew(Node3D);
+	MeshInstance3D *box = _make_box(Vector3(), Vector3(1, 1, 1));
+	root->add_child(box);
+	Ref<StandardMaterial3D> material;
+	material.instantiate();
+	box->set_material_override(material);
+	CHECK_FALSE(OctahedralImpostorBaker::has_translucency(OctahedralImpostorBaker::collect_geometry(root)));
+	// The backlight must have a color or a texture.
+	material->set_feature(BaseMaterial3D::FEATURE_BACKLIGHT, true);
+	CHECK_FALSE(OctahedralImpostorBaker::has_translucency(OctahedralImpostorBaker::collect_geometry(root)));
+	material->set_backlight(Color(0.3, 0.5, 0.1));
+	CHECK(OctahedralImpostorBaker::has_translucency(OctahedralImpostorBaker::collect_geometry(root)));
 	memdelete(root);
 }
 

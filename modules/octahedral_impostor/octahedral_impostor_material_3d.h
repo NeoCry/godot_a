@@ -60,6 +60,7 @@ public:
 		TEXTURE_ALBEDO,
 		TEXTURE_NORMAL_DEPTH,
 		TEXTURE_ORM,
+		TEXTURE_BACKLIGHT,
 		TEXTURE_MAX
 	};
 
@@ -78,6 +79,7 @@ private:
 			uint32_t orm : 1;
 			uint32_t vertex_color : 1;
 			uint32_t backlight : 1;
+			uint32_t backlight_texture : 1;
 		};
 		uint32_t key = 0;
 	};

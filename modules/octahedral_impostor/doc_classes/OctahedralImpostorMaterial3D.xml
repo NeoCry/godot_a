@@ -61,10 +61,13 @@
 			How much the ambient occlusion of the ORM atlas affects the direct lights, see [member BaseMaterial3D.ao_light_affect]. Only with [member orm_texture].
 		</member>
 		<member name="backlight" type="Color" setter="set_backlight" getter="get_backlight" default="Color(0, 0, 0, 1)">
-			The color of the light that goes through the object (e.g. through the leaves of trees), see [member BaseMaterial3D.backlight].
+			The color of the light that goes through the object (e.g. through the leaves of trees), see [member BaseMaterial3D.backlight]. It's added to [member backlight_texture].
 		</member>
 		<member name="backlight_enabled" type="bool" setter="set_backlight_enabled" getter="is_backlight_enabled" default="false">
-			If [code]true[/code], the light that comes from behind the object goes through it, with the [member backlight] color.
+			If [code]true[/code], the light that comes from behind the object goes through it, with the [member backlight] color and the [member backlight_texture].
+		</member>
+		<member name="backlight_texture" type="Texture2D" setter="set_texture" getter="get_texture">
+			The optional translucency atlas: the backlight of the views in RGB (in linear space, like [member BaseMaterial3D.backlight_texture]), baked from the backlight of the materials of the object. Only with [member backlight_enabled].
 		</member>
 		<member name="blend_frames" type="bool" setter="set_blend_frames" getter="is_blending_frames" default="true">
 			If [code]true[/code], the three views closest to the direction of the camera are blended, for smooth transitions when the object turns. If [code]false[/code], only the closest view is shown, which is faster but pops between the views.
@@ -89,7 +92,7 @@
 			The normal and depth atlas: the object space normal of the views in RGB (encoded from [code]0[/code] to [code]1[/code]) and their depth in A, from the front ([code]0[/code]) to the back ([code]1[/code]) of the bounding sphere along the direction of the view. This texture must not be imported as a normal map.
 		</member>
 		<member name="orm_texture" type="Texture2D" setter="set_texture" getter="get_texture">
-			The optional ORM atlas: the ambient occlusion, roughness and metallic of the views in the red, green and blue channels.
+			The optional ORM atlas: the ambient occlusion (of the materials, and of the object on itself), roughness and metallic of the views in the red, green and blue channels.
 		</member>
 		<member name="parallax_scale" type="float" setter="set_parallax_scale" getter="get_parallax_scale" default="1.0">
 			How much the depth of the views shifts their texture coordinates to the surface of the object along the view ray. [code]1.0[/code] matches the depth of the object, [code]0.0[/code] disables the parallax.
@@ -138,7 +141,10 @@
 		<constant name="TEXTURE_ORM" value="2" enum="TextureParam">
 			The ORM atlas, see [member orm_texture].
 		</constant>
-		<constant name="TEXTURE_MAX" value="3" enum="TextureParam">
+		<constant name="TEXTURE_BACKLIGHT" value="3" enum="TextureParam">
+			The translucency atlas, see [member backlight_texture].
+		</constant>
+		<constant name="TEXTURE_MAX" value="4" enum="TextureParam">
 			Represents the size of the [enum TextureParam] enum.
 		</constant>
 	</constants>

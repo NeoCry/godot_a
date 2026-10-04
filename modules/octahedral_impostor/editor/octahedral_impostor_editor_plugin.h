@@ -62,6 +62,8 @@ class OctahedralImpostorDialog : public ConfirmationDialog {
 		PREVIEW_ALBEDO,
 		PREVIEW_NORMAL,
 		PREVIEW_DEPTH,
+		PREVIEW_ORM,
+		PREVIEW_TRANSLUCENCY,
 	};
 
 	struct Source {
@@ -87,6 +89,8 @@ class OctahedralImpostorDialog : public ConfirmationDialog {
 	OptionButton *atlas_size_option = nullptr;
 	OptionButton *supersampling_option = nullptr;
 	CheckBox *orm_check = nullptr;
+	CheckBox *ambient_occlusion_check = nullptr;
+	CheckBox *translucency_check = nullptr;
 	Label *info_label = nullptr;
 	CheckBox *add_to_scene_check = nullptr;
 	SpinBox *lod_distance_spin = nullptr;
@@ -124,6 +128,7 @@ class OctahedralImpostorDialog : public ConfirmationDialog {
 	void _lod_distance_changed(double p_value);
 	void _add_to_scene_toggled(bool p_pressed);
 	void _update_info();
+	void _update_preview_modes();
 	void _queue_preview();
 	void _update_preview();
 	void _update_preview_mode(int p_mode = 0);

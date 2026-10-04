@@ -106,6 +106,7 @@ OctahedralImpostorMaterial3D::ShaderKey OctahedralImpostorMaterial3D::_compute_k
 	key.orm = textures[TEXTURE_ORM].is_valid();
 	key.vertex_color = vertex_color_use_as_albedo;
 	key.backlight = backlight_enabled;
+	key.backlight_texture = backlight_enabled && textures[TEXTURE_BACKLIGHT].is_valid();
 	return key;
 }
 
@@ -134,6 +135,10 @@ uniform sampler2D texture_normal_depth : hint_default_black, filter_linear_mipma
 )";
 	if (orm) {
 		code += "uniform sampler2D texture_orm : hint_default_white, filter_linear_mipmap, repeat_disable;\n";
+	}
+	if (p_key.backlight_texture) {
+		code += "// Light that goes through the views (linear), added to the backlight color.\n";
+		code += "uniform sampler2D texture_backlight : hint_default_black, filter_linear_mipmap, repeat_disable;\n";
 	}
 	code += R"(uniform int frames = 12;
 uniform vec3 sphere_center = vec3(0.0);
@@ -374,6 +379,9 @@ void fragment() {
 	if (orm) {
 		code += vformat("	vec4 orm_tex = impostor_sample(texture_orm, %s, uv_dx, uv_dy);\n", samples);
 	}
+	if (p_key.backlight_texture) {
+		code += vformat("	vec4 backlight_tex = impostor_sample(texture_backlight, %s, uv_dx, uv_dy);\n", samples);
+	}
 
 	code += "\n	ALBEDO = albedo.rgb * albedo_tex.rgb;\n";
 	code += "	ALPHA = albedo.a * albedo_tex.a;\n";
@@ -408,7 +416,9 @@ void fragment() {
 		code += "	METALLIC = metallic;\n";
 	}
 	code += "	SPECULAR = specular;\n";
-	if (p_key.backlight) {
+	if (p_key.backlight_texture) {
+		code += "	BACKLIGHT = backlight.rgb + backlight_tex.rgb;\n";
+	} else if (p_key.backlight) {
 		code += "	BACKLIGHT = backlight.rgb;\n";
 	}
 	if (p_key.depth_offset) {
@@ -531,9 +541,9 @@ float OctahedralImpostorMaterial3D::get_sphere_radius() const {
 void OctahedralImpostorMaterial3D::set_texture(TextureParam p_param, const Ref<Texture2D> &p_texture) {
 	ERR_FAIL_INDEX(p_param, TEXTURE_MAX);
 	textures[p_param] = p_texture;
-	static const char *names[TEXTURE_MAX] = { "texture_albedo", "texture_normal_depth", "texture_orm" };
+	static const char *names[TEXTURE_MAX] = { "texture_albedo", "texture_normal_depth", "texture_orm", "texture_backlight" };
 	_set_param(names[p_param], p_texture.is_valid() ? Variant(p_texture->get_rid()) : Variant());
-	if (p_param == TEXTURE_ORM) {
+	if (p_param == TEXTURE_ORM || p_param == TEXTURE_BACKLIGHT) {
 		_update_shader();
 		notify_property_list_changed();
 	}
@@ -701,7 +711,7 @@ void OctahedralImpostorMaterial3D::_validate_property(PropertyInfo &p_property) 
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	} else if (p_property.name == "ao_light_affect" && textures[TEXTURE_ORM].is_null()) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
-	} else if (p_property.name == "backlight" && !backlight_enabled) {
+	} else if ((p_property.name == "backlight" || p_property.name == "backlight_texture") && !backlight_enabled) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	}
 }
@@ -795,6 +805,7 @@ void OctahedralImpostorMaterial3D::_bind_methods() {
 	ADD_GROUP("Backlight", "backlight_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "backlight_enabled"), "set_backlight_enabled", "is_backlight_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "backlight", PROPERTY_HINT_COLOR_NO_ALPHA), "set_backlight", "get_backlight");
+	ADD_PROPERTYI(PropertyInfo(Variant::OBJECT, "backlight_texture", PROPERTY_HINT_RESOURCE_TYPE, Texture2D::get_class_static()), "set_texture", "get_texture", TEXTURE_BACKLIGHT);
 
 	BIND_ENUM_CONSTANT(LAYOUT_HEMISPHERE);
 	BIND_ENUM_CONSTANT(LAYOUT_FULL_SPHERE);
@@ -807,6 +818,7 @@ void OctahedralImpostorMaterial3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(TEXTURE_ALBEDO);
 	BIND_ENUM_CONSTANT(TEXTURE_NORMAL_DEPTH);
 	BIND_ENUM_CONSTANT(TEXTURE_ORM);
+	BIND_ENUM_CONSTANT(TEXTURE_BACKLIGHT);
 	BIND_ENUM_CONSTANT(TEXTURE_MAX);
 }
 
