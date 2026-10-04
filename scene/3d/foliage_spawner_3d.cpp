@@ -1577,7 +1577,7 @@ String FoliageSpawner3D::_get_terrain_layer_hint() const {
 	// Named as the Landscape3D editor names them, and numbered, since layers
 	// left with the same default name would be told apart by nothing else.
 	PackedStringArray names;
-	for (int i = 0; i < MIN(terrain_layers.size(), TerrainData::MAX_LAYERS); i++) {
+	for (int i = 0; i < terrain->get_used_layer_count(); i++) {
 		const Ref<TerrainLayer> layer = terrain_layers[i];
 		String name = (layer.is_valid() && !layer->get_layer_name().is_empty()) ? layer->get_layer_name() : vformat("Layer %d", i);
 		// A comma would start the next flag, a colon give this one a value.
@@ -1699,7 +1699,7 @@ void FoliageSpawner3D::regenerate() {
 		terrain_gt = ground_terrain->get_global_transform();
 		local_to_terrain = terrain_gt.affine_inverse() * gt;
 		use_terrain_ground = project_on_mesh && terrain_ground.setup(ground_terrain_data);
-		use_terrain_layers = terrain_layer_mask != 0 && terrain_layers.setup(ground_terrain_data, ground_terrain->get_layers().size(), terrain_layer_mask);
+		use_terrain_layers = terrain_layer_mask != 0 && terrain_layers.setup(ground_terrain_data, ground_terrain->get_used_layer_count(), terrain_layer_mask);
 	}
 
 	// The roads, rivers, streams and lakes to keep off.
@@ -2074,7 +2074,7 @@ PackedStringArray FoliageSpawner3D::get_configuration_warnings() const {
 		if (terrain == nullptr || terrain->get_terrain_data().is_null()) {
 			warnings.push_back(RTR("Terrain Layer Mask only applies to a Landscape3D (with TerrainData) referenced by Ground Mesh Path, so it is ignored."));
 		} else {
-			const int layer_count = MIN(terrain->get_layers().size(), TerrainData::MAX_LAYERS);
+			const int layer_count = terrain->get_used_layer_count();
 			const uint32_t existing_layers = layer_count >= 32 ? 0xFFFFFFFF : (1u << layer_count) - 1;
 			if ((terrain_layer_mask & existing_layers) == 0) {
 				warnings.push_back(RTR("None of the layers chosen in Terrain Layer Mask exist on the Landscape3D referenced by Ground Mesh Path."));

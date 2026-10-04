@@ -68,6 +68,14 @@ String EditorPropertyNameProcessor::_capitalize_name(const String &p_name) const
 		return cached->value;
 	}
 
+	// A name can be remapped whole, for the few that read wrong word by word
+	// (a class name in snake_case, say).
+	HashMap<String, String>::ConstIterator whole_remap = capitalize_string_remaps.find(p_name);
+	if (whole_remap) {
+		capitalize_string_cache[p_name] = whole_remap->value;
+		return whole_remap->value;
+	}
+
 	Vector<String> parts = p_name.split("_", false);
 	for (int i = 0; i < parts.size(); i++) {
 		// Articles/conjunctions/prepositions which should only be capitalized when not at beginning and end.
@@ -232,6 +240,7 @@ EditorPropertyNameProcessor::EditorPropertyNameProcessor() {
 	capitalize_string_remaps["k1"] = "K1";
 	capitalize_string_remaps["k2"] = "K2";
 	capitalize_string_remaps["kb"] = "(KB)"; // Unit.
+	capitalize_string_remaps["landscape_3d"] = "Landscape3D"; // The class name, as its project settings section.
 	capitalize_string_remaps["lcd"] = "LCD";
 	capitalize_string_remaps["ldr"] = "LDR";
 	capitalize_string_remaps["linuxbsd"] = "Linux/*BSD";

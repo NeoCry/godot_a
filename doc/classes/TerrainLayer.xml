@@ -20,7 +20,7 @@
 			Blends [member orm_texture]'s occlusion (red) channel with "no occlusion" (fully lit): [code]0[/code] ignores the occlusion channel entirely, [code]1[/code] uses it exactly as authored. This fades the effect out at low values rather than multiplying it (which would send low values towards full occlusion - black - instead of none).
 		</member>
 		<member name="displacement" type="float" setter="set_displacement" getter="get_displacement" default="0.0">
-			How far, in meters, [member height_texture] moves the ground from its darkest to its brightest texel wherever this layer is painted, turning the texture into real geometry near the camera: see [member Landscape3D.micro_detail_distance] and [member Landscape3D.micro_detail_levels]. Displacement is centered on mid-gray, so the ground rises and sinks by up to half of this and keeps its average height; the collision shape ignores it. Blended between layers by their weights like their colors are, and filtered through the texture's mipmaps to what the ground's tessellation can show, so it fades in smoothly as the camera comes closer. [code]0[/code] (the default) turns it off; it also does nothing without a [member height_texture].
+			How far, in meters, [member height_texture] moves the ground from its darkest to its brightest texel wherever this layer is painted, turning the texture into real geometry near the camera: see [member ProjectSettings.landscape_3d/micro_detail/distance] and [member ProjectSettings.landscape_3d/micro_detail/levels]. Displacement is centered on mid-gray, so the ground rises and sinks by up to half of this and keeps its average height; the collision shape ignores it. Blended between layers by their weights like their colors are, and filtered through the texture's mipmaps to what the ground's tessellation can show, so it fades in smoothly as the camera comes closer. [code]0[/code] (the default) turns it off; it also does nothing without a [member height_texture].
 		</member>
 		<member name="height_max" type="float" setter="set_height_max" getter="get_height_max" default="1.0">
 			The high end of [member height_texture]'s value range; see [member height_min].
@@ -29,13 +29,13 @@
 			Remaps [member height_texture]'s sampled value from [code][height_min, height_max][/code] to [code][0, 1][/code] before use, for a source texture that doesn't already use its full range (e.g. one whose useful detail only spans 0.2-0.8).
 		</member>
 		<member name="height_texture" type="Texture2D" setter="set_height_texture" getter="get_height_texture">
-			An optional grayscale heightmap for this layer, used for [member displacement] and, when [member pom_enabled] is also [code]true[/code] (and, on top of that, [member Landscape3D.pom_enabled] on the [Landscape3D] this layer is painted on - see its description), for Parallax Occlusion Mapping. Brighter areas sit higher; if unset, this layer reads as flat.
+			An optional grayscale heightmap for this layer, used for [member displacement] and, when [member pom_enabled] is also [code]true[/code] (and, on top of that, [member ProjectSettings.landscape_3d/parallax_occlusion_mapping/enabled] on the [Landscape3D] this layer is painted on - see its description), for Parallax Occlusion Mapping. Brighter areas sit higher; if unset, this layer reads as flat.
 		</member>
 		<member name="heightmap_scale" type="float" setter="set_heightmap_scale" getter="get_heightmap_scale" default="5.0">
 			Scales how much apparent depth [member height_texture] produces under Parallax Occlusion Mapping. Matches [member BaseMaterial3D.heightmap_scale]'s range and usable values (internally scaled down for convenience, so typical values are small double-digit numbers, not fractions).
 		</member>
 		<member name="layer_name" type="String" setter="set_layer_name" getter="get_layer_name" default="&quot;Layer&quot;">
-			A display name for this layer, shown in [Landscape3D]'s Paint brush layer list.
+			A display name for this layer, shown in the [b]MatLayers[/b] list of [Landscape3D]'s editor toolbar.
 		</member>
 		<member name="normal_strength" type="float" setter="set_normal_strength" getter="get_normal_strength" default="1.0">
 			How strongly [member normal_texture] perturbs the surface normal; [code]0[/code] ignores it entirely (a flat normal), values above [code]1[/code] exaggerate it. Matches [member BaseMaterial3D.normal_scale] exactly (same range and default), applied the same way (Godot's own [code]NORMAL_MAP_DEPTH[/code]).
@@ -47,7 +47,7 @@
 			An optional packed occlusion (red channel), roughness (green channel), and metallic (blue channel) texture for this layer, matching the convention used elsewhere in Godot (see [member BaseMaterial3D.orm_texture]). If unset, the layer uses no occlusion, medium roughness, and no metallic before [member ao_strength]/[member roughness] are applied.
 		</member>
 		<member name="pom_enabled" type="bool" setter="set_pom_enabled" getter="is_pom_enabled" default="false">
-			If [code]true[/code] (and [member Landscape3D.pom_enabled] is also [code]true[/code] on the terrain this layer is painted on), this layer uses [member height_texture] for Parallax Occlusion Mapping. Per-layer rather than terrain-wide, since a layer with no real height detail shouldn't pay for the ray-marching this adds to every fragment it covers. Mutually exclusive with [member triplanar_enabled] on the same layer (if both are set, this layer is rendered as triplanar, without POM - matching [BaseMaterial3D]'s own heightmapping/triplanar exclusivity).
+			If [code]true[/code] (and [member ProjectSettings.landscape_3d/parallax_occlusion_mapping/enabled] is also [code]true[/code] on the terrain this layer is painted on), this layer uses [member height_texture] for Parallax Occlusion Mapping. Per-layer rather than terrain-wide, since a layer with no real height detail shouldn't pay for the ray-marching this adds to every fragment it covers. Mutually exclusive with [member triplanar_enabled] on the same layer (if both are set, this layer is rendered as triplanar, without POM - matching [BaseMaterial3D]'s own heightmapping/triplanar exclusivity).
 		</member>
 		<member name="roughness" type="float" setter="set_roughness" getter="get_roughness" default="1.0">
 			Multiplies [member orm_texture]'s roughness (green) channel, the same convention as [member BaseMaterial3D.roughness].

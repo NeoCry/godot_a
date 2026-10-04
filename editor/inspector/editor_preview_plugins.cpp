@@ -50,6 +50,49 @@
 #include "servers/audio/audio_server.h"
 #include "servers/rendering/rendering_server.h"
 
+void add_virtual_texture_badge(Ref<Image> p_image) {
+	if (p_image.is_null() || p_image->is_empty()) {
+		return;
+	}
+	if (p_image->get_format() != Image::FORMAT_RGBA8) {
+		p_image->convert(Image::FORMAT_RGBA8);
+	}
+
+	// "RVT" in a 3x5 pixel font, on a 13x7 badge, scaled up in whole pixels on larger thumbnails.
+	static const char *glyphs[5] = {
+		"###.#.#.###",
+		"#.#.#.#..#.",
+		"##..#.#..#.",
+		"#.#.#.#..#.",
+		"#.#..#...#.",
+	};
+	constexpr int BADGE_WIDTH = 13;
+	constexpr int BADGE_HEIGHT = 7;
+	const int w = p_image->get_width();
+	const int h = p_image->get_height();
+	const int scale = MAX(1, (int)Math::round(MIN(w, h) / 36.0));
+	const int badge_w = BADGE_WIDTH * scale;
+	const int badge_h = BADGE_HEIGHT * scale;
+	if (badge_w > w || badge_h > h) {
+		return;
+	}
+
+	const Color background = Color(0.92, 0.47, 0.25);
+	const Color text = Color(1, 1, 1);
+	const int x0 = w - badge_w;
+	const int y0 = h - badge_h;
+	for (int y = 0; y < BADGE_HEIGHT; y++) {
+		for (int x = 0; x < BADGE_WIDTH; x++) {
+			// Rounded corners: the corner pixels are left out.
+			if ((x == 0 || x == BADGE_WIDTH - 1) && (y == 0 || y == BADGE_HEIGHT - 1)) {
+				continue;
+			}
+			const bool lit = x >= 1 && x < BADGE_WIDTH - 1 && y >= 1 && y < BADGE_HEIGHT - 1 && glyphs[y - 1][x - 1] == '#';
+			p_image->fill_rect(Rect2i(x0 + x * scale, y0 + y * scale, scale, scale), lit ? text : background);
+		}
+	}
+}
+
 void post_process_preview(Ref<Image> p_image) {
 	if (p_image->get_format() != Image::FORMAT_RGBA8) {
 		p_image->convert(Image::FORMAT_RGBA8);
@@ -188,6 +231,9 @@ Ref<Texture2D> EditorTexturePreviewPlugin::generate(const Ref<Resource> &p_from,
 	}
 	Vector2i new_size_i = Vector2i(new_size).maxi(1);
 	img->resize(new_size_i.x, new_size_i.y, Image::INTERPOLATE_CUBIC);
+	if (Ref<VirtualTexture2D> tex_virtual = p_from; tex_virtual.is_valid()) {
+		add_virtual_texture_badge(img);
+	}
 	post_process_preview(img);
 
 	return ImageTexture::create_from_image(img);

@@ -41,6 +41,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_paths.h"
+#include "editor/inspector/editor_preview_plugins.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/main/scene_tree.h"
@@ -241,6 +242,11 @@ void EditorResourcePreview::_generate_preview(Ref<ImageTexture> &r_texture, Ref<
 				small_image = Image::create_empty(small_thumbnail_size, small_thumbnail_size, false, rect->get_format());
 				// Blit the rectangle in the center of the square.
 				small_image->blit_rect(rect, Rect2i(Vector2i(), rect_size), (Vector2i(1, 1) * small_thumbnail_size - rect_size) / 2);
+			}
+
+			// A badge shrunk down with the rest of the thumbnail would be a speck: drawn again, full size.
+			if (type == "VirtualTexture2D") {
+				add_virtual_texture_badge(small_image);
 			}
 
 			r_small_texture.instantiate();

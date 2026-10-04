@@ -215,8 +215,8 @@
 		</member>
 	</members>
 	<constants>
-		<constant name="MAX_LAYERS" value="32">
-			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Landscape3D.layers]); [param layer_index] must be less than this in every method above.
+		<constant name="MAX_LAYERS" value="16">
+			The hard cap on distinct [TerrainLayer]s a [TerrainData] can hold weights for (see [member Landscape3D.layers]); the [code]layer_index[/code] of every method above must be less than this. A project can let its landscapes use fewer still, with [member ProjectSettings.landscape_3d/material_layers/max_layers].
 		</constant>
 		<constant name="MASK_CHANNEL_RED" value="0" enum="MaskChannel">
 			Read [method import_layer_mask]'s mask from the image's red channel. This is the one to use for an ordinary grayscale mask, whose value Godot reads back in every color channel.

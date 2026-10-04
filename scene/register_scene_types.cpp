@@ -1365,6 +1365,10 @@ void register_scene_types() {
 		GLOBAL_DEF_BASIC(vformat("%s/layer_%d", PNAME("layer_names/avoidance"), i + 1), "");
 	}
 
+#ifndef _3D_DISABLED
+	Landscape3D::register_project_settings();
+#endif // _3D_DISABLED
+
 	if (RenderingServer::get_singleton()) {
 		// RenderingServer needs to exist for this to succeed.
 		ColorPickerShape::init_shaders();
