@@ -4392,6 +4392,8 @@ void GI::init(SkyRD *p_sky) {
 		voxel_gi_quality = RSE::VoxelGIQuality(CLAMP(int(GLOBAL_GET("rendering/global_illumination/voxel_gi/quality")), 0, 1));
 		voxel_gi_screen_probes = GLOBAL_GET("rendering/global_illumination/voxel_gi/screen_probes");
 		voxel_gi_screen_probe_history_frames = CLAMP(int(GLOBAL_GET("rendering/global_illumination/voxel_gi/screen_probe_history_frames")), 1, 256);
+		voxel_gi_screen_probe_trace_distance = MAX(0.0f, float(GLOBAL_GET("rendering/global_illumination/voxel_gi/screen_probe_trace_distance")));
+		voxel_gi_screen_probe_trace_steps = CLAMP(int(GLOBAL_GET("rendering/global_illumination/voxel_gi/screen_probe_trace_steps")), 0, 64);
 
 		String defines = "\n#define MAX_LIGHTS " + itos(voxel_gi_max_lights) + "\n";
 
@@ -4874,6 +4876,13 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 
 	Size2i internal_size = p_render_buffers->get_internal_size();
 
+	// VoxelGI's screen probes can be switched on and off and tuned while running (in the editor's project
+	// settings, or with ProjectSettings.set_setting()). The renderer reads these after this, for the frame.
+	voxel_gi_screen_probes = GLOBAL_GET_CACHED(bool, "rendering/global_illumination/voxel_gi/screen_probes");
+	voxel_gi_screen_probe_history_frames = CLAMP(GLOBAL_GET_CACHED(int, "rendering/global_illumination/voxel_gi/screen_probe_history_frames"), 1, 256);
+	voxel_gi_screen_probe_trace_distance = MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/global_illumination/voxel_gi/screen_probe_trace_distance"));
+	voxel_gi_screen_probe_trace_steps = CLAMP(GLOBAL_GET_CACHED(int, "rendering/global_illumination/voxel_gi/screen_probe_trace_steps"), 0, 64);
+
 	// Temporal accumulation needs one reprojection matrix for the whole pass and history it
 	// can sample everywhere it writes. Neither holds for multiview, where each eye has its
 	// own view space, or for VRS, where most pixels are filled by replicating a neighbor
@@ -5084,6 +5093,10 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 	push_constant.screen_probe_offset[1] = 0;
 	push_constant.screen_probe_flags = 0;
 	push_constant.screen_probe_pass = 0;
+	push_constant.screen_probe_trace_distance = voxel_gi_screen_probe_trace_distance;
+	push_constant.screen_probe_trace_steps = voxel_gi_screen_probe_trace_steps;
+	push_constant.screen_probe_last_frame_lod = 0.0;
+	push_constant.pixel_size = 2.0f / (internal_size.y * Math::abs(p_projections[0].columns[1][1]));
 	push_constant.pad3 = 0;
 	push_constant.pad4 = 0;
 	if (use_screen_probes) {
@@ -5104,7 +5117,10 @@ void GI::process_gi(Ref<RenderSceneBuffersRD> p_render_buffers, const RID *p_nor
 		// format changes, which the uniform sets must follow.
 		RID last_frame;
 		if (use_screen_probes && p_render_buffers->has_texture(RB_SCOPE_SSLF, RB_LAST_FRAME)) {
-			last_frame = p_render_buffers->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, v, 0);
+			// All of its mipmaps, which the probes on VoxelGI take the light of what their rays hit from.
+			const uint32_t last_frame_mipmaps = p_render_buffers->get_texture_format(RB_SCOPE_SSLF, RB_LAST_FRAME).mipmaps;
+			last_frame = p_render_buffers->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, v, 0, 1, last_frame_mipmaps);
+			push_constant.screen_probe_last_frame_lod = float(last_frame_mipmaps - 1);
 		}
 		if (last_frame != rbgi->screen_probe_last_frame[v]) {
 			for (uint32_t i = 0; i < 2; i++) {
