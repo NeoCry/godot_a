@@ -4,12 +4,14 @@
 		Paints one or more kinds of vegetation onto other meshes with a brush, in the editor.
 	</brief_description>
 	<description>
-		[FoliagePainter3D] holds a list of [member layers] (vegetation types, each a [FoliageLayer]). It is the counterpart to [FoliageSpawner3D]'s procedural box-volume scattering: instead of filling a volume automatically, instances are painted, erased, or placed/removed one at a time directly onto the actual surface geometry of any [MeshInstance3D] or [Landscape3D] in the scene, using the brush tool that appears in the 3D viewport's toolbar while a [FoliagePainter3D] is selected.
-		Add at least one [FoliageLayer] to [member layers] before using the brush, and give it a mesh via [member FoliageLayer.lod_levels] (a fresh layer already has three default LOD levels; just assign a [Mesh] to at least the first one). The brush toolbar lets you choose which layers it paints with at once, its radius and density, and one of four modes:
+		[FoliagePainter3D] holds a list of [member foliage_layers] (vegetation types, each a [FoliageLayer]). It is the counterpart to [FoliageSpawner3D]'s procedural box-volume scattering: instead of filling a volume automatically, instances are painted, erased, or placed/removed one at a time directly onto the actual surface geometry of any [MeshInstance3D] or [Landscape3D] in the scene, using the brush tool that appears in the 3D viewport's toolbar while a [FoliagePainter3D] is selected.
+		Add at least one [FoliageLayer] to [member foliage_layers] before using the brush ([b]Add FoliageLayer[/b] in the Inspector), and give it a mesh via [member FoliageLayer.lod_levels] (a fresh layer already has three default LOD levels; just assign a [Mesh] to at least the first one in the window [b]Edit LODs[/b] opens). In the Inspector, each [FoliageLayer] folds open on its own settings, and its menu moves, duplicates or saves it as a resource; a [FoliageLayer] saved as a resource can be dropped onto the list to add it. The brush toolbar lets you choose which layers it paints with at once ([b]FoliageInstances[/b], which also lists how many instances each has), its radius and density, and the brush, from one list:
+		- [b]Select[/b]: no brush; the viewport selects and moves things as usual.
 		- [b]Paint[/b]: click or drag over a mesh surface to scatter instances of the active layers within the brush, with random scale, rotation, and normal deviation controlled per layer (see [member FoliageLayer.min_scale], [member FoliageLayer.random_rotation], [member FoliageLayer.align_to_normal_amount], and [member FoliageLayer.random_tilt_degrees]).
 		- [b]Erase[/b]: click or drag to remove instances of the active layers found within the brush.
 		- [b]Place Single[/b]: click to insert exactly one instance at the exact clicked point.
 		- [b]Remove Single[/b]: click to delete the single closest instance to the clicked point.
+		As in [Landscape3D]'s tools, holding [kbd]Shift[/kbd] turns a brush around (Paint into Erase, Place Single into Remove Single, and back), and turning the mouse wheel over the ground sizes the brush ([kbd]Ctrl + Mouse Wheel[/kbd] still zooms).
 		Painting looks at [MeshInstance3D] geometry directly (no physics bodies or collision shapes are required on a painted-on mesh); a [Landscape3D] target is raycast through its own physics collision shape instead, since it keeps one in sync automatically anyway.
 		[b]LOD levels:[/b] each [FoliageLayer] renders through a chain of [FoliageLODLevel]s (see [member FoliageLayer.lod_levels]), e.g. a detailed mesh up close and a cheaper one (or none at all) far away, each with its own visibility/fade distance range and optional material override - all levels of a layer share the exact same painted instance transforms, only their mesh/material/range differ. This lets nearby dense foliage (e.g. grass) switch to a simpler representation, or disappear, at a much shorter distance than larger background vegetation.
 		[b]Cell chunking:[/b] each layer's instances are stored split into a grid of cells on the local XZ plane, sized by [member cell_size]; each non-empty (layer, cell) pair is rendered through one internal [MultiMeshInstance3D] per LOD level. A single giant [MultiMesh] would always be drawn in full once any part of it is visible, since the renderer only culls whole nodes by their bounding box; splitting it into many small, tightly-bounded cells lets the renderer's normal per-node frustum culling skip whole cells that are off-screen instead. The same per-cell bounds are what lets occlusion culling skip the cells hidden behind a hill or a building, which on a [Landscape3D] usually means most of the vegetation in view (see [member ProjectSettings.landscape_3d/occlusion_culling/enabled]). Set [member cell_size] before painting a large area — changing it later does not move already-painted instances into the new grid. Enable [member debug_show_cells] to visualize the resulting cell boundaries in the 3D viewport.
@@ -32,13 +34,13 @@
 			<return type="FoliageLayer" />
 			<param index="0" name="layer_index" type="int" />
 			<description>
-				Returns the [FoliageLayer] at [param layer_index] in [member layers].
+				Returns the [FoliageLayer] at [param layer_index] in [member foliage_layers].
 			</description>
 		</method>
 		<method name="get_layer_count" qualifiers="const">
 			<return type="int" />
 			<description>
-				Returns the number of layers in [member layers].
+				Returns the number of layers in [member foliage_layers].
 			</description>
 		</method>
 		<method name="insert_instance">
@@ -68,6 +70,10 @@
 		<member name="debug_show_cells" type="bool" setter="set_debug_show_cells" getter="is_debug_show_cells_enabled" default="false">
 			If [code]true[/code], the editor gizmo draws the bounds of every non-empty cell (see [member cell_size]). See [b]Cell chunking[/b] in the class description. Off by default since it can clutter the viewport once a large area has been painted.
 		</member>
+		<member name="foliage_layers" type="FoliageLayer[]" setter="set_foliage_layers" getter="get_foliage_layers" default="[]">
+			The vegetation types this node can paint. Each entry is a [FoliageLayer] with its own [member FoliageLayer.lod_levels], randomization settings, and brush density/spacing. Add and configure entries from the Inspector, then select this node to paint with the brush tool in the 3D viewport.
+			The painted instances follow their [FoliageLayer] when the list changes: reordering the list keeps each layer's instances, removing a layer removes the instances painted with it, and replacing the layer in a slot with another one keeps the instances painted in that slot.
+		</member>
 		<member name="gpu_culling" type="bool" setter="set_gpu_culling" getter="is_gpu_culling_enabled" default="false">
 			If [code]true[/code], visibility is decided per instance by a compute pass on the GPU instead of per cell by the renderer. See [b]GPU culling[/b] in the class description. Nothing painted is lost when this is toggled: cells remain the stored form either way, so the brush, undo/redo and saving are unaffected.
 			This pays off when a lot of instances share the screen with a lot of instances that are off it: dense grass over a wide area, or a small [member cell_size] that would otherwise cost many draw calls. It does not pay off for a handful of instances, where the compute dispatch costs more than it saves. It also costs memory, since each LOD level gets a buffer sized for the case where every instance of its layer is visible at once.
@@ -77,9 +83,6 @@
 			[b]Note:[/b] The occlusion test reads the depth pyramid of the previous frame, since the compute pass runs before the viewport is drawn again. An instance that has just come out from behind a hill is therefore drawn one frame late, which is visible only when the camera turns very fast.
 			[b]Note:[/b] This path has no LOD cross-fade. Overlapping [member FoliageLODLevel.visibility_range_begin]/[member FoliageLODLevel.visibility_range_end] bands are collapsed into contiguous ones so that every instance is drawn by exactly one level, and [member FoliageLODLevel.visibility_range_fade_mode] is ignored.
 			[b]Note:[/b] Only the first four entries of each layer's [member FoliageLayer.lod_levels] are rendered, culling follows one camera: the viewport's current [Camera3D] at runtime, or the first 3D editor viewport in the editor (so other split views are culled against that one), and instances get no motion vectors (so they are not anti-aliased by TAA).
-		</member>
-		<member name="layers" type="FoliageLayer[]" setter="set_layers" getter="get_layers" default="[]">
-			The vegetation types this node can paint. Each entry is a [FoliageLayer] with its own [member FoliageLayer.lod_levels], randomization settings, and brush density/spacing. Add and configure entries from the Inspector, then select this node to paint with the brush tool in the 3D viewport.
 		</member>
 	</members>
 </class>

@@ -67,6 +67,15 @@ class FoliagePainter3D : public Node3D {
 	// One cell map per layer (indexed the same as `layers`).
 	LocalVector<HashMap<Vector2i, FoliageCell>> layer_cells;
 
+	// The instances of layers taken out of `layers`, held (in the editor only)
+	// for as long as this node lives, so that undoing the removal brings them
+	// back with it. They render nothing and are not saved.
+	struct DetachedLayer {
+		Ref<FoliageLayer> layer;
+		HashMap<Vector2i, FoliageCell> cells;
+	};
+	LocalVector<DetachedLayer> detached_layers;
+
 	// GPU-driven culling. Cells stay the source of truth either way - the brush
 	// and undo/redo work on them, and they are what gets saved - but while this
 	// is on they hold a single MultiMesh each and render nothing. Rendering
@@ -104,7 +113,13 @@ class FoliagePainter3D : public Node3D {
 	// transforms into any newly added LOD level as needed.
 	void _sync_cell_lods(int p_layer, FoliageCell &p_cell);
 	void _sync_layer_cells(int p_layer);
-	void _prune_layers_to_size();
+	void _free_cell_nodes(FoliageCell &p_cell);
+	// Hands each layer of `layers` the cells it had before p_old_layers was
+	// replaced by it: a layer keeps its instances wherever it moved to in the
+	// list, and a slot whose layer was swapped for another one keeps the
+	// instances painted in it.
+	void _remap_layer_cells(const TypedArray<FoliageLayer> &p_old_layers);
+	void _prune_gpu_layers_to_size();
 	void _on_layer_changed(int p_index);
 	void _refresh_layer_instance_count(int p_layer);
 
@@ -121,10 +136,13 @@ class FoliagePainter3D : public Node3D {
 protected:
 	static void _bind_methods();
 	void _notification(int p_what);
+#ifndef DISABLE_DEPRECATED
+	bool _set(const StringName &p_name, const Variant &p_value);
+#endif // DISABLE_DEPRECATED
 
 public:
-	void set_layers(const TypedArray<FoliageLayer> &p_layers);
-	TypedArray<FoliageLayer> get_layers() const;
+	void set_foliage_layers(const TypedArray<FoliageLayer> &p_layers);
+	TypedArray<FoliageLayer> get_foliage_layers() const;
 
 	void set_cell_size(float p_size);
 	float get_cell_size() const;

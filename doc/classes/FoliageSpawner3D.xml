@@ -106,6 +106,7 @@
 		</member>
 		<member name="lod_levels" type="FoliageLODLevel[]" setter="set_lod_levels" getter="get_lod_levels" default="[]">
 			The chain of [FoliageLODLevel]s (e.g. LOD_0, LOD_1, LOD_2) this spawner generates through, in order from highest to lowest detail. Every level shares the exact same generated instance transforms; only its mesh, material, and visibility/fade distance range differ (see [FoliageLODLevel]). A newly created [FoliageSpawner3D] starts with three levels with reasonable default distances, but this array can hold any number of levels, including just one (no LOD switching) or zero (nothing renders; see [method has_any_mesh]).
+			In the Inspector, these are edited in a window of their own, opened with [b]Edit LODs[/b]: one row per level, with its mesh, its visibility range, and its rendering settings, and [b]Add LOD[/b] to add a level that takes over where the last one ends. Changes apply to already-generated cells right away, without pressing [b]Regenerate[/b] again.
 		</member>
 		<member name="mask_invert" type="bool" setter="set_mask_invert" getter="is_mask_inverted" default="false">
 			If [code]true[/code], inverts the values sampled from [member distribution_mask] (white areas become forbidden, black areas become favored).

@@ -44,6 +44,7 @@
 		</member>
 		<member name="lod_levels" type="FoliageLODLevel[]" setter="set_lod_levels" getter="get_lod_levels" default="[]">
 			The chain of [FoliageLODLevel]s (e.g. LOD_0, LOD_1, LOD_2) this layer renders through, in order from highest to lowest detail. Every level shares the exact same painted instance transforms; only its mesh, material, and visibility/fade distance range differ (see [FoliageLODLevel]). A newly created [FoliageLayer] starts with three levels with reasonable default distances, but this array can hold any number of levels, including just one (no LOD switching) or zero (nothing renders; see [method has_any_mesh]).
+			In the Inspector, these are edited in a window of their own, opened with [b]Edit LODs[/b]: one row per level, with its mesh, its visibility range, and its rendering settings, and [b]Add LOD[/b] to add a level that takes over where the last one ends.
 		</member>
 		<member name="max_scale" type="float" setter="set_max_scale" getter="get_max_scale" default="1.1">
 			The upper bound of the random uniform scale applied to each painted instance. See also [member min_scale].
