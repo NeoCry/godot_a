@@ -2123,7 +2123,10 @@ void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_
 }
 
 RID MeshStorage::_multimesh_get_command_buffer_rd_rid(RID p_multimesh) const {
-	ERR_FAIL_V_MSG(RID(), "GLES3 does not implement indirect multimeshes.");
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, RID());
+	// GLES3 never draws a MultiMesh indirectly, so none has a command buffer.
+	return RID();
 }
 
 RID MeshStorage::_multimesh_get_buffer_rd_rid(RID p_multimesh) const {
