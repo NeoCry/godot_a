@@ -32,6 +32,7 @@
 
 TEST_FORCE_LINK(test_scene_tree_timers)
 
+#include "core/object/callable_mp.h"
 #include "scene/animation/tween.h"
 #include "scene/main/scene_tree.h"
 #include "tests/test_tools.h"
