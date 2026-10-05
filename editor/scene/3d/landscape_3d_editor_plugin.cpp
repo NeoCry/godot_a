@@ -69,12 +69,12 @@
 namespace {
 // The modes each of the toolbar's two lists offers, in order, with the icon
 // each is shown with. Both start with Select, which puts the brush away.
-struct ModeEntry {
+struct LandscapeModeEntry {
 	Landscape3DEditorPlugin::Mode mode;
 	const char *icon;
 };
 
-constexpr ModeEntry SCULPT_MODES[] = {
+constexpr LandscapeModeEntry SCULPT_MODES[] = {
 	{ Landscape3DEditorPlugin::MODE_SELECT, "ToolSelect" },
 	{ Landscape3DEditorPlugin::MODE_RAISE, "LandscapeRaise" },
 	{ Landscape3DEditorPlugin::MODE_LOWER, "LandscapeLower" },
@@ -84,7 +84,7 @@ constexpr ModeEntry SCULPT_MODES[] = {
 	{ Landscape3DEditorPlugin::MODE_UNHOLE, "LandscapeUnhole" },
 };
 
-constexpr ModeEntry PAINT_MODES[] = {
+constexpr LandscapeModeEntry PAINT_MODES[] = {
 	{ Landscape3DEditorPlugin::MODE_SELECT, "ToolSelect" },
 	{ Landscape3DEditorPlugin::MODE_PAINT, "LandscapePaint" },
 	{ Landscape3DEditorPlugin::MODE_ERASE, "LandscapeErase" },
@@ -92,7 +92,7 @@ constexpr ModeEntry PAINT_MODES[] = {
 };
 
 // How much one notch of the mouse wheel grows or shrinks the brush.
-constexpr float BRUSH_RADIUS_WHEEL_FACTOR = 1.1f;
+constexpr float LANDSCAPE_BRUSH_RADIUS_WHEEL_FACTOR = 1.1f;
 
 // EXR/HDR decode to one of these (real float or half-float height data, or
 // HDR's shared-exponent RGBE); every other loadable format (PNG included,
@@ -311,7 +311,7 @@ void Landscape3DEditorPlugin::_set_brush_radius(double p_value) {
 }
 
 void Landscape3DEditorPlugin::_scale_brush_radius(bool p_grow, float p_notches) {
-	const float factor = Math::pow(BRUSH_RADIUS_WHEEL_FACTOR, MAX(p_notches, 0.0001f));
+	const float factor = Math::pow(LANDSCAPE_BRUSH_RADIUS_WHEEL_FACTOR, MAX(p_notches, 0.0001f));
 	// At least a step of the field, which a small brush would otherwise round back to.
 	const float step = brush_radius_spin->get_step();
 	const float radius = p_grow ? MAX(brush_radius * factor, brush_radius + step) : MIN(brush_radius / factor, brush_radius - step);
