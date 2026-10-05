@@ -217,6 +217,13 @@ private:
 
 	List<Ref<SceneTreeTimer>> timers;
 	List<Ref<Tween>> tweens;
+	// Set while process_timers() / process_tweens() walk those lists. What
+	// they call out to (a timer's timeout, a tween's callbacks) can run whole
+	// frames of the main loop before returning, as the editor's progress
+	// dialog does through Main::iteration(), and a walk nested in those frames
+	// would erase elements the outer walk still holds.
+	bool processing_timers = false;
+	bool processing_tweens = false;
 
 	///network///
 
