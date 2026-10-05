@@ -57,12 +57,12 @@
 namespace {
 // The brushes the toolbar's list offers, in order, with the icon each is
 // shown with. Select, first, puts the brush away.
-struct ModeEntry {
+struct FoliageModeEntry {
 	FoliagePainter3DEditorPlugin::Mode mode;
 	const char *icon;
 };
 
-constexpr ModeEntry MODES[] = {
+constexpr FoliageModeEntry MODES[] = {
 	{ FoliagePainter3DEditorPlugin::MODE_SELECT, "ToolSelect" },
 	{ FoliagePainter3DEditorPlugin::MODE_PAINT, "FoliagePaint" },
 	{ FoliagePainter3DEditorPlugin::MODE_ERASE, "FoliageErase" },
@@ -71,7 +71,7 @@ constexpr ModeEntry MODES[] = {
 };
 
 // How much one notch of the mouse wheel grows or shrinks the brush.
-constexpr float BRUSH_RADIUS_WHEEL_FACTOR = 1.1f;
+constexpr float FOLIAGE_BRUSH_RADIUS_WHEEL_FACTOR = 1.1f;
 } // namespace
 
 void FoliagePainter3DEditorPlugin::_bind_methods() {
@@ -191,7 +191,7 @@ void FoliagePainter3DEditorPlugin::_set_brush_radius(double p_value) {
 }
 
 void FoliagePainter3DEditorPlugin::_scale_brush_radius(bool p_grow, float p_notches) {
-	const float factor = Math::pow(BRUSH_RADIUS_WHEEL_FACTOR, MAX(p_notches, 0.0001f));
+	const float factor = Math::pow(FOLIAGE_BRUSH_RADIUS_WHEEL_FACTOR, MAX(p_notches, 0.0001f));
 	// At least a step of the field, which a small brush would otherwise round back to.
 	const float step = brush_radius_spin->get_step();
 	const float radius = p_grow ? MAX(brush_radius * factor, brush_radius + step) : MIN(brush_radius / factor, brush_radius - step);
