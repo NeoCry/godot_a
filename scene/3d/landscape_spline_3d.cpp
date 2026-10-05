@@ -37,12 +37,20 @@
 #include "core/object/worker_thread_pool.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
+#include "core/config/engine.h"
 #include "core/templates/hashfuncs.h"
 #include "scene/3d/landscape_3d.h"
+#include "scene/3d/landscape_spline_flow.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/material.h"
 #include "scene/resources/shader.h"
 #include "servers/rendering/rendering_server.h"
+
+#ifndef PHYSICS_3D_DISABLED
+#include "scene/3d/physics/static_body_3d.h"
+#include "scene/resources/3d/world_3d.h"
+#include "servers/physics_3d/physics_server_3d.h"
+#endif
 
 namespace {
 
@@ -55,7 +63,15 @@ constexpr int MAX_RINGS = 1 << 18;
 constexpr int MAX_RING_SPAN = 32;
 // Bumped whenever what a chunk's mesh is built from changes meaning, so a
 // chunk built by an older version of this file is never mistaken for current.
-constexpr uint64_t CHUNK_FORMAT_VERSION = 1;
+constexpr uint64_t CHUNK_FORMAT_VERSION = 2;
+
+// How high above the water, in meters, the flow field looks for what stands
+// in it: a ray down from this high starts outside even a tall cliff.
+constexpr float FLOW_PROBE_HEIGHT = 1000.0f;
+// The most cells a flow field is solved over, and across it; past these the
+// cells grow.
+constexpr int64_t MAX_FLOW_CELLS = 1 << 20;
+constexpr int MAX_FLOW_COLUMNS = 129;
 
 float smoothstep01(float p_x) {
 	const float x = CLAMP(p_x, 0.0f, 1.0f);
@@ -181,20 +197,36 @@ render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_sc
 // turned against the last and faded out once it gets too fine for the pixels
 // it lands on, so there is no lattice to show and no shimmer in the distance,
 // they line up across the spline's chunks, and they keep their size in meters
-// whatever the spline's width. The current carries them downstream (the way
-// UV.y increases), fastest in midstream (UV.x = 0.5) and slower towards the
-// banks, using the two-phase flow map technique so that an uneven current
-// never smears them out; the wind drifts them on top of that, and is all that
-// moves still water. What lies under the surface shows through, bent by the
-// ripples and tinted by how much water the view passes through, and foam
-// gathers in the shallows and where the water runs fast. Vertex COLOR.a is the
-// spline's edge and end fade.
+// whatever the spline's width. What the faded octaves would have tilted the
+// surface by is not lost: it roughens it instead, so far away the sun's
+// highlight spreads into a glitter path and reflections blur, as they do on
+// real water, rather than the distant surface turning into a flat mirror.
+//
+// The current carries the ripples downstream (the way UV.y increases), using
+// the two-phase flow map technique so that an uneven current never smears
+// them out; the wind drifts them on top of that, and is all that moves still
+// water. A river or stream that has a flow field (see LandscapeSpline3D's
+// flow_map) takes the current from it: the water parts around rocks and
+// cliffs, runs faster past them and over shallows, slows in pools and in
+// their wake, and is churned up where it piles against them and behind them.
+// Without one, the current runs straight down the spline, fastest in
+// midstream (UV.x = 0.5) and slower towards the banks. What lies under the
+// surface shows through, bent by the ripples and tinted by how much water the
+// view passes through, and foam gathers in the shallows, where the water runs
+// fast, and where it breaks around obstacles. Vertex COLOR.a is the spline's
+// edge and end fade.
+//
+// Light is reflected off the surface by the light() function below rather
+// than the renderer's own model, so the highlights lights leave on the water
+// can be tuned apart from what it reflects of its surroundings: see the
+// specular group.
 //
 // The renderer's own screen-space reflections only cover opaque surfaces, and
 // water has to be drawn after them to see what is under it, so it traces its
 // own against the depth buffer; where a ray finds nothing on screen, the sky
 // and reflection probes show instead, as they would with the renderer's. (A
-// ReflectionProbe's box takes precedence over what is traced, inside it.)
+// ReflectionProbe's box takes precedence over what is traced, inside it, and a
+// PlanarReflectionProbe's plane over both.)
 
 group_uniforms surface;
 // What the water looks like where it is too deep to see through.
@@ -204,12 +236,33 @@ uniform vec3 transmission_color : source_color = vec3(0.35, 0.62, 0.58);
 // How many meters of water it takes to tint what is seen through it by
 // transmission_color; further down, less and less shows through.
 uniform float clarity : hint_range(0.05, 50.0, 0.01) = 1.5;
+// How rough the surface is under the ripples: blurs what it reflects.
 uniform float roughness : hint_range(0.0, 1.0, 0.01) = 0.03;
 // How far the ripples bend what is seen through the water.
 uniform float refraction : hint_range(0.0, 0.2, 0.001) = 0.03;
 // Depth of water, in meters, over which it fades in from nothing at the
 // shoreline, hiding where the mesh meets the ground.
 uniform float shore_fade : hint_range(0.0, 5.0, 0.01) = 0.15;
+
+group_uniforms specular;
+// How much of its surroundings, and of lights, the water reflects when seen
+// from straight above, as SPECULAR does on other materials (0.5 is 4%). Clean
+// water reflects 2%, which is about 0.35; towards the horizon every setting
+// reflects nearly everything, as water does.
+uniform float specular : hint_range(0.0, 1.0, 0.01) = 0.5;
+// Brightness of the highlights lights leave on the water (the sun's glint),
+// leaving what it reflects of the sky and its surroundings as it is. 0 turns
+// them off.
+uniform float specular_strength : hint_range(0.0, 8.0, 0.01) = 1.0;
+// Extra roughness for the highlights only: spreads the sun's glint, which on
+// a smooth surface is a small, intense spot, into a wider glitter.
+uniform float specular_roughness : hint_range(0.0, 1.0, 0.01) = 0.0;
+// Tint of the highlights.
+uniform vec3 specular_tint : source_color = vec3(1.0);
+// How much rougher the surface gets where its finer ripples are too small
+// for the pixels they fall on (in the distance, mostly), from what they would
+// have tilted it by. 0 leaves it as smooth far away as up close.
+uniform float distance_roughness : hint_range(0.0, 2.0, 0.01) = 1.0;
 
 group_uniforms waves;
 // Length of the largest ripples, in meters.
@@ -227,6 +280,9 @@ uniform float flow_cycle : hint_range(0.5, 20.0, 0.01) = 3.0;
 // Direction and speed of the wind, in meters per second along world X and Z,
 // drifting the ripples on top of the current.
 uniform vec2 wind = vec2(0.15, 0.05);
+// How much choppier the water gets where obstacles churn it up (from the flow
+// field): around rocks, in their wake, and over shallow ones.
+uniform float turbulence_waves : hint_range(0.0, 4.0, 0.01) = 1.5;
 
 group_uniforms foam;
 uniform vec3 foam_color : source_color = vec3(0.85, 0.88, 0.86);
@@ -240,10 +296,14 @@ uniform float shore_foam_depth : hint_range(0.01, 5.0, 0.01) = 0.35;
 uniform float rapids_foam : hint_range(0.0, 1.0, 0.01) = 0.0;
 // Speed of the current, in meters per second, at which it starts to foam.
 uniform float rapids_speed : hint_range(0.0, 20.0, 0.01) = 1.5;
+// How much foam the water raises where it breaks against obstacles and
+// trails off behind them (from the flow field).
+uniform float obstacle_foam : hint_range(0.0, 1.0, 0.01) = 0.6;
 
 group_uniforms reflections;
 // Reflect what is on screen: the banks, trees and anything else around the
-// water, not just the sky.
+// water, not just the sky. Wasted where a PlanarReflectionProbe covers the
+// water, which shows all of that more exactly.
 uniform bool screen_space_reflections = true;
 // Samples taken along each reflected ray; fewer is cheaper, more misses less.
 uniform int reflection_steps : hint_range(4, 64, 1) = 32;
@@ -253,14 +313,33 @@ uniform float reflection_distance : hint_range(1.0, 2000.0, 0.1) = 400.0;
 // visible surface, for a ray passing behind it to count as hitting it.
 uniform float reflection_thickness : hint_range(0.01, 20.0, 0.01) = 2.0;
 
+group_uniforms debug;
+// Shows the current instead of the water: hue for its direction, brightness
+// for its speed. Foam Sources shows where the flow field churns the water up
+// (red) and where obstacles shelter it (blue).
+uniform int debug_view : hint_enum("Off", "Current", "Foam Sources") = 0;
+
 group_uniforms;
 uniform float depth_offset : hint_range(0.0, 0.01, 0.0001) = 0.0002;
 uniform sampler2D depth_texture : hint_depth_texture, filter_nearest, repeat_disable;
 uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap, repeat_disable;
+// The flow fields of every river and stream, which LandscapeSpline3D builds
+// and sets itself; there is nothing to assign here.
+uniform sampler2D flow_atlas : hint_default_black, filter_linear, repeat_disable;
+// Where this part of the spline's flow field is in flow_atlas: offset in xy,
+// scale in zw, from UV2. Zero where there is none (lakes, and splines whose
+// flow field is off or not built yet). Set by LandscapeSpline3D.
+instance uniform vec4 flow_tile = vec4(0.0);
 
 varying vec3 world_position;
 // Downstream, along world X and Z.
 varying vec2 downstream;
+// Across the spline, the way UV.x increases, along world X and Z.
+varying vec2 across;
+
+// How fast the flow field's current can run, as a multiple of flow_speed:
+// what LandscapeSpline3D packs it into.
+const float FLOW_RANGE = 3.0;
 
 // A random gradient per lattice point, without sin(), which loses precision
 // far from the origin on some GPUs.
@@ -295,18 +374,22 @@ vec3 gradient_noise(vec2 p) {
 // Slope of the ripples at p (world X and Z, in meters), as height gained per
 // meter along X and Z, around 1 at the steepest. Each octave's height is in
 // proportion to its wavelength, so they are all about as steep as each other.
-vec2 ripple_slope(vec2 p, float footprint) {
+// r_lost is how much of the ripples' slope was faded out for being too fine
+// for the pixels, as a sum of the faded octaves' squared amplitudes.
+vec2 ripple_slope(vec2 p, float footprint, out float r_lost) {
 	vec2 slope = vec2(0.0);
 	float frequency = 1.0 / max(wave_length, 0.01);
 	// 1 / (1 + 0.52 + 0.52^2 + 0.52^3), so the octaves add up to about 1.
 	float amplitude = 0.52;
 	mat2 rotation = mat2(1.0);
+	r_lost = 0.0;
 	for (int octave = 0; octave < 4; octave++) {
 		// Fade out ripples too fine for the pixels they fall on, before they
 		// alias into shimmer.
 		float fade = 1.0 - smoothstep(0.15, 0.45, footprint * frequency);
 		vec3 n = gradient_noise(rotation * p * frequency + vec2(17.31, 7.13) * float(octave));
 		slope += transpose(rotation) * n.yz * (amplitude * fade);
+		r_lost += amplitude * amplitude * (1.0 - fade * fade);
 		frequency *= 1.93;
 		amplitude *= 0.52;
 		rotation = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * rotation;
@@ -395,11 +478,17 @@ vec4 trace_reflection(vec3 p_origin, vec3 p_direction, float p_jitter, float p_l
 	return vec4(0.0);
 }
 
+vec3 debug_hue(float p_hue) {
+	return clamp(abs(fract(p_hue + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+}
+
 void vertex() {
 	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	// LandscapeSpline3D's binormals point upstream, the way UV.y decreases.
 	vec3 along = (MODEL_MATRIX * vec4(-BINORMAL, 0.0)).xyz;
 	downstream = dot(along.xz, along.xz) > 1e-8 ? normalize(along.xz) : vec2(0.0);
+	vec3 side = (MODEL_MATRIX * vec4(TANGENT, 0.0)).xyz;
+	across = dot(side.xz, side.xz) > 1e-8 ? normalize(side.xz) : vec2(0.0);
 
 	VERTEX = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	NORMAL = normalize(MODELVIEW_NORMAL_MATRIX * NORMAL);
@@ -416,10 +505,25 @@ void fragment() {
 	// derivatives are still defined.
 	float footprint = max(length(dFdx(p)), length(dFdy(p)));
 
-	// The current, easing off from midstream towards either bank.
-	float across = clamp(abs(UV.x * 2.0 - 1.0), 0.0, 1.0);
-	float speed = flow_speed * mix(1.0, bank_flow, across * across);
-	vec2 velocity = downstream * speed + wind;
+	// The current, along the spline and across it, as fractions of
+	// flow_speed: from the flow field where there is one, otherwise straight
+	// down the spline.
+	bool has_flow = flow_tile.z > 0.0;
+	vec2 current = vec2(0.0, 1.0);
+	float turbulence = 0.0;
+	float wake = 0.0;
+	float bank = clamp(abs(UV.x * 2.0 - 1.0), 0.0, 1.0);
+	if (has_flow) {
+		vec4 field = textureLod(flow_atlas, flow_tile.xy + UV2 * flow_tile.zw, 0.0);
+		current = (field.rg * 2.0 - 1.0) * FLOW_RANGE;
+		turbulence = field.b;
+		wake = field.a;
+		bank = clamp(abs(UV2.x * 2.0 - 1.0), 0.0, 1.0);
+	}
+	// Easing off from midstream towards either bank.
+	current *= flow_speed * mix(1.0, bank_flow, bank * bank);
+	float speed = length(current);
+	vec2 velocity = across * current.x + downstream * current.y + wind;
 
 	// Two copies of the ripples, each carried along for one flow_cycle and
 	// then started over, half a cycle apart and cross-faded so that each
@@ -430,7 +534,9 @@ void fragment() {
 	float blend = abs(1.0 - 2.0 * phase);
 	vec2 offset_a = velocity * (phase * flow_cycle);
 	vec2 offset_b = velocity * (phase_b * flow_cycle) - vec2(41.3, 17.9);
-	vec2 slope = mix(ripple_slope(p - offset_a, footprint), ripple_slope(p - offset_b, footprint), blend);
+	float lost_a;
+	float lost_b;
+	vec2 slope = mix(ripple_slope(p - offset_a, footprint, lost_a), ripple_slope(p - offset_b, footprint, lost_b), blend);
 	// Averaging two unrelated patterns flattens them midway through the
 	// fade; this keeps the ripples equally strong throughout.
 	slope /= sqrt(blend * blend + (1.0 - blend) * (1.0 - blend));
@@ -441,11 +547,20 @@ void fragment() {
 	// Seen at a glancing angle, water looks smoother than it is, and ripples
 	// at full strength would tip the reflection below the horizon, showing
 	// the underside of the sky; they are eased off towards the horizon.
-	float strength = wave_strength * mix(0.3, 1.0, smoothstep(0.0, 0.4, dot(view, surface_normal)));
+	// Churned-up water is choppier.
+	float strength = wave_strength * (1.0 + turbulence * turbulence_waves) * mix(0.3, 1.0, smoothstep(0.0, 0.4, dot(view, surface_normal)));
 	vec3 slope_view = (VIEW_MATRIX * vec4(slope.x * strength, 0.0, slope.y * strength, 0.0)).xyz;
 	NORMAL = normalize(NORMAL - (slope_view - NORMAL * dot(slope_view, NORMAL)));
 	// Never tipped so far that it faces away from the camera.
 	NORMAL = normalize(NORMAL + surface_normal * max(0.0, 0.05 - dot(NORMAL, view)));
+
+	// The ripples faded out above still tilt the surface this way and that
+	// within each pixel: their slopes' variance (about a quarter of their
+	// squared amplitude per axis for gradient noise) widens the microfacet
+	// distribution, alpha^2 growing by twice the variance.
+	float slope_variance = 0.25 * mix(lost_a, lost_b, blend) * strength * strength * distance_roughness;
+	float alpha = roughness * roughness;
+	float surface_roughness = sqrt(sqrt(alpha * alpha + 2.0 * slope_variance));
 
 	// How much water the view passes through, and about how deep it is.
 	float surface_distance = length(VERTEX);
@@ -468,7 +583,7 @@ void fragment() {
 
 	float shore = 1.0 - smoothstep(0.0, shore_foam_depth, depth);
 	float rapids = smoothstep(rapids_speed, rapids_speed * 1.5 + 0.1, speed);
-	float coverage = clamp(shore * shore_foam + rapids * rapids_foam, 0.0, 1.0);
+	float coverage = clamp(shore * shore_foam + rapids * rapids_foam + turbulence * obstacle_foam, 0.0, 1.0);
 	float foam = coverage > 0.001 ? smoothstep(1.0 - coverage, 1.25 - coverage, foam_noise) : 0.0;
 
 	// The water's own color is lit like any surface; what shows through it
@@ -476,7 +591,7 @@ void fragment() {
 	float murk = 1.0 - dot(transmittance, vec3(1.0 / 3.0));
 	ALBEDO = mix(deep_color * murk, foam_color, foam);
 	EMISSION = under * transmittance * (1.0 - foam);
-	ROUGHNESS = mix(roughness, 0.6, foam);
+	ROUGHNESS = mix(surface_roughness, 0.6, foam);
 
 	if (screen_space_reflections) {
 		// Handed over as the light arriving from the reflected direction, so
@@ -485,12 +600,48 @@ void fragment() {
 		// Where each pixel starts stepping, so the gaps between steps come
 		// out as fine noise rather than bands.
 		float jitter = fract(52.9829189 * fract(dot(FRAGCOORD.xy, vec2(0.06711056, 0.00583715))));
-		vec4 reflected = trace_reflection(VERTEX, reflect(-view, NORMAL), jitter, roughness * 8.0, PROJECTION_MATRIX, INV_PROJECTION_MATRIX);
+		vec4 reflected = trace_reflection(VERTEX, reflect(-view, NORMAL), jitter, surface_roughness * 8.0, PROJECTION_MATRIX, INV_PROJECTION_MATRIX);
 		RADIANCE = vec4(reflected.rgb, reflected.a * (1.0 - foam));
 	}
 	METALLIC = 0.0;
-	SPECULAR = 0.5;
+	SPECULAR = specular;
 	ALPHA = smoothstep(0.0, max(shore_fade, 0.0001), depth) * COLOR.a;
+
+	if (debug_view == 1) {
+		float angle = atan(current.x, current.y) / TAU;
+		ALBEDO = vec3(0.0);
+		EMISSION = debug_hue(angle) * clamp(speed / max(flow_speed * 1.5, 0.001), 0.05, 1.0);
+		ALPHA = 1.0;
+	} else if (debug_view == 2) {
+		ALBEDO = vec3(0.0);
+		EMISSION = vec3(turbulence, 0.05, wake);
+		ALPHA = 1.0;
+	}
+}
+
+void light() {
+	float n_dot_l = dot(NORMAL, LIGHT);
+	// What the water's own color (its murk, and foam) scatters back.
+	DIFFUSE_LIGHT += max(n_dot_l, 0.0) * ATTENUATION * LIGHT_COLOR / PI;
+
+	if (n_dot_l > 0.0 && specular_strength > 0.0) {
+		// The renderer's GGX highlight (Schlick's Fresnel, Smith-GGX
+		// visibility), with the water's own strength, roughness and tint.
+		float highlight_roughness = clamp(sqrt(ROUGHNESS * ROUGHNESS + specular_roughness * specular_roughness), 0.02, 1.0);
+		float a = highlight_roughness * highlight_roughness;
+		vec3 h = normalize(VIEW + LIGHT);
+		float n_dot_h = clamp(dot(NORMAL, h), 0.0, 1.0);
+		float n_dot_v = clamp(dot(NORMAL, VIEW), 1e-4, 1.0);
+		float l_dot_h = clamp(dot(LIGHT, h), 0.0, 1.0);
+		float k = a / (1.0 - n_dot_h * n_dot_h + n_dot_h * n_dot_h * a * a);
+		float d = k * k / PI;
+		float v = 0.5 / mix(2.0 * n_dot_l * n_dot_v, n_dot_l + n_dot_v, a);
+		float f0 = 0.16 * specular * specular;
+		float f90 = clamp(50.0 * f0, 0.0, 1.0);
+		float m = 1.0 - l_dot_h;
+		float f = f0 + (f90 - f0) * (m * m * m * m * m);
+		SPECULAR_LIGHT += specular_tint * (specular_strength * n_dot_l * d * v * f * SPECULAR_AMOUNT * ATTENUATION) * LIGHT_COLOR;
+	}
 }
 )";
 
@@ -545,6 +696,7 @@ void LandscapeSpline3D::init_shaders() {
 }
 
 void LandscapeSpline3D::finish_shaders() {
+	LandscapeFlowAtlas::finish();
 	for (int i = 0; i < TYPE_MAX; i++) {
 		default_materials[i].unref();
 	}
@@ -713,6 +865,17 @@ void LandscapeSpline3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_visibility_range_end_margin", "margin"), &LandscapeSpline3D::set_visibility_range_end_margin);
 	ClassDB::bind_method(D_METHOD("get_visibility_range_end_margin"), &LandscapeSpline3D::get_visibility_range_end_margin);
 
+	ClassDB::bind_method(D_METHOD("set_flow_enabled", "enabled"), &LandscapeSpline3D::set_flow_enabled);
+	ClassDB::bind_method(D_METHOD("is_flow_enabled"), &LandscapeSpline3D::is_flow_enabled);
+
+	ClassDB::bind_method(D_METHOD("set_flow_cell_size", "size"), &LandscapeSpline3D::set_flow_cell_size);
+	ClassDB::bind_method(D_METHOD("get_flow_cell_size"), &LandscapeSpline3D::get_flow_cell_size);
+
+	ClassDB::bind_method(D_METHOD("set_flow_obstacle_mask", "mask"), &LandscapeSpline3D::set_flow_obstacle_mask);
+	ClassDB::bind_method(D_METHOD("get_flow_obstacle_mask"), &LandscapeSpline3D::get_flow_obstacle_mask);
+
+	ClassDB::bind_method(D_METHOD("update_flow"), &LandscapeSpline3D::update_flow);
+
 	ClassDB::bind_method(D_METHOD("set_carve_enabled", "enabled"), &LandscapeSpline3D::set_carve_enabled);
 	ClassDB::bind_method(D_METHOD("is_carve_enabled"), &LandscapeSpline3D::is_carve_enabled);
 
@@ -777,6 +940,11 @@ void LandscapeSpline3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_end", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_end", "get_visibility_range_end");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "visibility_range_end_margin", PROPERTY_HINT_RANGE, "0,4096,0.01,or_greater,suffix:m"), "set_visibility_range_end_margin", "get_visibility_range_end_margin");
 
+	ADD_GROUP("Flow", "flow_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "flow_enabled"), "set_flow_enabled", "is_flow_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "flow_cell_size", PROPERTY_HINT_RANGE, "0.05,8,0.01,or_greater,suffix:m"), "set_flow_cell_size", "get_flow_cell_size");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "flow_obstacle_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_flow_obstacle_mask", "get_flow_obstacle_mask");
+
 	ADD_GROUP("Carve", "carve_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "carve_enabled"), "set_carve_enabled", "is_carve_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "carve_depth", PROPERTY_HINT_RANGE, "0,50,0.01,or_greater,suffix:m"), "set_carve_depth", "get_carve_depth");
@@ -803,6 +971,10 @@ void LandscapeSpline3D::_validate_property(PropertyInfo &p_property) const {
 		// Only a strip has these.
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	}
+	if ((fill || (spline_type != TYPE_RIVER && spline_type != TYPE_STREAM)) && p_property.name.begins_with("flow_")) {
+		// Only rivers and streams flow.
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+	}
 	if (p_property.name == "paint_layer") {
 		// Offer only the layers the landscape actually has.
 		const Landscape3D *landscape = _get_landscape();
@@ -820,6 +992,37 @@ void LandscapeSpline3D::_notification(int p_what) {
 
 		case NOTIFICATION_EXIT_TREE: {
 			_disconnect_landscape();
+			_wait_for_flow_job();
+			set_process_internal(false);
+		} break;
+
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			const double delta = get_process_delta_time();
+			if (flow_job != nullptr && WorkerThreadPool::get_singleton()->is_task_completed(flow_task)) {
+				_finish_flow_update();
+			}
+			if (flow_requested && flow_job == nullptr) {
+				flow_wait -= delta;
+				if (flow_wait <= 0.0) {
+					_start_flow_update();
+				}
+			}
+#ifdef TOOLS_ENABLED
+			// Rocks moved, added or deleted in the editor change the current
+			// around them; nothing tells the spline, so it looks.
+			if (Engine::get_singleton()->is_editor_hint() && _wants_flow() && !flow_requested && flow_job == nullptr) {
+				flow_poll_wait -= delta;
+				if (flow_poll_wait <= 0.0) {
+					flow_poll_wait = 1.0;
+					const uint64_t signature = _get_flow_obstacle_signature();
+					if (signature != flow_obstacle_signature) {
+						flow_obstacle_signature = signature;
+						_queue_flow_update();
+					}
+				}
+			}
+#endif
+			_update_flow_processing();
 		} break;
 
 		case NOTIFICATION_ENTER_WORLD: {
@@ -959,6 +1162,8 @@ void LandscapeSpline3D::_update() {
 			_commit_chunk(chunks[build.chunk_index], build);
 		}
 	}
+
+	_queue_flow_update();
 }
 
 Vector3 LandscapeSpline3D::_get_local_up() const {
@@ -1729,23 +1934,31 @@ void LandscapeSpline3D::_build_chunk(uint32_t p_index, BuildContext *p_context) 
 	PackedVector3Array vertex_normals;
 	PackedFloat32Array vertex_tangents;
 	PackedVector2Array uvs;
+	PackedVector2Array uv2s;
 	PackedColorArray colors;
 	positions.resize(vertex_count);
 	vertex_normals.resize(vertex_count);
 	vertex_tangents.resize(vertex_count * 4);
 	uvs.resize(vertex_count);
+	uv2s.resize(vertex_count);
 	colors.resize(vertex_count);
 	Vector3 *positions_w = positions.ptrw();
 	Vector3 *normals_w = vertex_normals.ptrw();
 	float *tangents_w = vertex_tangents.ptrw();
 	Vector2 *uvs_w = uvs.ptrw();
+	Vector2 *uv2s_w = uv2s.ptrw();
 	Color *colors_w = colors.ptrw();
 
 	const float v_scale = uv_scale.y / MAX(width, 0.001f);
+	// UV2 runs 0-1 across the strip and along the chunk: where in the
+	// chunk's tile of the flow field each vertex is.
+	const float chunk_start = distance_of(0);
+	const float chunk_span = MAX(distance_of(ring_count - 1) - chunk_start, CMP_EPSILON);
 	for (int ri = 0; ri < mesh_rings; ri++) {
 		const int r = kept_rings[ri];
 		const Ring &ring = rings[chunk.first_ring + r];
 		const float v = ring.distance * v_scale;
+		const float along_chunk = CLAMP((ring.distance - chunk_start) / chunk_span, 0.0f, 1.0f);
 		for (int ci = 0; ci < mesh_columns; ci++) {
 			const int c = kept_columns[ci];
 			const int vi = ri * mesh_columns + ci;
@@ -1760,6 +1973,7 @@ void LandscapeSpline3D::_build_chunk(uint32_t p_index, BuildContext *p_context) 
 			// along the spline, the way V increases, hence the flip.
 			tangents_w[vi * 4 + 3] = -1.0f;
 			uvs_w[vi] = Vector2(columns[c].u * uv_scale.x, v);
+			uv2s_w[vi] = Vector2(columns[c].u, along_chunk);
 			colors_w[vi] = Color(1, 1, 1, columns[c].alpha * ring.end_alpha);
 		}
 	}
@@ -1870,6 +2084,7 @@ void LandscapeSpline3D::_build_chunk(uint32_t p_index, BuildContext *p_context) 
 	build.arrays[RSE::ARRAY_NORMAL] = vertex_normals;
 	build.arrays[RSE::ARRAY_TANGENT] = vertex_tangents;
 	build.arrays[RSE::ARRAY_TEX_UV] = uvs;
+	build.arrays[RSE::ARRAY_TEX_UV2] = uv2s;
 	build.arrays[RSE::ARRAY_COLOR] = colors;
 	build.arrays[RSE::ARRAY_INDEX] = build_indices(all_rows, all_columns);
 }
@@ -1901,10 +2116,12 @@ void LandscapeSpline3D::_commit_chunk(Chunk &p_chunk, const ChunkBuild &p_build)
 		p_chunk.instance = RS::get_singleton()->instance_create2(p_chunk.mesh, _get_scenario());
 		RS::get_singleton()->instance_set_transform(p_chunk.instance, is_inside_tree() ? get_global_transform() : Transform3D());
 		_apply_render_settings(p_chunk);
+		_apply_flow_tile(p_chunk);
 	}
 }
 
 void LandscapeSpline3D::_free_chunk(Chunk &p_chunk) {
+	_release_flow_tile(p_chunk);
 	if (p_chunk.instance.is_valid()) {
 		RS::get_singleton()->free_rid(p_chunk.instance);
 		p_chunk.instance = RID();
@@ -1946,6 +2163,7 @@ void LandscapeSpline3D::_apply_material_to_all() {
 			RS::get_singleton()->mesh_surface_set_material(chunk.mesh, 0, material_rid);
 		}
 	}
+	_apply_flow_atlas_to_material();
 }
 
 void LandscapeSpline3D::_apply_render_settings(const Chunk &p_chunk) const {
@@ -1967,6 +2185,433 @@ void LandscapeSpline3D::_apply_render_settings(const Chunk &p_chunk) const {
 void LandscapeSpline3D::_apply_render_settings_to_all() {
 	for (const Chunk &chunk : chunks) {
 		_apply_render_settings(chunk);
+	}
+}
+
+// The flow field.
+
+struct LandscapeSpline3D::FlowJob {
+	uint64_t generation = 0;
+	// Meters between the grid's rows, and the length of the spline they span.
+	float cell_size = 0.5f;
+	float length = 0.0f;
+	LandscapeSplineFlow::Grid grid;
+	LandscapeSplineFlow::Field field;
+
+	static void run(void *p_job) {
+		FlowJob *job = static_cast<FlowJob *>(p_job);
+		LandscapeSplineFlow::solve(job->grid, job->field);
+	}
+};
+
+bool LandscapeSpline3D::_wants_flow() const {
+	return flow_enabled && (spline_type == TYPE_RIVER || spline_type == TYPE_STREAM) && !fill && is_inside_tree() && rings.size() >= 2 && total_length > CMP_EPSILON;
+}
+
+void LandscapeSpline3D::_queue_flow_update() {
+	flow_generation++;
+	if (!_wants_flow()) {
+		flow_requested = false;
+		_clear_flow();
+		_update_flow_processing();
+		return;
+	}
+	flow_requested = true;
+	// In the editor, wait for a drag or a brush stroke to settle instead of
+	// solving for every step of it.
+	flow_wait = Engine::get_singleton()->is_editor_hint() ? 0.3 : 0.0;
+	_update_flow_processing();
+}
+
+void LandscapeSpline3D::_update_flow_processing() {
+	if (!is_inside_tree()) {
+		return;
+	}
+	bool needed = flow_requested || flow_job != nullptr;
+#ifdef TOOLS_ENABLED
+	needed = needed || (Engine::get_singleton()->is_editor_hint() && _wants_flow());
+#endif
+	if (is_processing_internal() != needed) {
+		set_process_internal(needed);
+	}
+}
+
+bool LandscapeSpline3D::_build_flow_grid(FlowJob &r_job) {
+	if (rings.size() < 2 || total_length <= CMP_EPSILON) {
+		return false;
+	}
+	float widest = 0.0f;
+	for (const Ring &ring : rings) {
+		widest = MAX(widest, ring.half_width * 2.0f);
+	}
+	if (widest <= CMP_EPSILON) {
+		return false;
+	}
+
+	// At least 16 cells across, so a stream gets as fine a grid as its
+	// stones need; coarser for a river that would otherwise need too many.
+	float cell = MAX(MIN(flow_cell_size, widest / 16.0f), 0.02f);
+	int grid_columns = CLAMP((int)Math::ceil(widest / cell) + 1, 3, MAX_FLOW_COLUMNS);
+	while ((int64_t)grid_columns * ((int64_t)Math::ceil(total_length / cell) + 1) > MAX_FLOW_CELLS) {
+		cell *= 1.25f;
+		grid_columns = CLAMP((int)Math::ceil(widest / cell) + 1, 3, MAX_FLOW_COLUMNS);
+	}
+	const int rows = MAX(2, (int)Math::ceil(total_length / cell) + 1);
+	const int count = grid_columns * rows;
+	r_job.cell_size = total_length / (rows - 1);
+	r_job.length = total_length;
+
+	LandscapeSplineFlow::Grid &grid = r_job.grid;
+	grid.columns = grid_columns;
+	grid.rows = rows;
+	grid.positions.resize(count);
+	grid.depths.resize(count);
+
+	// The water's surface, laid out as the chunks lay it out, and the ground
+	// under it.
+	TerrainSampler sampler;
+	const bool use_terrain = _make_terrain_sampler(sampler);
+	const bool level_on_terrain = use_terrain && height_mode == HEIGHT_MODE_CONFORM_LEVEL;
+	const bool conform = use_terrain && height_mode == HEIGHT_MODE_CONFORM;
+	// Without ground to measure against, every cell is as deep as the bed
+	// would be dug.
+	const float assumed_depth = MAX(carve_depth, 1.0f);
+	LocalVector<Vector3> surface;
+	surface.resize(count);
+	int segment = 0;
+	for (int j = 0; j < rows; j++) {
+		const float s = total_length * j / (rows - 1);
+		while (segment + 2 < (int)rings.size() && rings[segment + 1].distance < s) {
+			segment++;
+		}
+		const Ring &a = rings[segment];
+		const Ring &b = rings[segment + 1];
+		const float span = b.distance - a.distance;
+		const float t = span > CMP_EPSILON ? CLAMP((s - a.distance) / span, 0.0f, 1.0f) : 0.0f;
+		const Vector3 center = a.center.lerp(b.center, t);
+		Vector3 right = a.right.lerp(b.right, t);
+		right = right.length_squared() > CMP_EPSILON2 ? right.normalized() : a.right;
+		Vector3 flat_right = a.flat_right.lerp(b.flat_right, t);
+		flat_right = flat_right.length_squared() > CMP_EPSILON2 ? flat_right.normalized() : a.flat_right;
+		const float half_width = Math::lerp(a.half_width, b.half_width, t);
+		const Vector3 level_center = level_on_terrain ? sampler.project(center, height_offset) : center + rings_up * height_offset;
+
+		for (int i = 0; i < grid_columns; i++) {
+			const int k = j * grid_columns + i;
+			const float lateral = ((float)i / (grid_columns - 1) - 0.5f) * 2.0f * half_width;
+			const Vector3 point = conform ? sampler.project(center + flat_right * lateral, height_offset) : level_center + right * lateral;
+			surface[k] = point;
+			grid.positions[k] = Vector2(point.dot(fill_x), point.dot(fill_y));
+			grid.depths[k] = use_terrain ? (point - sampler.project(point, 0.0f)).dot(rings_up) : assumed_depth;
+		}
+	}
+
+#ifndef PHYSICS_3D_DISABLED
+	// What stands in the water or lies under it. Each stretch of about a
+	// chunk is first asked whether any static collider reaches into it at
+	// all, which is almost never, and only then is every cell in it probed.
+	const Ref<World3D> world = get_world_3d();
+	PhysicsDirectSpaceState3D *space = world.is_valid() ? world->get_direct_space_state() : nullptr;
+	PhysicsServer3D *physics = PhysicsServer3D::get_singleton();
+	if (space != nullptr && physics != nullptr && flow_obstacle_mask != 0) {
+		const Transform3D to_global = get_global_transform();
+		Vector3 up = to_global.basis.xform(rings_up);
+		up = up.length_squared() > CMP_EPSILON2 ? up.normalized() : Vector3(0, 1, 0);
+		// The landscape's own collision is its ground, already read from its
+		// heights.
+		HashSet<RID> exclude;
+		const Landscape3D *landscape = _get_landscape();
+		if (landscape != nullptr && landscape->get_collision_body() != nullptr) {
+			exclude.insert(landscape->get_collision_body()->get_rid());
+		}
+
+		const RID box = physics->box_shape_create();
+		const int block_rows = MAX(1, (int)Math::ceil(MAX(chunk_length, 1.0f) / r_job.cell_size));
+		for (int first = 0; first < rows; first += block_rows) {
+			const int last = MIN(first + block_rows, rows - 1);
+			AABB bounds;
+			bool started = false;
+			for (int k = first * grid_columns; k < (last + 1) * grid_columns; k++) {
+				const Vector3 at = to_global.xform(surface[k]);
+				const Vector3 top = at + up * 2.0f;
+				const Vector3 bottom = at - up * (MAX(grid.depths[k], 0.0f) + 0.5f);
+				if (!started) {
+					bounds = AABB(top, Vector3());
+					started = true;
+				} else {
+					bounds.expand_to(top);
+				}
+				bounds.expand_to(bottom);
+			}
+			physics->shape_set_data(box, bounds.size * 0.5f);
+			PS3DT::ShapeParameters query;
+			query.shape_rid = box;
+			query.transform = Transform3D(Basis(), bounds.get_center());
+			query.collision_mask = flow_obstacle_mask;
+			query.exclude = exclude;
+			PS3DT::ShapeResult results[32];
+			const int found = space->intersect_shape(query, results, 32);
+			// Bodies that move (characters, props, platforms) are not part of
+			// the riverbed.
+			bool any = found >= 32;
+			for (int r = 0; r < found; r++) {
+				if (physics->body_get_mode(results[r].rid) == PS3DE::BODY_MODE_STATIC) {
+					any = true;
+				} else {
+					exclude.insert(results[r].rid);
+				}
+			}
+			if (!any) {
+				continue;
+			}
+
+			for (int k = first * grid_columns; k < (last + 1) * grid_columns; k++) {
+				if (grid.depths[k] <= LandscapeSplineFlow::MIN_DEPTH) {
+					continue; // Dry ground already.
+				}
+				const Vector3 at = to_global.xform(surface[k]);
+				PS3DT::RayParameters down;
+				down.from = at + up * FLOW_PROBE_HEIGHT;
+				down.to = at - up * (grid.depths[k] + 0.25f);
+				down.exclude = exclude;
+				down.collision_mask = flow_obstacle_mask;
+				down.hit_back_faces = false;
+				PS3DT::RayResult hit;
+				if (!space->intersect_ray(down, hit)) {
+					continue;
+				}
+				float height = (hit.position - at).dot(up);
+				if (height < -LandscapeSplineFlow::MIN_DEPTH) {
+					// The top of something under the water.
+					grid.depths[k] = MIN(grid.depths[k], -height);
+					continue;
+				}
+				// Something reaches the surface here or stands above it: the
+				// water is either inside it (a rock, a cliff) or under it (a
+				// bridge, a ledge). Looking up from just under the surface
+				// tells them apart: only open water below meets an underside,
+				// and from inside a solid nothing facing down is met.
+				PS3DT::RayParameters rise = down;
+				rise.from = at - up * 0.05f;
+				rise.to = at + up * MAX(height - 0.005f, 0.0f);
+				rise.hit_from_inside = true;
+				PS3DT::RayResult above;
+				if (space->intersect_ray(rise, above) && !above.normal.is_zero_approx()) {
+					down.from = at + up * 0.01f;
+					if (space->intersect_ray(down, hit)) {
+						height = (hit.position - at).dot(up);
+						grid.depths[k] = height < -LandscapeSplineFlow::MIN_DEPTH ? MIN(grid.depths[k], -height) : 0.0f;
+					}
+				} else {
+					grid.depths[k] = 0.0f;
+				}
+			}
+		}
+		physics->free_rid(box);
+	}
+#endif // PHYSICS_3D_DISABLED
+	return true;
+}
+
+uint64_t LandscapeSpline3D::_get_flow_obstacle_signature() const {
+	uint64_t signature = hash64_murmur3_64(flow_obstacle_mask, 0);
+#ifndef PHYSICS_3D_DISABLED
+	const Ref<World3D> world = is_inside_tree() ? get_world_3d() : Ref<World3D>();
+	PhysicsDirectSpaceState3D *space = world.is_valid() ? world->get_direct_space_state() : nullptr;
+	PhysicsServer3D *physics = PhysicsServer3D::get_singleton();
+	if (space == nullptr || physics == nullptr || flow_obstacle_mask == 0) {
+		return signature;
+	}
+	const Transform3D to_global = get_global_transform();
+	Vector3 up = to_global.basis.xform(rings_up);
+	up = up.length_squared() > CMP_EPSILON2 ? up.normalized() : Vector3(0, 1, 0);
+	HashSet<RID> exclude;
+	const Landscape3D *landscape = _get_landscape();
+	if (landscape != nullptr && landscape->get_collision_body() != nullptr) {
+		exclude.insert(landscape->get_collision_body()->get_rid());
+	}
+	const float reach_down = MAX(carve_depth, 1.0f) + 4.0f;
+
+	const RID box = physics->box_shape_create();
+	for (const Chunk &chunk : chunks) {
+		if (chunk.fill_tile != FILL_TILE_NONE) {
+			continue;
+		}
+		AABB bounds;
+		bool started = false;
+		for (int r = chunk.first_ring; r <= chunk.last_ring && r < (int)rings.size(); r++) {
+			const Ring &ring = rings[r];
+			for (const float side : { -1.0f, 1.0f }) {
+				const Vector3 at = to_global.xform(ring.center + ring.right * ring.half_width * side);
+				if (!started) {
+					bounds = AABB(at, Vector3());
+					started = true;
+				}
+				bounds.expand_to(at + up * 2.0f);
+				bounds.expand_to(at - up * reach_down);
+			}
+		}
+		if (!started) {
+			continue;
+		}
+		physics->shape_set_data(box, bounds.size * 0.5f);
+		PS3DT::ShapeParameters query;
+		query.shape_rid = box;
+		query.transform = Transform3D(Basis(), bounds.get_center());
+		query.collision_mask = flow_obstacle_mask;
+		query.exclude = exclude;
+		PS3DT::ShapeResult results[32];
+		const int found = space->intersect_shape(query, results, 32);
+		for (int i = 0; i < found; i++) {
+			// Summed, so the order the colliders come back in does not matter.
+			uint64_t entry = hash64_murmur3_64((uint64_t)results[i].collider_id, (uint64_t)results[i].shape);
+			if (const Node3D *node = Object::cast_to<Node3D>(results[i].get_collider())) {
+				const Transform3D xform = node->get_global_transform();
+				entry = hash_bytes(&xform, sizeof(Transform3D), entry);
+			}
+			signature += entry;
+		}
+	}
+	physics->free_rid(box);
+#endif // PHYSICS_3D_DISABLED
+	return signature;
+}
+
+void LandscapeSpline3D::_start_flow_update() {
+	flow_requested = false;
+	if (!_wants_flow()) {
+		_clear_flow();
+		return;
+	}
+	FlowJob *job = memnew(FlowJob);
+	job->generation = flow_generation;
+	if (!_build_flow_grid(*job)) {
+		memdelete(job);
+		_clear_flow();
+		return;
+	}
+#ifdef TOOLS_ENABLED
+	if (Engine::get_singleton()->is_editor_hint()) {
+		flow_obstacle_signature = _get_flow_obstacle_signature();
+		flow_poll_wait = 1.0;
+	}
+#endif
+	flow_job = job;
+	flow_task = WorkerThreadPool::get_singleton()->add_native_task(&FlowJob::run, job, false, "LandscapeSpline3D flow");
+}
+
+void LandscapeSpline3D::_wait_for_flow_job() {
+	if (flow_job == nullptr) {
+		return;
+	}
+	WorkerThreadPool::get_singleton()->wait_for_task_completion(flow_task);
+	flow_task = WorkerThreadPool::INVALID_TASK_ID;
+	memdelete(flow_job);
+	flow_job = nullptr;
+}
+
+void LandscapeSpline3D::_finish_flow_update() {
+	WorkerThreadPool::get_singleton()->wait_for_task_completion(flow_task);
+	flow_task = WorkerThreadPool::INVALID_TASK_ID;
+	FlowJob *job = flow_job;
+	flow_job = nullptr;
+
+	// Solved for what the spline was when it started: a request made since
+	// starts over with what it is now.
+	if (job->generation == flow_generation && _wants_flow()) {
+		LandscapeFlowAtlas *atlas = LandscapeFlowAtlas::get_singleton();
+		const LandscapeSplineFlow::Field &field = job->field;
+		const float rows_per_meter = (field.rows - 1) / MAX(job->length, CMP_EPSILON);
+		Vector<uint8_t> texels;
+		for (Chunk &chunk : chunks) {
+			if (chunk.fill_tile != FILL_TILE_NONE || chunk.last_ring <= chunk.first_ring || chunk.last_ring >= (int)rings.size()) {
+				_release_flow_tile(chunk);
+				continue;
+			}
+			const float from = rings[chunk.first_ring].distance;
+			const float to = rings[chunk.last_ring].distance;
+			const int tile_rows = CLAMP((int)Math::round((to - from) / job->cell_size) + 1, 2, LandscapeFlowAtlas::MAX_SIZE);
+			LandscapeSplineFlow::pack_rows(field, from * rows_per_meter, to * rows_per_meter, tile_rows, texels);
+			// Edits mostly leave a tile its size, and then it is only refilled.
+			if (chunk.flow_tile != 0 && atlas->update(chunk.flow_tile, field.columns, tile_rows, texels)) {
+				continue;
+			}
+			_release_flow_tile(chunk);
+			chunk.flow_tile = atlas->allocate(get_instance_id(), field.columns, tile_rows, texels);
+		}
+		_apply_flow_tiles();
+	}
+	memdelete(job);
+}
+
+void LandscapeSpline3D::update_flow() {
+	if (!is_inside_tree()) {
+		return;
+	}
+	if (pending_update != 0) {
+		_update();
+	}
+	_wait_for_flow_job();
+	flow_generation++;
+	flow_requested = false;
+	if (!_wants_flow()) {
+		_clear_flow();
+	} else {
+		_start_flow_update();
+		if (flow_job != nullptr) {
+			_finish_flow_update();
+		}
+	}
+	_update_flow_processing();
+}
+
+void LandscapeSpline3D::_release_flow_tile(Chunk &p_chunk) {
+	if (p_chunk.flow_tile != 0) {
+		if (LandscapeFlowAtlas::exists()) {
+			LandscapeFlowAtlas::get_singleton()->release(p_chunk.flow_tile);
+		}
+		p_chunk.flow_tile = 0;
+		_apply_flow_tile(p_chunk);
+	}
+}
+
+void LandscapeSpline3D::_clear_flow() {
+	for (Chunk &chunk : chunks) {
+		_release_flow_tile(chunk);
+	}
+}
+
+void LandscapeSpline3D::_apply_flow_tile(const Chunk &p_chunk) const {
+	if (!p_chunk.instance.is_valid()) {
+		return;
+	}
+	Vector4 tile;
+	if (p_chunk.flow_tile != 0 && LandscapeFlowAtlas::exists()) {
+		tile = LandscapeFlowAtlas::get_singleton()->get_tile_transform(p_chunk.flow_tile);
+	}
+	RS::get_singleton()->instance_geometry_set_shader_parameter(p_chunk.instance, SNAME("flow_tile"), tile);
+}
+
+void LandscapeSpline3D::_apply_flow_tiles() {
+	for (const Chunk &chunk : chunks) {
+		_apply_flow_tile(chunk);
+	}
+	_apply_flow_atlas_to_material();
+}
+
+void LandscapeSpline3D::_apply_flow_atlas_to_material() const {
+	if (!LandscapeFlowAtlas::exists()) {
+		return;
+	}
+	bool any = false;
+	for (const Chunk &chunk : chunks) {
+		any = any || chunk.flow_tile != 0;
+	}
+	const RID material_rid = _get_material_rid();
+	if (any && material_rid.is_valid()) {
+		// Straight to the server rather than through the ShaderMaterial, so it
+		// is never saved with the material.
+		RS::get_singleton()->material_set_param(material_rid, SNAME("flow_atlas"), LandscapeFlowAtlas::get_singleton()->get_texture());
 	}
 }
 
@@ -2043,8 +2688,13 @@ void LandscapeSpline3D::_on_terrain_changed(const Rect2i &p_region) {
 		_queue_update(UPDATE_RINGS);
 		return;
 	}
+	if (_wants_flow()) {
+		// How deep the water is comes from the ground, whatever the mesh is
+		// built from.
+		_queue_flow_update();
+	}
 	if (height_mode == HEIGHT_MODE_SPLINE) {
-		// Nothing here is built from the terrain.
+		// Nothing in the mesh is built from the terrain.
 		return;
 	}
 	const Landscape3D *landscape = _get_landscape();
@@ -2601,6 +3251,9 @@ void LandscapeSpline3D::set_spline_type(SplineType p_type) {
 	ERR_FAIL_INDEX(p_type, TYPE_MAX);
 	spline_type = p_type;
 	_apply_material_to_all();
+	// Only rivers and streams flow.
+	_queue_flow_update();
+	notify_property_list_changed();
 }
 
 LandscapeSpline3D::SplineType LandscapeSpline3D::get_spline_type() const {
@@ -2821,6 +3474,38 @@ float LandscapeSpline3D::get_visibility_range_end_margin() const {
 	return visibility_range_end_margin;
 }
 
+void LandscapeSpline3D::set_flow_enabled(bool p_enabled) {
+	flow_enabled = p_enabled;
+	_queue_flow_update();
+}
+
+bool LandscapeSpline3D::is_flow_enabled() const {
+	return flow_enabled;
+}
+
+void LandscapeSpline3D::set_flow_cell_size(float p_size) {
+	flow_cell_size = MAX(p_size, 0.05f);
+	_queue_flow_update();
+}
+
+float LandscapeSpline3D::get_flow_cell_size() const {
+	return flow_cell_size;
+}
+
+void LandscapeSpline3D::set_flow_obstacle_mask(uint32_t p_mask) {
+	flow_obstacle_mask = p_mask;
+	_queue_flow_update();
+}
+
+uint32_t LandscapeSpline3D::get_flow_obstacle_mask() const {
+	return flow_obstacle_mask;
+}
+
+uint32_t LandscapeSpline3D::get_chunk_flow_tile(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, (int)chunks.size(), 0);
+	return chunks[p_index].flow_tile;
+}
+
 void LandscapeSpline3D::set_carve_enabled(bool p_enabled) {
 	carve_enabled = p_enabled;
 }
@@ -2919,5 +3604,6 @@ LandscapeSpline3D::LandscapeSpline3D() {
 }
 
 LandscapeSpline3D::~LandscapeSpline3D() {
+	_wait_for_flow_job();
 	_clear_chunks();
 }

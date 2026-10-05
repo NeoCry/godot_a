@@ -2867,6 +2867,23 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("occluder_create"), &RenderingServer::occluder_create);
 	ClassDB::bind_method(D_METHOD("occluder_set_mesh", "occluder", "vertices", "indices"), &RenderingServer::occluder_set_mesh);
 
+	/* PLANAR REFLECTION */
+
+	ClassDB::bind_method(D_METHOD("planar_reflection_create"), &RenderingServer::planar_reflection_create);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_size", "planar_reflection", "size"), &RenderingServer::planar_reflection_set_size);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_receive_distance", "planar_reflection", "distance"), &RenderingServer::planar_reflection_set_receive_distance);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_resolution_scale", "planar_reflection", "scale"), &RenderingServer::planar_reflection_set_resolution_scale);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_max_distance", "planar_reflection", "distance"), &RenderingServer::planar_reflection_set_max_distance);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_intensity", "planar_reflection", "intensity"), &RenderingServer::planar_reflection_set_intensity);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_distortion", "planar_reflection", "distortion"), &RenderingServer::planar_reflection_set_distortion);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_normal_fade", "planar_reflection", "normal_fade"), &RenderingServer::planar_reflection_set_normal_fade);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_edge_fade", "planar_reflection", "fade"), &RenderingServer::planar_reflection_set_edge_fade);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_clip_bias", "planar_reflection", "bias"), &RenderingServer::planar_reflection_set_clip_bias);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_enable_shadows", "planar_reflection", "enable"), &RenderingServer::planar_reflection_set_enable_shadows);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_mesh_lod_threshold", "planar_reflection", "pixels"), &RenderingServer::planar_reflection_set_mesh_lod_threshold);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_cull_mask", "planar_reflection", "layers"), &RenderingServer::planar_reflection_set_cull_mask);
+	ClassDB::bind_method(D_METHOD("planar_reflection_set_reflection_mask", "planar_reflection", "layers"), &RenderingServer::planar_reflection_set_reflection_mask);
+
 	/* CAMERA */
 
 	ClassDB::bind_method(D_METHOD("camera_create"), &RenderingServer::camera_create);
@@ -3317,6 +3334,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::INSTANCE_OCCLUDER);
 	BIND_ENUM_CONSTANT(RSE::INSTANCE_VISIBLITY_NOTIFIER);
 	BIND_ENUM_CONSTANT(RSE::INSTANCE_FOG_VOLUME);
+	BIND_ENUM_CONSTANT(RSE::INSTANCE_PLANAR_REFLECTION);
 	BIND_ENUM_CONSTANT(RSE::INSTANCE_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::INSTANCE_GEOMETRY_MASK);

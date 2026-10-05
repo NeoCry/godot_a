@@ -396,6 +396,9 @@ public:
 
 		LocalVector<RID> dynamic_lights;
 
+		// The instances of planar reflections in it (see PlanarReflection).
+		LocalVector<Instance *> planar_reflections;
+
 		// Where dynamic GI objects moved, appeared or went away this frame (see _sdfgi_mark_dirty()).
 		LocalVector<AABB> sdfgi_dirty_aabbs;
 		uint64_t sdfgi_dirty_frame = UINT64_MAX;
@@ -452,6 +455,54 @@ public:
 	virtual RID scenario_get_environment(RID p_scenario);
 	virtual void scenario_add_viewport_visibility_mask(RID p_scenario, RID p_viewport);
 	virtual void scenario_remove_viewport_visibility_mask(RID p_scenario, RID p_viewport);
+
+	/* PLANAR REFLECTION API */
+
+	// A plane that reflects the scene (PlanarReflectionProbe): its instance's local XZ plane,
+	// reflecting towards +Y. Every view that sees it draws the scene mirrored across it first (see
+	// _render_planar_reflections()), and the surfaces near it reflect that.
+	struct PlanarReflection {
+		Vector2 size = Vector2(20, 20);
+		float receive_distance = 1.0;
+		float resolution_scale = 0.5;
+		float max_distance = 0.0;
+		float intensity = 1.0;
+		float distortion = 1.0;
+		float normal_fade = 0.5;
+		float edge_fade = 0.1;
+		float clip_bias = 0.02;
+		bool shadows = true;
+		float mesh_lod_threshold = 4.0;
+		uint32_t cull_mask = 0xFFFFFFFF;
+		uint32_t reflection_mask = 0xFFFFFFFF;
+		HashSet<Instance *> instances;
+	};
+
+	mutable RID_Owner<PlanarReflection, true> planar_reflection_owner;
+
+	virtual RID planar_reflection_allocate();
+	virtual void planar_reflection_initialize(RID p_rid);
+	virtual void planar_reflection_set_size(RID p_planar_reflection, const Vector2 &p_size);
+	virtual void planar_reflection_set_receive_distance(RID p_planar_reflection, float p_distance);
+	virtual void planar_reflection_set_resolution_scale(RID p_planar_reflection, float p_scale);
+	virtual void planar_reflection_set_max_distance(RID p_planar_reflection, float p_distance);
+	virtual void planar_reflection_set_intensity(RID p_planar_reflection, float p_intensity);
+	virtual void planar_reflection_set_distortion(RID p_planar_reflection, float p_distortion);
+	virtual void planar_reflection_set_normal_fade(RID p_planar_reflection, float p_normal_fade);
+	virtual void planar_reflection_set_edge_fade(RID p_planar_reflection, float p_fade);
+	virtual void planar_reflection_set_clip_bias(RID p_planar_reflection, float p_bias);
+	virtual void planar_reflection_set_enable_shadows(RID p_planar_reflection, bool p_enable);
+	virtual void planar_reflection_set_mesh_lod_threshold(RID p_planar_reflection, float p_pixels);
+	virtual void planar_reflection_set_cull_mask(RID p_planar_reflection, uint32_t p_layers);
+	virtual void planar_reflection_set_reflection_mask(RID p_planar_reflection, uint32_t p_layers);
+	void _planar_reflection_update_instances(PlanarReflection *p_planar_reflection);
+
+	// Set while a planar reflection's layer is drawn, so it draws no planar reflections of its own.
+	bool planar_reflection_rendering = false;
+	// How many planar reflections a view shows at most, and how much wider than the view they are
+	// drawn.
+	static constexpr uint32_t MAX_PLANAR_REFLECTIONS = 4;
+	static constexpr real_t PLANAR_REFLECTION_GUARD_BAND = 1.06;
 
 	/* INSTANCING API */
 
@@ -1401,7 +1452,13 @@ public:
 
 	bool _render_reflection_probe_step(Instance *p_instance, int p_step);
 
-	void _render_scene(const RendererSceneRender::CameraData *p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_force_camera_attributes, RID p_compositor, uint32_t p_visible_layers, RID p_scenario, RID p_viewport, RID p_shadow_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, float p_window_output_max_value, bool p_using_shadows = true, RenderingServerTypes::RenderInfo *r_render_info = nullptr);
+	// p_planar_reflection_projection is set when drawing a layer of a view's planar reflections: the
+	// mirrored camera's projection before its near plane was made the mirror, which directional
+	// shadows are fitted to (an oblique projection's near and far no longer read right).
+	void _render_scene(const RendererSceneRender::CameraData *p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_force_camera_attributes, RID p_compositor, uint32_t p_visible_layers, RID p_scenario, RID p_viewport, RID p_shadow_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, float p_window_output_max_value, bool p_using_shadows = true, RenderingServerTypes::RenderInfo *r_render_info = nullptr, const Projection *p_planar_reflection_projection = nullptr);
+	// Draws the planar reflections in sight of a view into its render buffers, before the view: up
+	// to as many as the renderer handles, nearest first.
+	void _render_planar_reflections(const RendererSceneRender::CameraData &p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_camera_attributes, Scenario *p_scenario, RID p_viewport, RID p_shadow_atlas, const Size2 &p_viewport_size, float p_z_near, float p_z_far, float p_window_output_max_value);
 	void render_empty_scene(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_scenario, RID p_shadow_atlas, float p_window_output_max_value);
 
 	void render_camera(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_camera, RID p_scenario, RID p_viewport, Size2 p_viewport_size, uint32_t p_jitter_phase_count, float p_screen_mesh_lod_threshold, RID p_shadow_atlas, float p_window_output_max_value, RenderingServerTypes::RenderInfo *r_render_info = nullptr);

@@ -173,6 +173,51 @@ RID RendererSceneRenderRD::reflection_probe_create_framebuffer(RID p_color, RID 
 	return RD::get_singleton()->framebuffer_create(fb);
 }
 
+/* PLANAR REFLECTIONS */
+
+uint32_t RendererSceneRenderRD::planar_reflections_get_max_count() const {
+	return RendererRD::PlanarReflections::MAX_LAYERS;
+}
+
+Ref<RenderSceneBuffers> RendererSceneRenderRD::planar_reflections_begin(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_count, const Size2i &p_size) {
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	ERR_FAIL_COND_V(rb.is_null(), Ref<RenderSceneBuffers>());
+	Ref<RendererRD::PlanarReflections> planar;
+	if (rb->has_custom_data(RB_SCOPE_PLANAR_REFLECTIONS)) {
+		planar = rb->get_custom_data(RB_SCOPE_PLANAR_REFLECTIONS);
+	} else {
+		planar.instantiate();
+		rb->set_custom_data(RB_SCOPE_PLANAR_REFLECTIONS, planar);
+	}
+	return planar->begin(p_count, p_size);
+}
+
+void RendererSceneRenderRD::planar_reflection_begin_layer(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_layer, const PlanarReflectionLayer &p_layer_data) {
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	ERR_FAIL_COND(rb.is_null() || !rb->has_custom_data(RB_SCOPE_PLANAR_REFLECTIONS));
+	Ref<RendererRD::PlanarReflections> planar = rb->get_custom_data(RB_SCOPE_PLANAR_REFLECTIONS);
+	ERR_FAIL_COND(p_layer >= planar->get_count());
+	planar->set_layer(p_layer, p_layer_data);
+	planar_reflection_pass = planar;
+	planar_reflection_pass_layer = p_layer;
+}
+
+void RendererSceneRenderRD::planar_reflection_end_layer(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_layer) {
+	if (planar_reflection_pass.is_valid() && planar_reflection_pass_layer == (int)p_layer) {
+		planar_reflection_pass->finish_layer(p_layer);
+	}
+	planar_reflection_pass.unref();
+	planar_reflection_pass_layer = -1;
+}
+
+void RendererSceneRenderRD::planar_reflections_clear(const Ref<RenderSceneBuffers> &p_render_buffers) {
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	if (rb.is_valid() && rb->has_custom_data(RB_SCOPE_PLANAR_REFLECTIONS)) {
+		Ref<RendererRD::PlanarReflections> planar = rb->get_custom_data(RB_SCOPE_PLANAR_REFLECTIONS);
+		planar->clear();
+	}
+}
+
 /* FOG VOLUME INSTANCE */
 
 RID RendererSceneRenderRD::fog_volume_instance_create(RID p_fog_volume) {
@@ -269,7 +314,7 @@ bool RendererSceneRenderRD::_compositor_effects_has_flag(const RenderDataRD *p_r
 		return false;
 	}
 
-	if (p_render_data->reflection_probe.is_valid()) {
+	if (p_render_data->is_offscreen_reflection()) {
 		return false;
 	}
 
@@ -292,7 +337,7 @@ bool RendererSceneRenderRD::_has_compositor_effect(RSE::CompositorEffectCallback
 		return false;
 	}
 
-	if (p_render_data->reflection_probe.is_valid()) {
+	if (p_render_data->is_offscreen_reflection()) {
 		return false;
 	}
 
@@ -310,7 +355,7 @@ void RendererSceneRenderRD::_process_compositor_effects(RSE::CompositorEffectCal
 		return;
 	}
 
-	if (p_render_data->reflection_probe.is_valid()) {
+	if (p_render_data->is_offscreen_reflection()) {
 		return;
 	}
 
@@ -1196,7 +1241,7 @@ bool RendererSceneRenderRD::_render_buffers_can_be_storage() {
 }
 
 bool RendererSceneRenderRD::_motion_blur_is_active(const RenderDataRD *p_render_data, const Size2i &p_size, RendererRD::MotionBlur::Settings *r_settings) const {
-	if (motion_blur == nullptr || p_render_data->reflection_probe.is_valid() || p_render_data->environment.is_null()) {
+	if (motion_blur == nullptr || p_render_data->is_offscreen_reflection() || p_render_data->environment.is_null()) {
 		return false;
 	}
 
@@ -1428,6 +1473,9 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 	// View count of our render target must match our camera data.
 	ERR_FAIL_COND(rb->get_view_count() != p_camera_data->view_count);
 
+	// Drawing a layer of a view's planar reflections, rather than a view.
+	RendererRD::PlanarReflections *planar_reflection = planar_reflection_pass_layer >= 0 ? planar_reflection_pass.ptr() : nullptr;
+
 	// setup scene data
 	RenderSceneDataRD scene_data;
 	{
@@ -1455,8 +1503,15 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 			scene_data.prev_view_projection[v] = p_prev_camera_data->view_projection[v];
 		}
 
-		scene_data.z_near = p_camera_data->main_projection.get_z_near();
-		scene_data.z_far = p_camera_data->main_projection.get_z_far();
+		if (planar_reflection != nullptr) {
+			// Its projection is oblique, which get_z_near() and get_z_far() misread.
+			const PlanarReflectionLayer &layer = planar_reflection->get_layer(planar_reflection_pass_layer);
+			scene_data.z_near = layer.camera_z_near;
+			scene_data.z_far = layer.camera_z_far;
+		} else {
+			scene_data.z_near = p_camera_data->main_projection.get_z_near();
+			scene_data.z_far = p_camera_data->main_projection.get_z_far();
+		}
 
 		// this should be the same for all cameras..
 		const float lod_distance_multiplier = p_camera_data->main_projection.get_lod_multiplier();
@@ -1524,6 +1579,8 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 		render_data.reflection_atlas = p_reflection_atlas;
 		render_data.reflection_probe = p_reflection_probe;
 		render_data.reflection_probe_pass = p_reflection_probe_pass;
+		render_data.planar_reflection = planar_reflection;
+		render_data.planar_reflection_layer = planar_reflection != nullptr ? planar_reflection_pass_layer : -1;
 
 		render_data.render_shadows = p_render_shadows;
 		render_data.render_shadow_count = p_render_shadow_count;
@@ -1534,7 +1591,7 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 
 		render_data.render_info = r_render_info;
 
-		if (p_render_buffers.is_valid() && p_reflection_probe.is_null()) {
+		if (p_render_buffers.is_valid() && p_reflection_probe.is_null() && planar_reflection == nullptr) {
 			render_data.transparent_bg = texture_storage->render_target_get_transparent(rb->get_render_target());
 			render_data.render_region = texture_storage->render_target_get_render_region(rb->get_render_target());
 		}
@@ -1557,7 +1614,7 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 	}
 
 	Color clear_color;
-	if (p_render_buffers.is_valid() && p_reflection_probe.is_null()) {
+	if (p_render_buffers.is_valid() && p_reflection_probe.is_null() && planar_reflection == nullptr) {
 		clear_color = texture_storage->render_target_get_clear_request_color(rb->get_render_target());
 	} else {
 		clear_color = RSG::texture_storage->get_default_clear_color();
@@ -1948,6 +2005,9 @@ void RendererSceneRenderRD::init() {
 }
 
 RendererSceneRenderRD::~RendererSceneRenderRD() {
+	planar_reflection_pass.unref();
+	RendererRD::PlanarReflections::free_empty_uniform_buffer();
+
 	memdelete(forward_id_storage);
 
 	memdelete(bokeh_dof);

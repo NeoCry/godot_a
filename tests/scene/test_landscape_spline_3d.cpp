@@ -35,10 +35,14 @@ TEST_FORCE_LINK(test_landscape_spline_3d)
 #include "core/object/undo_redo.h"
 #include "scene/3d/landscape_3d.h"
 #include "scene/3d/landscape_spline_3d.h"
+#include "scene/3d/landscape_spline_flow.h"
+#include "scene/3d/physics/collision_shape_3d.h"
+#include "scene/3d/physics/static_body_3d.h"
 #include "scene/3d/terrain_data.h"
 #include "scene/3d/terrain_layer.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#include "scene/resources/3d/box_shape_3d.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/material.h"
 #include "scene/resources/shader.h"
@@ -789,5 +793,258 @@ TEST_CASE("[SceneTree][LandscapeSpline3D] The origin follows the curve through u
 	memdelete(undo_redo);
 }
 #endif // TOOLS_ENABLED
+
+// A straight channel p_columns cells across and p_rows along, p_cell meters
+// apart, as deep as p_depth everywhere: across is +X, downstream +Y.
+static LandscapeSplineFlow::Grid make_channel(int p_columns, int p_rows, float p_cell, float p_depth = 1.0f) {
+	LandscapeSplineFlow::Grid grid;
+	grid.columns = p_columns;
+	grid.rows = p_rows;
+	grid.positions.resize(p_columns * p_rows);
+	grid.depths.resize(p_columns * p_rows);
+	for (int j = 0; j < p_rows; j++) {
+		for (int i = 0; i < p_columns; i++) {
+			grid.positions[j * p_columns + i] = Vector2(i * p_cell, j * p_cell);
+			grid.depths[j * p_columns + i] = p_depth;
+		}
+	}
+	return grid;
+}
+
+TEST_CASE("[LandscapeSplineFlow] An even channel flows straight down, at the same speed throughout") {
+	const LandscapeSplineFlow::Grid grid = make_channel(17, 101, 0.5f);
+	LandscapeSplineFlow::Field field;
+	LandscapeSplineFlow::solve(grid, field);
+	REQUIRE(field.current.size() == grid.positions.size());
+
+	float worst = 0.0f;
+	float churned = 0.0f;
+	float sheltered = 0.0f;
+	for (uint32_t k = 0; k < field.current.size(); k++) {
+		worst = MAX(worst, field.current[k].distance_to(Vector2(0, 1)));
+		churned = MAX(churned, field.turbulence[k]);
+		sheltered = MAX(sheltered, field.wake[k]);
+	}
+	CHECK(worst < 0.02f);
+	CHECK(churned < 0.05f);
+	CHECK(sheltered < 0.01f);
+}
+
+TEST_CASE("[LandscapeSplineFlow] The water parts around a rock, and is held back and churned up by it") {
+	const int columns = 17;
+	const float cell = 0.5f;
+	LandscapeSplineFlow::Grid grid = make_channel(columns, 141, cell);
+	// A rock 3 m across in midstream, 25 m down.
+	const Vector2 rock(8 * cell, 50 * cell);
+	for (int j = 0; j < grid.rows; j++) {
+		for (int i = 0; i < columns; i++) {
+			if (grid.positions[j * columns + i].distance_to(rock) <= 1.5f) {
+				grid.depths[j * columns + i] = 0.0f;
+			}
+		}
+	}
+	LandscapeSplineFlow::Field field;
+	LandscapeSplineFlow::solve(grid, field);
+	auto at = [&](int p_column, int p_row) {
+		return p_row * columns + p_column;
+	};
+
+	// Faster past it on either side...
+	CHECK(field.current[at(3, 50)].length() > 1.1f);
+	CHECK(field.current[at(13, 50)].length() > 1.1f);
+	// ...turned aside ahead of it...
+	CHECK(field.current[at(6, 45)].x < -0.05f);
+	CHECK(field.current[at(10, 45)].x > 0.05f);
+	// ...piling up against it...
+	CHECK(field.turbulence[at(8, 46)] > 0.2f);
+	// ...and sheltered in its wake, slowed down and churned up.
+	CHECK(field.wake[at(8, 55)] > 0.5f);
+	CHECK(field.current[at(8, 55)].y < 0.6f);
+	CHECK(field.turbulence[at(8, 56)] > 0.2f);
+	// The wake fades and spreads further down, and the current recovers.
+	CHECK(field.wake[at(8, 120)] < field.wake[at(8, 55)] * 0.7f);
+	CHECK(field.current[at(8, 120)].y > field.current[at(8, 55)].y + 0.2f);
+	// Well upstream, nothing of it shows yet.
+	CHECK(field.current[at(8, 10)].distance_to(Vector2(0, 1)) < 0.1f);
+	CHECK(field.wake[at(8, 10)] < 0.01f);
+}
+
+TEST_CASE("[LandscapeSplineFlow] Shallows that span the channel speed it up and break it") {
+	const int columns = 17;
+	LandscapeSplineFlow::Grid grid = make_channel(columns, 121, 0.5f);
+	for (int j = 50; j <= 60; j++) {
+		for (int i = 0; i < columns; i++) {
+			grid.depths[j * columns + i] = 0.4f;
+		}
+	}
+	LandscapeSplineFlow::Field field;
+	LandscapeSplineFlow::solve(grid, field);
+	// The same water through a cross-section 0.4 as deep: 2.5 times as fast.
+	CHECK(field.current[55 * columns + 8].y > 2.0f);
+	CHECK(field.current[20 * columns + 8].y == doctest::Approx(1.0f).epsilon(0.05));
+	// Pouring onto them churns it up.
+	CHECK(field.turbulence[51 * columns + 8] > 0.3f);
+	CHECK(field.turbulence[20 * columns + 8] < 0.05f);
+}
+
+TEST_CASE("[LandscapeSplineFlow] A cross-section that is all but dry does not stop the river") {
+	const int columns = 17;
+	LandscapeSplineFlow::Grid grid = make_channel(columns, 101, 0.5f);
+	for (int i = 0; i < columns; i++) {
+		grid.depths[40 * columns + i] = i == 8 ? 1.0f : 0.0f;
+	}
+	LandscapeSplineFlow::Field field;
+	LandscapeSplineFlow::solve(grid, field);
+	CHECK(field.current[80 * columns + 8].y == doctest::Approx(1.0f).epsilon(0.1));
+	CHECK(field.current[20 * columns + 8].y == doctest::Approx(1.0f).epsilon(0.1));
+}
+
+TEST_CASE("[LandscapeSplineFlow] Bends carry the fastest water to their outer bank") {
+	// Half a circle around the origin, 8 m wide, from 20 m to 28 m out:
+	// across points outwards, so the outer bank is the last column.
+	const int columns = 17;
+	const int rows = 151;
+	LandscapeSplineFlow::Grid grid;
+	grid.columns = columns;
+	grid.rows = rows;
+	grid.positions.resize(columns * rows);
+	grid.depths.resize(columns * rows);
+	for (int j = 0; j < rows; j++) {
+		const float angle = j * 0.5f / 24.0f;
+		for (int i = 0; i < columns; i++) {
+			const float radius = 20.0f + i * 0.5f;
+			grid.positions[j * columns + i] = Vector2(Math::cos(angle), Math::sin(angle)) * radius;
+			grid.depths[j * columns + i] = 1.0f;
+		}
+	}
+	LandscapeSplineFlow::Field field;
+	LandscapeSplineFlow::solve(grid, field);
+	const int row = 110;
+	CHECK(field.current[row * columns + columns - 2].length() > field.current[row * columns + 1].length() * 1.05f);
+}
+
+TEST_CASE("[LandscapeSplineFlow] Packing a field into texels") {
+	LandscapeSplineFlow::Field field;
+	field.columns = 2;
+	field.rows = 3;
+	field.current = LocalVector<Vector2>({ Vector2(0, 0), Vector2(0, 0), Vector2(0, 1), Vector2(-1.5f, 0), Vector2(0, 2), Vector2(0, 2) });
+	field.turbulence = LocalVector<float>({ 0.0f, 0.0f, 0.5f, 0.0f, 1.0f, 1.0f });
+	field.wake = LocalVector<float>({ 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f });
+	Vector<uint8_t> texels;
+	// Rows 1 and 2, and halfway between them.
+	LandscapeSplineFlow::pack_rows(field, 1.0f, 2.0f, 3, texels);
+	REQUIRE(texels.size() == 2 * 3 * 4);
+	auto decode = [&](int p_column, int p_row, int p_channel) {
+		return texels[(p_row * 2 + p_column) * 4 + p_channel] / 255.0f;
+	};
+	CHECK((decode(0, 0, 1) * 2.0f - 1.0f) * LandscapeSplineFlow::VELOCITY_RANGE == doctest::Approx(1.0f).epsilon(0.03));
+	CHECK((decode(1, 0, 0) * 2.0f - 1.0f) * LandscapeSplineFlow::VELOCITY_RANGE == doctest::Approx(-1.5f).epsilon(0.03));
+	CHECK((decode(0, 1, 1) * 2.0f - 1.0f) * LandscapeSplineFlow::VELOCITY_RANGE == doctest::Approx(1.5f).epsilon(0.03));
+	CHECK(decode(0, 1, 2) == doctest::Approx(0.75f).epsilon(0.01));
+	CHECK(decode(1, 0, 3) == doctest::Approx(1.0f));
+	CHECK(decode(1, 2, 3) == doctest::Approx(0.0f));
+}
+
+// The flow field of p_spline at p_distance along it and p_u across it, as
+// decoded by the water shader: current in xy, turbulence in z, wake in w.
+static Vector4 spline_flow_at(LandscapeSpline3D *p_spline, float p_distance, float p_u) {
+	const float chunk_length = p_spline->get_chunk_length();
+	const int chunk = MIN((int)(p_distance / chunk_length), p_spline->get_chunk_count() - 1);
+	const float from = chunk * chunk_length;
+	const float to = MIN(from + chunk_length, p_spline->get_length());
+	const uint32_t tile = p_spline->get_chunk_flow_tile(chunk);
+	if (tile == 0) {
+		return Vector4();
+	}
+	LandscapeFlowAtlas *atlas = LandscapeFlowAtlas::get_singleton();
+	const Vector4 transform = atlas->get_tile_transform(tile);
+	const float size = atlas->get_size();
+	const float t = (p_distance - from) / (to - from);
+	const int x = (int)Math::round((transform.x + p_u * transform.z) * size - 0.5f);
+	const int y = (int)Math::round((transform.y + t * transform.w) * size - 0.5f);
+	const Color texel = atlas->get_image()->get_pixel(x, y);
+	const float range = LandscapeSplineFlow::VELOCITY_RANGE;
+	return Vector4((texel.r * 2.0f - 1.0f) * range, (texel.g * 2.0f - 1.0f) * range, texel.b, texel.a);
+}
+
+TEST_CASE("[SceneTree][LandscapeSpline3D] A river's current parts around the rocks standing in it") {
+	SplineScene scene(make_terrain());
+	scene.spline->apply_preset(LandscapeSpline3D::TYPE_RIVER);
+	scene.spline->set_chunk_length(64.0f);
+	// 16 m wide and a meter deep over the flat ground, running along +X: its
+	// right bank (u = 1) is towards +Z.
+	scene.spline->set_curve(make_line(Vector3(100, 1, 256), Vector3(300, 1, 256)));
+	scene.spline->update_mesh();
+	scene.spline->update_flow();
+
+	REQUIRE(scene.spline->get_chunk_count() == 4);
+	for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+		CHECK(scene.spline->get_chunk_flow_tile(i) != 0);
+	}
+	// UV2 runs across the strip and along each chunk, for the shader to find
+	// its place in the tile.
+	const Array arrays = RS::get_singleton()->mesh_surface_get_arrays(scene.spline->get_chunk_mesh(0), 0);
+	const PackedVector2Array uv2 = arrays[RSE::ARRAY_TEX_UV2];
+	REQUIRE(uv2.size() > 0);
+	// (Within what the attributes' 16 bit compression keeps of them.)
+	for (const Vector2 &uv : uv2) {
+		CHECK(uv.x >= -0.001f);
+		CHECK(uv.x <= 1.001f);
+		CHECK(uv.y >= -0.001f);
+		CHECK(uv.y <= 1.001f);
+	}
+	Vector4 midstream = spline_flow_at(scene.spline, 103.0f, 0.5f);
+	CHECK(Vector2(midstream.x, midstream.y).distance_to(Vector2(0, 1)) < 0.1f);
+
+	// A boulder 3 m across standing out of the water, 100 m down.
+	StaticBody3D *rock = memnew(StaticBody3D);
+	CollisionShape3D *collision = memnew(CollisionShape3D);
+	Ref<BoxShape3D> box;
+	box.instantiate();
+	box->set_size(Vector3(3, 4, 3));
+	collision->set_shape(box);
+	rock->add_child(collision);
+	rock->set_position(Vector3(200, 1, 256));
+	SceneTree::get_singleton()->get_root()->add_child(rock);
+
+	scene.spline->update_flow();
+	const Vector4 beside = spline_flow_at(scene.spline, 100.0f, 0.5f + 3.0f / 16.0f);
+	const Vector4 behind = spline_flow_at(scene.spline, 104.0f, 0.5f);
+	CHECK(Vector2(beside.x, beside.y).length() > 1.05f);
+	CHECK(behind.y < 0.6f);
+	CHECK(behind.w > 0.3f);
+	CHECK(behind.z > 0.2f);
+	midstream = spline_flow_at(scene.spline, 40.0f, 0.5f);
+	CHECK(Vector2(midstream.x, midstream.y).distance_to(Vector2(0, 1)) < 0.1f);
+
+	SUBCASE("Taking the rock away clears its wake") {
+		rock->get_parent()->remove_child(rock);
+		scene.spline->update_flow();
+		const Vector4 clear = spline_flow_at(scene.spline, 104.0f, 0.5f);
+		CHECK(clear.w < 0.05f);
+		CHECK(clear.y > 0.9f);
+	}
+
+	SUBCASE("Turning the flow field off hands its tiles back") {
+		const int tiles = LandscapeFlowAtlas::get_singleton()->get_tile_count();
+		scene.spline->set_flow_enabled(false);
+		for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+			CHECK(scene.spline->get_chunk_flow_tile(i) == 0);
+		}
+		CHECK(LandscapeFlowAtlas::get_singleton()->get_tile_count() == tiles - 4);
+	}
+
+	memdelete(rock);
+}
+
+TEST_CASE("[SceneTree][LandscapeSpline3D] Roads and lakes have no flow field") {
+	SplineScene scene(make_terrain());
+	scene.spline->set_curve(make_line(Vector3(100, 1, 256), Vector3(300, 1, 256)));
+	scene.spline->update_mesh();
+	scene.spline->update_flow();
+	for (int i = 0; i < scene.spline->get_chunk_count(); i++) {
+		CHECK(scene.spline->get_chunk_flow_tile(i) == 0);
+	}
+}
 
 } // namespace TestLandscapeSpline3D

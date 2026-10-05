@@ -1942,6 +1942,14 @@ void main() {
 	indirect_specular_light *= specular_occlusion;
 #endif // BENT_NORMAL_MAP_USED
 #endif // USE_SPECULAR_OCCLUSION
+
+	// Planar reflections show what lies around the plane exactly, on screen or not, so they win over
+	// the sky and reflection probes, and are not occluded: they are what is really there.
+	if (planar_reflections.count > 0u) {
+		vec4 planar = planar_reflection_compute(vertex, vec3(normal), vec3(view), float(roughness), instances.data[draw_call.instance_index].layer_mask);
+		indirect_specular_light = indirect_specular_light * half(1.0 - planar.a) + hvec3(planar.rgb);
+	}
+
 	ambient_light *= albedo.rgb;
 
 #endif // !AMBIENT_LIGHT_DISABLED

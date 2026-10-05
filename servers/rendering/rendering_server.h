@@ -549,6 +549,26 @@ public:
 	virtual RID occluder_create() = 0;
 	virtual void occluder_set_mesh(RID p_occluder, const PackedVector3Array &p_vertices, const PackedInt32Array &p_indices) = 0;
 
+	/* PLANAR REFLECTION API */
+
+	// A plane that reflects the scene: the local XZ plane of the instance it is set on, reflecting
+	// towards +Y, size wide, and the surfaces within receive_distance of it reflect it. See
+	// PlanarReflectionProbe.
+	virtual RID planar_reflection_create() = 0;
+	virtual void planar_reflection_set_size(RID p_planar_reflection, const Vector2 &p_size) = 0;
+	virtual void planar_reflection_set_receive_distance(RID p_planar_reflection, float p_distance) = 0;
+	virtual void planar_reflection_set_resolution_scale(RID p_planar_reflection, float p_scale) = 0;
+	virtual void planar_reflection_set_max_distance(RID p_planar_reflection, float p_distance) = 0;
+	virtual void planar_reflection_set_intensity(RID p_planar_reflection, float p_intensity) = 0;
+	virtual void planar_reflection_set_distortion(RID p_planar_reflection, float p_distortion) = 0;
+	virtual void planar_reflection_set_normal_fade(RID p_planar_reflection, float p_normal_fade) = 0;
+	virtual void planar_reflection_set_edge_fade(RID p_planar_reflection, float p_fade) = 0;
+	virtual void planar_reflection_set_clip_bias(RID p_planar_reflection, float p_bias) = 0;
+	virtual void planar_reflection_set_enable_shadows(RID p_planar_reflection, bool p_enable) = 0;
+	virtual void planar_reflection_set_mesh_lod_threshold(RID p_planar_reflection, float p_pixels) = 0;
+	virtual void planar_reflection_set_cull_mask(RID p_planar_reflection, uint32_t p_layers) = 0;
+	virtual void planar_reflection_set_reflection_mask(RID p_planar_reflection, uint32_t p_layers) = 0;
+
 	/* CAMERA API */
 
 	virtual RID camera_create() = 0;

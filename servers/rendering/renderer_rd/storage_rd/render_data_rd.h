@@ -35,6 +35,10 @@
 #include "servers/rendering/rendering_server_types.h"
 #include "servers/rendering/storage/render_data.h"
 
+namespace RendererRD {
+class PlanarReflections;
+}
+
 class RenderDataRD : public RenderData {
 	GDCLASS(RenderDataRD, RenderData);
 
@@ -65,6 +69,13 @@ public:
 	RID reflection_atlas;
 	RID reflection_probe;
 	int reflection_probe_pass = 0;
+	// Set while drawing a layer of a view's planar reflections (see RendererRD::PlanarReflections),
+	// which, like a reflection probe's faces, goes into a texture of its own without the view's
+	// screen-space effects, GI buffers and post-processing.
+	RendererRD::PlanarReflections *planar_reflection = nullptr;
+	int planar_reflection_layer = -1;
+
+	bool is_offscreen_reflection() const { return reflection_probe.is_valid() || planar_reflection != nullptr; }
 
 	RID cluster_buffer;
 	uint32_t cluster_size = 0;

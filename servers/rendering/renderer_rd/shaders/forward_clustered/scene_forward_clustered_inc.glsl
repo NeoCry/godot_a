@@ -530,6 +530,9 @@ layout(set = 1, binding = 39) uniform texture2D directional_shadow_cache_atlas;
 // probe state, above.
 layout(set = 1, binding = 42) uniform texture3D atmosphere_aerial_perspective_volume;
 
+#define PLANAR_REFLECTION_BINDING 43
+#include "../planar_reflection_inc.glsl"
+
 #endif
 
 vec4 normal_roughness_compatibility(vec4 p_normal_roughness) {

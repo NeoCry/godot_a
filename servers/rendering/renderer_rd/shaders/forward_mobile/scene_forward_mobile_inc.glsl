@@ -440,6 +440,10 @@ layout(set = 1, binding = 13 + 9) uniform sampler SAMPLER_LINEAR_WITH_MIPMAPS_RE
 layout(set = 1, binding = 13 + 10) uniform sampler SAMPLER_NEAREST_WITH_MIPMAPS_ANISOTROPIC_REPEAT;
 layout(set = 1, binding = 13 + 11) uniform sampler SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_REPEAT;
 
+#define PLANAR_REFLECTION_BINDING 26
+#define PLANAR_REFLECTION_MULTIPLIER float(REFLECTION_MULTIPLIER)
+#include "../planar_reflection_inc.glsl"
+
 #ifdef TEXTURE_STREAMING
 // Texture streaming material feedback buffer access
 layout(set = 1, binding = 25, std430) buffer restrict MaterialFeedbackBuffer {

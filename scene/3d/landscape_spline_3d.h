@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/object/worker_thread_pool.h"
 #include "core/templates/local_vector.h"
 #include "core/variant/typed_array.h"
 #include "scene/3d/path_3d.h"
@@ -37,6 +38,7 @@
 
 class Curve;
 class Landscape3D;
+class LandscapeFlowAtlas;
 class Shader;
 class ShaderMaterial;
 
@@ -75,8 +77,22 @@ class ShaderMaterial;
 //    shoreline are two triangles each; only those the shoreline crosses are
 //    clipped to it, and the shoreline is simplified first, so a lake costs a
 //    few triangles per tile plus its outline, however large it is.
+//
+// A river or stream also works out how its water flows (see flow_enabled and
+// LandscapeSplineFlow): over a grid laid along it, what is dry ground (the
+// banks, and the terrain wherever it rises out of the water) and what static
+// colliders stand in the water or lie under it (rocks, cliffs, piers) shape a
+// current that parts around them, runs faster past them and over shallows and
+// is held back and churned up in their wake. That is solved on a worker
+// thread, cut into a tile per chunk and packed into LandscapeFlowAtlas, one
+// texture every spline's water samples, each chunk being told where its tile
+// is through the flow_tile instance uniform (and UV2, which runs 0-1 across
+// the strip and along the chunk). In the editor it follows the spline, the
+// terrain and the colliders around it as they are edited.
 class LandscapeSpline3D : public Path3D {
 	GDCLASS(LandscapeSpline3D, Path3D);
+
+	friend class LandscapeFlowAtlas;
 
 public:
 	// What the spline is. Only chooses the built-in material used when
@@ -182,6 +198,9 @@ private:
 		Rect2 terrain_bounds;
 		RID mesh;
 		RID instance;
+		// The chunk's part of the flow field, in LandscapeFlowAtlas; 0 for
+		// none.
+		uint32_t flow_tile = 0;
 	};
 
 	// Built on worker threads (see _build_chunk), then handed to the
@@ -261,6 +280,10 @@ private:
 	float visibility_range_end = 0.0;
 	float visibility_range_end_margin = 0.0;
 
+	bool flow_enabled = true;
+	float flow_cell_size = 0.5;
+	uint32_t flow_obstacle_mask = 1;
+
 	bool carve_enabled = true;
 	float carve_depth = 0.0;
 	float carve_falloff = 4.0;
@@ -283,6 +306,21 @@ private:
 	uint32_t pending_update = 0;
 	bool update_queued = false;
 	ObjectID landscape_id;
+
+	// The flow field: the grid it is solved over (built on the main thread,
+	// where the terrain and physics can be read), solved on a worker thread.
+	// Each request bumps flow_generation; a job finishing for an older one is
+	// thrown away, and the latest requested is started instead.
+	struct FlowJob;
+	FlowJob *flow_job = nullptr;
+	WorkerThreadPool::TaskID flow_task = WorkerThreadPool::INVALID_TASK_ID;
+	uint64_t flow_generation = 0;
+	bool flow_requested = false;
+	// Editor only: how long to wait for edits to settle before starting, and
+	// before looking again at the colliders around the water.
+	double flow_wait = 0.0;
+	double flow_poll_wait = 0.0;
+	uint64_t flow_obstacle_signature = 0;
 
 	static inline Ref<Shader> road_shader;
 	static inline Ref<Shader> water_shader;
@@ -316,6 +354,29 @@ private:
 	float fill_tile_size = 256.0;
 	void _free_chunk(Chunk &p_chunk);
 	void _clear_chunks();
+
+	bool _wants_flow() const;
+	// Asks for the flow field to be rebuilt: at once in a running game, once
+	// edits settle in the editor.
+	void _queue_flow_update();
+	void _update_flow_processing();
+	// Lays the grid over the water and fills in what is dry and how deep the
+	// rest is, from the terrain and the colliders standing in it. False when
+	// there is nothing to solve.
+	bool _build_flow_grid(FlowJob &r_job);
+	void _start_flow_update();
+	void _wait_for_flow_job();
+	void _finish_flow_update();
+	void _release_flow_tile(Chunk &p_chunk);
+	void _clear_flow();
+	// Tells every chunk where its tile is, and the material where the atlas
+	// is. Also called by the atlas when it moves tiles.
+	void _apply_flow_tiles();
+	void _apply_flow_tile(const Chunk &p_chunk) const;
+	void _apply_flow_atlas_to_material() const;
+	// What colliders stand in or over the water and where, hashed: changes
+	// when one is moved, added or removed. Editor only.
+	uint64_t _get_flow_obstacle_signature() const;
 
 	Landscape3D *_find_landscape() const;
 	Landscape3D *_get_landscape() const;
@@ -463,6 +524,22 @@ public:
 
 	void set_visibility_range_end_margin(float p_margin);
 	float get_visibility_range_end_margin() const;
+
+	void set_flow_enabled(bool p_enabled);
+	bool is_flow_enabled() const;
+
+	void set_flow_cell_size(float p_size);
+	float get_flow_cell_size() const;
+
+	void set_flow_obstacle_mask(uint32_t p_mask);
+	uint32_t get_flow_obstacle_mask() const;
+
+	// Rebuilds the flow field now, e.g. after moving rocks in a running game
+	// (the editor notices that by itself). Waits for it to be solved.
+	void update_flow();
+	// Plain C++ helpers for tests and tools; not bound. The tile of the
+	// chunk's flow field in LandscapeFlowAtlas, 0 for none.
+	uint32_t get_chunk_flow_tile(int p_index) const;
 
 	void set_carve_enabled(bool p_enabled);
 	bool is_carve_enabled() const;
