@@ -61,8 +61,12 @@
 #include "scene/scene_string_names.h"
 
 namespace {
-// Distances as the LOD summary and the LOD window's buttons state them.
+// Distances as the LOD summary and the LOD window's buttons state them: whole
+// meters, as they usually are, without a trailing ".0".
 String _format_distance(float p_distance) {
+	if (Math::is_equal_approx(p_distance, Math::round(p_distance))) {
+		return itos((int64_t)Math::round(p_distance));
+	}
 	return String::num(p_distance, 2);
 }
 
@@ -716,6 +720,7 @@ void EditorPropertyFoliageLayers::_rebuild_sections(const TypedArray<FoliageLaye
 		section.count_label = memnew(Label);
 		section.count_label->set_modulate(Color(1, 1, 1, 0.65));
 		section.count_label->set_tooltip_text(TTR("How many instances of this FoliageLayer are painted."));
+		section.count_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
 		section.count_label->set_mouse_filter(MOUSE_FILTER_STOP);
 		header_hbox->add_child(section.count_label);
 
@@ -774,7 +779,8 @@ void EditorPropertyFoliageLayers::_update_section(int p_index) {
 	section.fold_button->set_disabled(section.layer.is_null());
 
 	section.shown_count = section.layer.is_valid() ? section.layer->get_instance_count() : 0;
-	section.count_label->set_text(section.layer.is_valid() ? vformat(TTR("%d instances"), section.shown_count) : String());
+	// Just the number, to leave the name the room: the tooltip says what it counts.
+	section.count_label->set_text(section.layer.is_valid() ? itos(section.shown_count) : String());
 
 	if (unfolded && section.inspector == nullptr) {
 		// The layer's own settings, right under its name. Its LODs come up as
