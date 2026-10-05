@@ -2369,6 +2369,13 @@ void fragment_shader(in SceneData scene_data) {
 			// Alpha is premultiplied.
 			indirect_specular_light = indirect_specular_light * (1.0 - ssr.a) + ssr.rgb;
 		}
+
+		// Planar reflections show what lies around the plane exactly, on screen or not, so they win
+		// over everything above (and, like SSR, are not occluded: they are what is really there).
+		if (planar_reflections.count > 0u) {
+			vec4 planar = planar_reflection_compute(vertex, normal, view, roughness, instances.data[instance_index].layer_mask);
+			indirect_specular_light = indirect_specular_light * (1.0 - planar.a) + planar.rgb;
+		}
 	}
 #endif // AMBIENT_LIGHT_DISABLED
 

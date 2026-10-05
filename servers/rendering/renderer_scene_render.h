@@ -377,6 +377,51 @@ public:
 		void set_multiview_camera(const Transform3D &p_transform, const LocalVector<Transform3D> &p_offsets, const LocalVector<Projection> &p_projection, bool p_is_orthogonal, bool p_vaspect, uint32_t p_visible_layers = 0xFFFFFFFF);
 	};
 
+	// Planar reflections: before a view is drawn, the scene is drawn mirrored across each plane
+	// in sight that reflects it (PlanarReflectionProbe), into textures kept with the view's render
+	// buffers, which its surfaces near those planes then reflect instead of the sky and probes.
+	// Each plane's pass goes through render_scene() like any view, between
+	// planar_reflection_begin_layer() and planar_reflection_end_layer(), with the render buffers
+	// planar_reflections_begin() returns. A renderer that can't draw them leaves these as they are,
+	// reporting no layers.
+	struct PlanarReflectionLayer {
+		// The mirrored camera the layer is drawn from, and its projection, whose near plane is
+		// the mirror (so nothing behind it shows). camera_projection_unclipped is the same before
+		// it was made oblique, and camera_z_near and camera_z_far are its near and far, which the
+		// oblique one no longer reads right.
+		Transform3D camera_transform;
+		Projection camera_projection;
+		Projection camera_projection_unclipped;
+		float camera_z_near = 0.05;
+		float camera_z_far = 4000.0;
+		// The mirror, in world space; its normal points to the side it reflects.
+		Plane plane;
+		// From world space to where the surfaces that reflect it are: within [-1, 1] on all three
+		// axes, y running along the plane's normal.
+		Transform3D receiver_transform;
+		float intensity = 1.0;
+		// How much the reflecting surface's own normal (ripples, bumps) bends what it shows, 1 being
+		// what a mirror would show.
+		float distortion = 1.0;
+		// Surfaces turned further than this from the plane, as the cosine of the angle between
+		// their normal and the plane's, do not reflect it.
+		float normal_fade = 0.5;
+		// The fraction of the receiving volume's extent, inwards from its sides, it fades out over.
+		float edge_fade = 0.1;
+		// The layers of the instances that reflect it.
+		uint32_t reflection_mask = 0xFFFFFFFF;
+	};
+
+	// How many planar reflections a view can show at once; 0 when the renderer has none.
+	virtual uint32_t planar_reflections_get_max_count() const { return 0; }
+	// Readies p_render_buffers' view for p_count planar reflections drawn at p_size, and returns the
+	// render buffers to draw them with.
+	virtual Ref<RenderSceneBuffers> planar_reflections_begin(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_count, const Size2i &p_size) { return Ref<RenderSceneBuffers>(); }
+	virtual void planar_reflection_begin_layer(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_layer, const PlanarReflectionLayer &p_layer_data) {}
+	virtual void planar_reflection_end_layer(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_layer) {}
+	// The view shows no planar reflections this frame.
+	virtual void planar_reflections_clear(const Ref<RenderSceneBuffers> &p_render_buffers) {}
+
 	virtual void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) = 0;
 
 	virtual void render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, bool p_flip_y) = 0;

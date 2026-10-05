@@ -67,6 +67,22 @@ public:
 	virtual void occluder_initialize(RID p_occluder) = 0;
 	virtual void occluder_set_mesh(RID p_occluder, const PackedVector3Array &p_vertices, const PackedInt32Array &p_indices) = 0;
 
+	virtual RID planar_reflection_allocate() = 0;
+	virtual void planar_reflection_initialize(RID p_rid) = 0;
+	virtual void planar_reflection_set_size(RID p_planar_reflection, const Vector2 &p_size) = 0;
+	virtual void planar_reflection_set_receive_distance(RID p_planar_reflection, float p_distance) = 0;
+	virtual void planar_reflection_set_resolution_scale(RID p_planar_reflection, float p_scale) = 0;
+	virtual void planar_reflection_set_max_distance(RID p_planar_reflection, float p_distance) = 0;
+	virtual void planar_reflection_set_intensity(RID p_planar_reflection, float p_intensity) = 0;
+	virtual void planar_reflection_set_distortion(RID p_planar_reflection, float p_distortion) = 0;
+	virtual void planar_reflection_set_normal_fade(RID p_planar_reflection, float p_normal_fade) = 0;
+	virtual void planar_reflection_set_edge_fade(RID p_planar_reflection, float p_fade) = 0;
+	virtual void planar_reflection_set_clip_bias(RID p_planar_reflection, float p_bias) = 0;
+	virtual void planar_reflection_set_enable_shadows(RID p_planar_reflection, bool p_enable) = 0;
+	virtual void planar_reflection_set_mesh_lod_threshold(RID p_planar_reflection, float p_pixels) = 0;
+	virtual void planar_reflection_set_cull_mask(RID p_planar_reflection, uint32_t p_layers) = 0;
+	virtual void planar_reflection_set_reflection_mask(RID p_planar_reflection, uint32_t p_layers) = 0;
+
 	virtual RID scenario_allocate() = 0;
 	virtual void scenario_initialize(RID p_rid) = 0;
 

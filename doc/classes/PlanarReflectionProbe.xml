@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="PlanarReflectionProbe" inherits="VisualInstance3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Reflects the scene in a plane: water, polished floors, wet roads, mirrors.
+	</brief_description>
+	<description>
+		Every view that sees a [PlanarReflectionProbe] first draws the scene once more, mirrored across the probe's plane (its local XZ plane, reflecting towards its local +Y axis), and the surfaces near that plane reflect what it drew instead of the sky, [ReflectionProbe]s and screen-space reflections. Unlike screen-space reflections, it shows what is off screen or hidden behind other objects too, and unlike a [ReflectionProbe], it is exact wherever the camera is.
+		Only the surfaces inside the probe's box, [member size] wide and within [member receive_distance] above or below the plane, that face within [member receive_angle] of its normal and are on a layer of [member reflection_mask] reflect it. Their roughness blurs the reflection, the more the further what is reflected is from the plane (as on a real wet floor, objects stay sharp where they meet their reflection), and their normal maps bend it, see [member distortion].
+		Each view shows up to 4 planar reflections at once, the nearest ones in sight. Each of them costs drawing the scene again at [member resolution_scale] times the view's resolution, through the reduced path [ReflectionProbe]s are drawn with (no screen-space effects, global illumination buffers or post-processing). To keep that cheap, shorten [member max_distance], leave small objects out with [member cull_mask], and turn off [member enable_shadows] where the reflection's shadows go unnoticed.
+		[b]Note:[/b] Only supported by the Forward+ and Mobile renderers. Not shown in XR (multiview) or through orthogonal cameras.
+		[b]Note:[/b] Where both apply, the planar reflection replaces screen-space reflections, so turn off [member Environment.ssr_enabled] if the planar reflections cover what it would have reflected.
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="clip_bias" type="float" setter="set_clip_bias" getter="get_clip_bias" default="0.02">
+			How far above the plane the reflection starts, in meters: whatever lies below that is left out of it. Raise it if what lies just under the surface (the bed of shallow water, the floor itself) shows in the reflection; lower it if objects standing in the plane show a gap where they meet their reflection.
+		</member>
+		<member name="cull_mask" type="int" setter="set_cull_mask" getter="get_cull_mask" default="1048575">
+			Only the [VisualInstance3D]s on these layers (and on those of the camera's [member Camera3D.cull_mask]) are drawn into the reflection.
+		</member>
+		<member name="distortion" type="float" setter="set_distortion" getter="get_distortion" default="1.0">
+			How much the reflecting surface's own normal (its normal map: ripples, bumps) bends the reflection. At [code]1.0[/code], as much as it would bend a real mirror's; at [code]0.0[/code], not at all.
+		</member>
+		<member name="edge_fade" type="float" setter="set_edge_fade" getter="get_edge_fade" default="0.1">
+			The fraction of the box's extent, inwards from its sides and from its top and bottom, over which the reflection fades out, so that it doesn't end abruptly.
+		</member>
+		<member name="enable_shadows" type="bool" setter="set_enable_shadows" getter="are_shadows_enabled" default="true">
+			If [code]true[/code], the reflection is drawn with shadows. Turning this off saves drawing the shadows a second time, for the mirrored camera.
+		</member>
+		<member name="intensity" type="float" setter="set_intensity" getter="get_intensity" default="1.0">
+			Multiplies the brightness of the reflection.
+		</member>
+		<member name="max_distance" type="float" setter="set_max_distance" getter="get_max_distance" default="0.0">
+			How far from the camera objects are drawn into the reflection, in meters, and how far the camera can be from the probe before it is skipped. [code]0.0[/code] uses the camera's far plane. The sky is reflected however far it is.
+		</member>
+		<member name="mesh_lod_threshold" type="float" setter="set_mesh_lod_threshold" getter="get_mesh_lod_threshold" default="4.0">
+			The [member Viewport.mesh_lod_threshold] the reflection is drawn with. Higher values use simpler meshes in it.
+		</member>
+		<member name="receive_angle" type="float" setter="set_receive_angle" getter="get_receive_angle" default="60.0">
+			Surfaces whose normal is turned further than this from the plane's do not reflect it. The reflection fades in over the following 30% of the way to facing the plane's normal squarely.
+		</member>
+		<member name="receive_distance" type="float" setter="set_receive_distance" getter="get_receive_distance" default="1.0">
+			How far above and below the plane the surfaces that reflect it can be, in meters. Large enough to take in the waves of water displaced by its shader, small enough to leave out what merely lies near it.
+		</member>
+		<member name="reflection_mask" type="int" setter="set_reflection_mask" getter="get_reflection_mask" default="1048575">
+			Only the surfaces of [VisualInstance3D]s on these layers reflect the probe.
+		</member>
+		<member name="resolution_scale" type="float" setter="set_resolution_scale" getter="get_resolution_scale" default="0.5">
+			The resolution of the reflection, relative to the view's. Lower values are faster and blurrier. When several planar reflections are in sight at once, they are all drawn at the highest of their [member resolution_scale]s.
+		</member>
+		<member name="size" type="Vector2" setter="set_size" getter="get_size" default="Vector2(20, 20)">
+			The size of the mirror along the probe's local X and Z axes, in meters. Surfaces outside it don't reflect it.
+		</member>
+	</members>
+</class>

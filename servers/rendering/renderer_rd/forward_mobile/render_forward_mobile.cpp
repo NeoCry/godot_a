@@ -744,6 +744,10 @@ RID RenderForwardMobile::_setup_render_pass_uniform_set(RenderListType p_render_
 	}
 #endif // MODULE_TEXTURE_STREAMING_ENABLED
 
+	// The planar reflections this view shows; none while one of them, or a reflection probe, is
+	// being drawn, nor for multiview.
+	RendererRD::PlanarReflections::append_uniforms(uniforms, 26, p_render_data != nullptr ? p_render_data->render_buffers : Ref<RenderSceneBuffersRD>(), p_render_data != nullptr && !p_render_data->is_offscreen_reflection() && !is_multiview);
+
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.get_default_shader_rd(is_multiview), RENDER_PASS_UNIFORM_SET, uniforms);
 }
 
@@ -874,9 +878,19 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 		rb_data = rb->get_custom_data(RB_SCOPE_MOBILE);
 	}
 	bool is_reflection_probe = p_render_data->reflection_probe.is_valid();
+	RendererRD::PlanarReflections *planar_reflection = p_render_data->planar_reflection;
+	bool is_offscreen = p_render_data->is_offscreen_reflection();
 	bool is_multiview = rb->get_view_count() > 1;
 
 	RENDER_TIMESTAMP("Prepare 3D Scene");
+
+	if (!is_offscreen && !is_multiview && rb->has_custom_data(RB_SCOPE_PLANAR_REFLECTIONS)) {
+		// The planar reflections drawn for this view just before it, made out for its camera.
+		Ref<RendererRD::PlanarReflections> planar = rb->get_custom_data(RB_SCOPE_PLANAR_REFLECTIONS);
+		if (planar->get_count() > 0) {
+			planar->update_uniform_buffer(p_render_data->scene_data->cam_transform);
+		}
+	}
 
 	_update_vrs(rb);
 
@@ -951,6 +965,10 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 			using_shadows = false;
 		}
 	} else {
+		if (planar_reflection != nullptr && p_render_data->shadow_atlas.is_null()) {
+			// A planar reflection drawn without shadows (see PlanarReflectionProbe.enable_shadows).
+			using_shadows = false;
+		}
 		//do not render reflections when rendering a reflection probe
 		light_storage->update_reflection_probe_buffer(p_render_data, *p_render_data->reflection_probes, p_render_data->scene_data->cam_transform.affine_inverse(), p_render_data->environment);
 	}
@@ -1000,6 +1018,19 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 		samplers = RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default();
 
 		// Indicate pipelines for reflection probes are required.
+		global_pipeline_data_required.use_reflection_probes = true;
+	} else if (planar_reflection != nullptr) {
+		screen_size = planar_reflection->get_size();
+
+		framebuffer = planar_reflection->get_framebuffer(p_render_data->planar_reflection_layer);
+
+		// Unlike a probe's, its image is the right way up (flip_y), so only the mirrored camera
+		// turns the winding over, which reverse_cull already follows from its basis.
+		merge_transparent_pass = true; // No screen or depth texture to read here.
+		using_subpass_post_process = false; // Nothing is post-processed.
+		samplers = RendererRD::MaterialStorage::get_singleton()->samplers_rd_get_default();
+
+		// Same formats as reflection probes, so the same pipelines.
 		global_pipeline_data_required.use_reflection_probes = true;
 	} else if (rb_data.is_valid()) {
 		// setup rendering to render buffer
@@ -1300,7 +1331,7 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 		}
 
 		if (render_list[RENDER_LIST_OPAQUE].elements.size() > 0) {
-			RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_COLOR, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_reflection_probe);
+			RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_COLOR, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_offscreen);
 			render_list_params.framebuffer_format = fb_format;
 			render_list_params.subpass = RD::get_singleton()->draw_list_get_current_pass(); // Should now always be 0.
 
@@ -1327,7 +1358,7 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 
 				rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_ALPHA, p_render_data, is_multiview, radiance_texture, samplers, true);
 
-				RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR_TRANSPARENT, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_reflection_probe);
+				RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR_TRANSPARENT, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_offscreen);
 				render_list_params.framebuffer_format = fb_format;
 				render_list_params.subpass = RD::get_singleton()->draw_list_get_current_pass(); // Should now always be 0.
 
@@ -1396,7 +1427,7 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 				// this may be needed if we re-introduced steps that change info, not sure which do so in the previous implementation
 				//_setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, false);
 
-				RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_reflection_probe);
+				RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, !is_offscreen);
 				render_list_params.framebuffer_format = fb_format;
 				render_list_params.subpass = RD::get_singleton()->draw_list_get_current_pass(); // Should now always be 0.
 
@@ -2230,8 +2261,9 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const 
 	uint32_t lightmap_captures_used = 0;
 
 	Plane near_plane(-p_render_data->scene_data->cam_transform.basis.get_column(Vector3::AXIS_Z), p_render_data->scene_data->cam_transform.origin);
-	near_plane.d += p_render_data->scene_data->cam_projection.get_z_near();
-	float z_max = p_render_data->scene_data->cam_projection.get_z_far() - p_render_data->scene_data->cam_projection.get_z_near();
+	// Not read from the projection, which a planar reflection's makes oblique.
+	near_plane.d += p_render_data->scene_data->z_near;
+	float z_max = p_render_data->scene_data->z_far - p_render_data->scene_data->z_near;
 
 	RenderList *rl = &render_list[p_render_list];
 

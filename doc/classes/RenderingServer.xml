@@ -3559,6 +3559,119 @@
 				If [code]true[/code], particles use local coordinates. If [code]false[/code] they use global coordinates. Equivalent to [member GPUParticles3D.local_coords].
 			</description>
 		</method>
+		<method name="planar_reflection_create">
+			<return type="RID" />
+			<description>
+				Creates a planar reflection and adds it to the RenderingServer. It can be accessed with the RID that is returned. This RID will be used in all [code]planar_reflection_*[/code] RenderingServer functions.
+				Once finished with your RID, you will want to free the RID using the RenderingServer's [method free_rid] method.
+				To place in a scene, attach this planar reflection to an instance using [method instance_set_base] using the returned RID. It reflects in the instance's local XZ plane, towards its local +Y axis.
+				[b]Note:[/b] The equivalent node is [PlanarReflectionProbe].
+			</description>
+		</method>
+		<method name="planar_reflection_set_clip_bias">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="bias" type="float" />
+			<description>
+				Sets how far above the plane the reflection starts, in meters. Equivalent to [member PlanarReflectionProbe.clip_bias].
+			</description>
+		</method>
+		<method name="planar_reflection_set_cull_mask">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="layers" type="int" />
+			<description>
+				Sets the render layers drawn into the reflection. Equivalent to [member PlanarReflectionProbe.cull_mask].
+			</description>
+		</method>
+		<method name="planar_reflection_set_distortion">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="distortion" type="float" />
+			<description>
+				Sets how much the reflecting surfaces' normals bend the reflection. Equivalent to [member PlanarReflectionProbe.distortion].
+			</description>
+		</method>
+		<method name="planar_reflection_set_edge_fade">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="fade" type="float" />
+			<description>
+				Sets the fraction of the receiving volume's extent over which the reflection fades out towards its sides. Equivalent to [member PlanarReflectionProbe.edge_fade].
+			</description>
+		</method>
+		<method name="planar_reflection_set_enable_shadows">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<description>
+				If [param enable] is [code]true[/code], the reflection is drawn with shadows. Equivalent to [member PlanarReflectionProbe.enable_shadows].
+			</description>
+		</method>
+		<method name="planar_reflection_set_intensity">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="intensity" type="float" />
+			<description>
+				Sets the multiplier of the reflection's brightness. Equivalent to [member PlanarReflectionProbe.intensity].
+			</description>
+		</method>
+		<method name="planar_reflection_set_max_distance">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="distance" type="float" />
+			<description>
+				Sets how far from the camera objects are drawn into the reflection, in meters ([code]0.0[/code] for the camera's far plane). Equivalent to [member PlanarReflectionProbe.max_distance].
+			</description>
+		</method>
+		<method name="planar_reflection_set_mesh_lod_threshold">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="pixels" type="float" />
+			<description>
+				Sets the mesh LOD threshold the reflection is drawn with. Equivalent to [member PlanarReflectionProbe.mesh_lod_threshold].
+			</description>
+		</method>
+		<method name="planar_reflection_set_normal_fade">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="normal_fade" type="float" />
+			<description>
+				Sets the cosine of the largest angle between a surface's normal and the plane's at which the surface reflects it: the cosine of [member PlanarReflectionProbe.receive_angle].
+			</description>
+		</method>
+		<method name="planar_reflection_set_receive_distance">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="distance" type="float" />
+			<description>
+				Sets how far above and below the plane the surfaces that reflect it can be, in meters. Equivalent to [member PlanarReflectionProbe.receive_distance].
+			</description>
+		</method>
+		<method name="planar_reflection_set_reflection_mask">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="layers" type="int" />
+			<description>
+				Sets the render layers of the surfaces that reflect it. Equivalent to [member PlanarReflectionProbe.reflection_mask].
+			</description>
+		</method>
+		<method name="planar_reflection_set_resolution_scale">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="scale" type="float" />
+			<description>
+				Sets the resolution of the reflection relative to the view's. Equivalent to [member PlanarReflectionProbe.resolution_scale].
+			</description>
+		</method>
+		<method name="planar_reflection_set_size">
+			<return type="void" />
+			<param index="0" name="planar_reflection" type="RID" />
+			<param index="1" name="size" type="Vector2" />
+			<description>
+				Sets the size of the mirror along its instance's local X and Z axes, in meters. Equivalent to [member PlanarReflectionProbe.size].
+			</description>
+		</method>
 		<method name="positional_soft_shadow_filter_set_quality">
 			<return type="void" />
 			<param index="0" name="quality" type="int" enum="RenderingServer.ShadowQuality" />
@@ -6290,7 +6403,10 @@
 		<constant name="INSTANCE_FOG_VOLUME" value="12" enum="InstanceType">
 			The instance is a fog volume.
 		</constant>
-		<constant name="INSTANCE_MAX" value="13" enum="InstanceType">
+		<constant name="INSTANCE_PLANAR_REFLECTION" value="13" enum="InstanceType">
+			The instance is a planar reflection.
+		</constant>
+		<constant name="INSTANCE_MAX" value="14" enum="InstanceType">
 			Represents the size of the [enum InstanceType] enum.
 		</constant>
 		<constant name="INSTANCE_GEOMETRY_MASK" value="14" enum="InstanceType">

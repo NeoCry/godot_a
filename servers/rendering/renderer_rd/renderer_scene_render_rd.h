@@ -37,6 +37,7 @@
 #include "servers/rendering/renderer_rd/effects/fsr.h"
 #include "servers/rendering/renderer_rd/effects/luminance.h"
 #include "servers/rendering/renderer_rd/effects/motion_blur.h"
+#include "servers/rendering/renderer_rd/effects/planar_reflections.h"
 #include "servers/rendering/renderer_rd/effects/resolve.h"
 #include "servers/rendering/renderer_rd/effects/smaa.h"
 #include "servers/rendering/renderer_rd/effects/tone_mapper.h"
@@ -132,6 +133,11 @@ protected:
 	static bool _debug_draw_can_use_effects(RSE::ViewportDebugDraw p_debug_draw);
 
 private:
+	// The layer of a view's planar reflections render_scene() is drawing, between
+	// planar_reflection_begin_layer() and planar_reflection_end_layer().
+	Ref<RendererRD::PlanarReflections> planar_reflection_pass;
+	int planar_reflection_pass_layer = -1;
+
 	RSE::ViewportDebugDraw debug_draw = RSE::VIEWPORT_DEBUG_DRAW_DISABLED;
 	static RendererSceneRenderRD *singleton;
 
@@ -225,6 +231,14 @@ public:
 	/* REFLECTION PROBE */
 
 	virtual RID reflection_probe_create_framebuffer(RID p_color, RID p_depth);
+
+	/* PLANAR REFLECTIONS */
+
+	virtual uint32_t planar_reflections_get_max_count() const override;
+	virtual Ref<RenderSceneBuffers> planar_reflections_begin(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_count, const Size2i &p_size) override;
+	virtual void planar_reflection_begin_layer(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_layer, const PlanarReflectionLayer &p_layer_data) override;
+	virtual void planar_reflection_end_layer(const Ref<RenderSceneBuffers> &p_render_buffers, uint32_t p_layer) override;
+	virtual void planar_reflections_clear(const Ref<RenderSceneBuffers> &p_render_buffers) override;
 
 	/* FOG VOLUMES */
 

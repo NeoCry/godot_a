@@ -183,6 +183,57 @@ bool RendererSceneCull::is_camera(RID p_camera) const {
 	return camera_owner.owns(p_camera);
 }
 
+/* PLANAR REFLECTION API */
+
+RID RendererSceneCull::planar_reflection_allocate() {
+	return planar_reflection_owner.allocate_rid();
+}
+
+void RendererSceneCull::planar_reflection_initialize(RID p_rid) {
+	planar_reflection_owner.initialize_rid(p_rid, PlanarReflection());
+}
+
+void RendererSceneCull::_planar_reflection_update_instances(PlanarReflection *p_planar_reflection) {
+	for (Instance *instance : p_planar_reflection->instances) {
+		_instance_queue_update(instance, true, false);
+	}
+}
+
+#define PLANAR_REFLECTION_SETTER(m_name, m_type, m_member, m_value) \
+	void RendererSceneCull::planar_reflection_set_##m_name(RID p_planar_reflection, m_type p_value) { \
+		PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(p_planar_reflection); \
+		ERR_FAIL_NULL(planar_reflection); \
+		planar_reflection->m_member = m_value; \
+	}
+
+PLANAR_REFLECTION_SETTER(resolution_scale, float, resolution_scale, CLAMP(p_value, 0.05f, 1.0f))
+PLANAR_REFLECTION_SETTER(max_distance, float, max_distance, MAX(p_value, 0.0f))
+PLANAR_REFLECTION_SETTER(intensity, float, intensity, MAX(p_value, 0.0f))
+PLANAR_REFLECTION_SETTER(distortion, float, distortion, MAX(p_value, 0.0f))
+PLANAR_REFLECTION_SETTER(normal_fade, float, normal_fade, CLAMP(p_value, 0.0f, 0.999f))
+PLANAR_REFLECTION_SETTER(edge_fade, float, edge_fade, CLAMP(p_value, 0.0f, 1.0f))
+PLANAR_REFLECTION_SETTER(clip_bias, float, clip_bias, p_value)
+PLANAR_REFLECTION_SETTER(enable_shadows, bool, shadows, p_value)
+PLANAR_REFLECTION_SETTER(mesh_lod_threshold, float, mesh_lod_threshold, MAX(p_value, 0.0f))
+PLANAR_REFLECTION_SETTER(cull_mask, uint32_t, cull_mask, p_value)
+PLANAR_REFLECTION_SETTER(reflection_mask, uint32_t, reflection_mask, p_value)
+
+#undef PLANAR_REFLECTION_SETTER
+
+void RendererSceneCull::planar_reflection_set_size(RID p_planar_reflection, const Vector2 &p_size) {
+	PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(p_planar_reflection);
+	ERR_FAIL_NULL(planar_reflection);
+	planar_reflection->size = p_size.maxf(0.0);
+	_planar_reflection_update_instances(planar_reflection);
+}
+
+void RendererSceneCull::planar_reflection_set_receive_distance(RID p_planar_reflection, float p_distance) {
+	PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(p_planar_reflection);
+	ERR_FAIL_NULL(planar_reflection);
+	planar_reflection->receive_distance = MAX(p_distance, 0.001f);
+	_planar_reflection_update_instances(planar_reflection);
+}
+
 /* OCCLUDER API */
 
 RID RendererSceneCull::occluder_allocate() {
@@ -703,6 +754,15 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 					RendererSceneOcclusionCull::get_singleton()->scenario_remove_instance(instance->scenario->self, p_instance);
 				}
 			} break;
+			case RSE::INSTANCE_PLANAR_REFLECTION: {
+				PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(instance->base);
+				if (planar_reflection) {
+					planar_reflection->instances.erase(instance);
+				}
+				if (scenario) {
+					scenario->planar_reflections.erase(instance);
+				}
+			} break;
 			default: {
 			}
 		}
@@ -724,6 +784,10 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 		// fix up a specific malfunctioning case before the switch, so it can be handled
 		if (instance->base_type == RSE::INSTANCE_NONE && RendererSceneOcclusionCull::get_singleton()->is_occluder(p_base)) {
 			instance->base_type = RSE::INSTANCE_OCCLUDER;
+		}
+		// Planar reflections are kept here rather than by a storage.
+		if (instance->base_type == RSE::INSTANCE_NONE && planar_reflection_owner.owns(p_base)) {
+			instance->base_type = RSE::INSTANCE_PLANAR_REFLECTION;
 		}
 
 		switch (instance->base_type) {
@@ -830,6 +894,12 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 					RendererSceneOcclusionCull::get_singleton()->scenario_set_instance(scenario->self, p_instance, p_base, instance->transform, instance->visible);
 				}
 			} break;
+			case RSE::INSTANCE_PLANAR_REFLECTION: {
+				planar_reflection_owner.get_or_null(p_base)->instances.insert(instance);
+				if (scenario) {
+					scenario->planar_reflections.push_back(instance);
+				}
+			} break;
 			default: {
 			}
 		}
@@ -910,6 +980,9 @@ void RendererSceneCull::instance_set_scenario(RID p_instance, RID p_scenario) {
 					RendererSceneOcclusionCull::get_singleton()->scenario_remove_instance(instance->scenario->self, p_instance);
 				}
 			} break;
+			case RSE::INSTANCE_PLANAR_REFLECTION: {
+				instance->scenario->planar_reflections.erase(instance);
+			} break;
 			default: {
 			}
 		}
@@ -944,6 +1017,9 @@ void RendererSceneCull::instance_set_scenario(RID p_instance, RID p_scenario) {
 			} break;
 			case RSE::INSTANCE_OCCLUDER: {
 				RendererSceneOcclusionCull::get_singleton()->scenario_set_instance(scenario->self, p_instance, instance->base, instance->transform, instance->visible);
+			} break;
+			case RSE::INSTANCE_PLANAR_REFLECTION: {
+				scenario->planar_reflections.push_back(instance);
 			} break;
 			default: {
 			}
@@ -2626,6 +2702,15 @@ void RendererSceneCull::_update_instance_aabb(Instance *p_instance) const {
 			new_aabb = RSG::light_storage->lightmap_get_aabb(p_instance->base);
 
 		} break;
+		case RSE::INSTANCE_PLANAR_REFLECTION: {
+			// The plane, and the surfaces near enough to it to reflect it.
+			const PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(p_instance->base);
+			if (planar_reflection) {
+				const Vector2 &size = planar_reflection->size;
+				const float reach = planar_reflection->receive_distance;
+				new_aabb = AABB(Vector3(-size.x * 0.5f, -reach, -size.y * 0.5f), Vector3(size.x, reach * 2.0f, size.y));
+			}
+		} break;
 		default: {
 		}
 	}
@@ -3929,6 +4014,11 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 	// For now just cull on the first camera
 	RendererSceneOcclusionCull::get_singleton()->buffer_update(p_viewport, camera_data.main_transform, camera_data.main_projection, camera_data.is_orthogonal);
 
+	Scenario *scenario = scenario_owner.get_or_null(p_scenario);
+	if (scenario) {
+		_render_planar_reflections(camera_data, p_render_buffers, environment, camera->attributes, scenario, p_viewport, p_shadow_atlas, p_viewport_size, camera->znear, camera->zfar, p_window_output_max_value);
+	}
+
 	_render_scene(&camera_data, p_render_buffers, environment, camera->attributes, compositor, camera->visible_layers, p_scenario, p_viewport, p_shadow_atlas, RID(), -1, p_screen_mesh_lod_threshold, p_window_output_max_value, true, r_render_info);
 #endif
 }
@@ -4474,11 +4564,20 @@ void RendererSceneCull::_scene_particles_set_view_axis(RID p_particles, const Ve
 	RSG::particles_storage->particles_set_view_axis(p_particles, p_axis, p_up_axis);
 }
 
-void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_force_camera_attributes, RID p_compositor, uint32_t p_visible_layers, RID p_scenario, RID p_viewport, RID p_shadow_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, float p_window_output_max_value, bool p_using_shadows, RenderingServerTypes::RenderInfo *r_render_info) {
+void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_force_camera_attributes, RID p_compositor, uint32_t p_visible_layers, RID p_scenario, RID p_viewport, RID p_shadow_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, float p_window_output_max_value, bool p_using_shadows, RenderingServerTypes::RenderInfo *r_render_info, const Projection *p_planar_reflection_projection) {
 	Instance *render_reflection_probe = instance_owner.get_or_null(p_reflection_probe); //if null, not rendering to it
 
+	// A planar reflection's layer is drawn with a projection whose near plane is the mirror, which
+	// culls what lies behind it, but whose near and far no longer read right: what is fitted to the
+	// camera's frustum (shadows) takes the projection it had before. Like a reflection probe's faces,
+	// it leaves what is kept from one frame to the next (SDFGI, shadow caches, the viewport's
+	// occlusion buffer and previous camera) to the view itself.
+	const bool is_planar_reflection = p_planar_reflection_projection != nullptr;
+	const bool is_view = p_reflection_probe.is_null() && !is_planar_reflection;
+	const Projection &camera_projection = is_planar_reflection ? *p_planar_reflection_projection : p_camera_data->main_projection;
+
 	// Prepare the light - camera volume culling system.
-	light_culler->prepare_camera(p_camera_data->main_transform, p_camera_data->main_projection);
+	light_culler->prepare_camera(p_camera_data->main_transform, camera_projection);
 
 	Scenario *scenario = scenario_owner.get_or_null(p_scenario);
 	Vector3 camera_position = p_camera_data->main_transform.origin;
@@ -4489,7 +4588,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	scene_render->set_scene_pass(render_pass);
 
-	if (p_reflection_probe.is_null()) {
+	if (is_view) {
 		// Where dynamic GI objects moved this frame, before the update picks the areas to voxelize again.
 		if (scenario->sdfgi_dirty_frame == RSG::rasterizer->get_frame_number() && !scenario->sdfgi_dirty_aabbs.is_empty()) {
 			scene_render->sdfgi_mark_dirty(p_render_buffers, scenario->sdfgi_dirty_aabbs);
@@ -4500,7 +4599,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	RENDER_TIMESTAMP("Update Visibility Dependencies");
 
-	if (scenario->instance_visibility.get_bin_count() > 0) {
+	// A planar reflection shows what its view does, whose dependencies are worked out with it.
+	if (!is_planar_reflection && scenario->instance_visibility.get_bin_count() > 0) {
 		if (!scenario->viewport_visibility_masks.has(p_viewport)) {
 			scenario_add_viewport_visibility_mask(scenario->self, p_viewport);
 		}
@@ -4585,10 +4685,10 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		RSG::light_storage->set_directional_shadow_split_cache_count(lights_with_cached_splits);
 
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
-			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_reflection_probe.is_null(), shadow_cache_tiles[i], split_cache_tiles[i]);
+			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, camera_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, is_view, shadow_cache_tiles[i], split_cache_tiles[i]);
 		}
 
-		if (p_reflection_probe.is_null()) {
+		if (is_view) {
 			// The splits' caches have taken in what changed in static objects (see
 			// _shadow_static_mark_dirty()). Other views drawn this frame don't move the caches.
 			scenario->shadow_static_dirty_aabbs.clear();
@@ -4599,7 +4699,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	{ //sdfgi
 		cull.sdfgi.region_count = 0;
 
-		if (p_reflection_probe.is_null()) {
+		if (is_view) {
 			cull.sdfgi.cascade_light_count = 0;
 
 			uint32_t prev_cascade = 0xFFFFFFFF;
@@ -4636,7 +4736,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		cull_data.cam_transform = p_camera_data->main_transform;
 		cull_data.visible_layers = p_visible_layers;
 		cull_data.render_reflection_probe = render_reflection_probe;
-		cull_data.occlusion_buffer = RendererSceneOcclusionCull::get_singleton()->buffer_get_ptr(p_viewport);
+		// The viewport's occlusion buffer is the view's, not the mirrored camera's.
+		cull_data.occlusion_buffer = is_planar_reflection ? nullptr : RendererSceneOcclusionCull::get_singleton()->buffer_get_ptr(p_viewport);
 		cull_data.camera_matrix = &p_camera_data->main_projection;
 		cull_data.visibility_viewport_mask = scenario->viewport_visibility_masks.has(p_viewport) ? scenario->viewport_visibility_masks[p_viewport] : 0;
 #ifdef DEBUG_CULL_TIME
@@ -4752,11 +4853,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			{ //compute coverage
 
 				Transform3D cam_xf = p_camera_data->main_transform;
-				float zn = p_camera_data->main_projection.get_z_near();
+				float zn = camera_projection.get_z_near();
 				Plane p(-cam_xf.basis.get_column(2), cam_xf.origin + cam_xf.basis.get_column(2) * -zn); //camera near plane
 
 				// near plane half width and height
-				Vector2 vp_half_extents = p_camera_data->main_projection.get_viewport_half_extents();
+				Vector2 vp_half_extents = camera_projection.get_viewport_half_extents();
 
 				switch (RSG::light_storage->light_get_type(ins->base)) {
 					case RSE::LIGHT_OMNI: {
@@ -4873,7 +4974,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			if (redraw && max_shadows_used < MAX_UPDATE_SHADOWS) {
 				//must redraw!
 				RENDER_TIMESTAMP("> Render Light3D " + itos(i));
-				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers)) {
+				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, camera_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers)) {
 					light->make_shadow_dirty();
 				}
 				RENDER_TIMESTAMP("< Render Light3D " + itos(i));
@@ -4915,7 +5016,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		}
 
-		if (p_reflection_probe.is_null()) {
+		if (is_view) {
 			sdfgi_update_data.directional_lights = &directional_lights;
 			sdfgi_update_data.positional_light_instances = scenario->dynamic_lights.ptr();
 			sdfgi_update_data.positional_light_count = scenario->dynamic_lights.size();
@@ -4938,15 +5039,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	RID occluders_tex;
 	const RendererSceneRender::CameraData *prev_camera_data = p_camera_data;
-	if (p_viewport.is_valid()) {
+	if (p_viewport.is_valid() && !is_planar_reflection) {
 		occluders_tex = RSG::viewport->viewport_get_occluder_debug_texture(p_viewport);
 		prev_camera_data = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
 	}
 
 	RENDER_TIMESTAMP("Render 3D Scene");
-	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, &sdfgi_update_data, r_render_info);
+	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, is_planar_reflection ? nullptr : &sdfgi_update_data, r_render_info);
 
-	if (p_viewport.is_valid()) {
+	if (p_viewport.is_valid() && !is_planar_reflection) {
 		RSG::viewport->viewport_set_prev_camera_data(p_viewport, p_camera_data);
 	}
 
@@ -4958,6 +5059,173 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	for (uint32_t i = 0; i < cull.sdfgi.region_count; i++) {
 		render_sdfgi_data[i].instances.clear();
 	}
+}
+
+void RendererSceneCull::_render_planar_reflections(const RendererSceneRender::CameraData &p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_camera_attributes, Scenario *p_scenario, RID p_viewport, RID p_shadow_atlas, const Size2 &p_viewport_size, float p_z_near, float p_z_far, float p_window_output_max_value) {
+	const uint32_t max_count = MIN(scene_render->planar_reflections_get_max_count(), (uint32_t)MAX_PLANAR_REFLECTIONS);
+	if (max_count == 0 || planar_reflection_rendering || p_render_buffers.is_null()) {
+		return;
+	}
+	// Mirroring a view takes one perspective camera.
+	if (p_scenario->planar_reflections.is_empty() || p_camera_data.view_count != 1 || p_camera_data.is_orthogonal) {
+		scene_render->planar_reflections_clear(p_render_buffers);
+		return;
+	}
+
+	RENDER_TIMESTAMP("> Render Planar Reflections");
+
+	const Transform3D &camera_transform = p_camera_data.main_transform;
+	const Vector3 camera_position = camera_transform.origin;
+	Vector3 frustum_points[8];
+	if (!p_camera_data.main_projection.get_endpoints(camera_transform, frustum_points)) {
+		scene_render->planar_reflections_clear(p_render_buffers);
+		return;
+	}
+	const Vector<Plane> frustum_planes = p_camera_data.main_projection.get_projection_planes(camera_transform);
+
+	struct Candidate {
+		Instance *instance = nullptr;
+		PlanarReflection *planar_reflection = nullptr;
+		Plane plane;
+		real_t distance = 0.0;
+	};
+
+	// The planes in sight, that the camera is above, nearest first.
+	LocalVector<Candidate> candidates;
+	for (Instance *instance : p_scenario->planar_reflections) {
+		if (!instance->visible || !(instance->layer_mask & p_camera_data.visible_layers)) {
+			continue;
+		}
+		PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(instance->base);
+		if (planar_reflection == nullptr || planar_reflection->size.x <= 0.0f || planar_reflection->size.y <= 0.0f || planar_reflection->intensity <= 0.0f) {
+			continue;
+		}
+		const Vector3 normal = instance->transform.basis.get_column(Vector3::AXIS_Y).normalized();
+		if (normal.is_zero_approx()) {
+			continue;
+		}
+		const Plane plane(normal, instance->transform.origin);
+		if (plane.distance_to(camera_position) <= 0.0f) {
+			continue;
+		}
+		const AABB &bounds = instance->transformed_aabb;
+		if (!bounds.intersects_convex_shape(frustum_planes.ptr(), frustum_planes.size(), frustum_points, 8)) {
+			continue;
+		}
+		const real_t distance = camera_position.distance_to(camera_position.clamp(bounds.position, bounds.get_end()));
+		if (planar_reflection->max_distance > 0.0f && distance > planar_reflection->max_distance) {
+			continue;
+		}
+		Candidate candidate;
+		candidate.instance = instance;
+		candidate.planar_reflection = planar_reflection;
+		candidate.plane = plane;
+		candidate.distance = distance;
+		candidates.push_back(candidate);
+	}
+
+	if (candidates.is_empty()) {
+		scene_render->planar_reflections_clear(p_render_buffers);
+		RENDER_TIMESTAMP("< Render Planar Reflections");
+		return;
+	}
+
+	struct CandidateSort {
+		bool operator()(const Candidate &p_a, const Candidate &p_b) const { return p_a.distance < p_b.distance; }
+	};
+	candidates.sort_custom<CandidateSort>();
+	const uint32_t count = MIN(candidates.size(), max_count);
+
+	// Every layer is drawn at the same size, that of the sharpest one.
+	float resolution_scale = 0.0f;
+	for (uint32_t i = 0; i < count; i++) {
+		resolution_scale = MAX(resolution_scale, candidates[i].planar_reflection->resolution_scale);
+	}
+	const Size2i size = (p_viewport_size * resolution_scale).round().maxf(8.0);
+
+	Ref<RenderSceneBuffers> pass_buffers = scene_render->planar_reflections_begin(p_render_buffers, count, size);
+	if (pass_buffers.is_null()) {
+		scene_render->planar_reflections_clear(p_render_buffers);
+		RENDER_TIMESTAMP("< Render Planar Reflections");
+		return;
+	}
+
+	// The layers are drawn a little wider than the view, so that what a ripple throws just past its
+	// edges is still there to show (the shaders fade out only what goes past that).
+	Projection guard_band;
+	guard_band.columns[0][0] = 1.0 / PLANAR_REFLECTION_GUARD_BAND;
+	guard_band.columns[1][1] = 1.0 / PLANAR_REFLECTION_GUARD_BAND;
+
+	for (uint32_t i = 0; i < count; i++) {
+		const Candidate &candidate = candidates[i];
+		const PlanarReflection *planar_reflection = candidate.planar_reflection;
+		const Vector3 &normal = candidate.plane.normal;
+
+		// The camera mirrored across the plane: its basis is mirrored too, which turns the winding
+		// of everything it draws over (the renderers follow its determinant).
+		const Basis mirror_basis(
+				1.0 - 2.0 * normal.x * normal.x, -2.0 * normal.x * normal.y, -2.0 * normal.x * normal.z,
+				-2.0 * normal.y * normal.x, 1.0 - 2.0 * normal.y * normal.y, -2.0 * normal.y * normal.z,
+				-2.0 * normal.z * normal.x, -2.0 * normal.z * normal.y, 1.0 - 2.0 * normal.z * normal.z);
+		const Transform3D mirror(mirror_basis, normal * (2.0 * candidate.plane.d));
+		const Transform3D reflection_transform = mirror * camera_transform;
+
+		// The view's projection, widened, reaching no further than the probe's max_distance.
+		const float z_far = planar_reflection->max_distance > 0.0f ? MIN(p_z_far, MAX(planar_reflection->max_distance, p_z_near * 2.0f)) : p_z_far;
+		Projection unclipped = guard_band * p_camera_data.main_projection;
+		unclipped.columns[2][2] = -(z_far + p_z_near) / (z_far - p_z_near);
+		unclipped.columns[3][2] = -(2.0 * z_far * p_z_near) / (z_far - p_z_near);
+
+		// Its near plane made the mirror, raised by clip_bias, so nothing below the mirror shows
+		// (E. Lengyel, "Oblique View Frustum Depth Projection and Clipping"). The far plane this
+		// tilts never cuts into the frustum it had.
+		const Transform3D to_view = reflection_transform.affine_inverse();
+		const Vector3 view_normal = to_view.basis.xform(normal).normalized();
+		const Vector3 view_point = to_view.xform(normal * (candidate.plane.d + planar_reflection->clip_bias));
+		const Vector4 clip_plane(view_normal.x, view_normal.y, view_normal.z, -view_normal.dot(view_point));
+		const Vector4 corner = unclipped.inverse().xform(Vector4(SIGN(clip_plane.x), SIGN(clip_plane.y), 1.0, 1.0));
+		const real_t scale = clip_plane.dot(corner);
+		Projection projection = unclipped;
+		if (!Math::is_zero_approx(scale)) {
+			const Vector4 near_plane = clip_plane * (2.0 / scale);
+			for (int column = 0; column < 4; column++) {
+				projection.columns[column][2] = near_plane[column] - unclipped.columns[column][3];
+			}
+		}
+
+		const uint32_t cull_mask = p_camera_data.visible_layers & planar_reflection->cull_mask;
+		RendererSceneRender::CameraData camera_data;
+		camera_data.set_camera(reflection_transform, projection, false, p_camera_data.vaspect, Vector2(), 0.0f, cull_mask);
+
+		RendererSceneRender::PlanarReflectionLayer layer;
+		layer.camera_transform = reflection_transform;
+		layer.camera_projection = projection;
+		layer.camera_projection_unclipped = unclipped;
+		layer.camera_z_near = p_z_near;
+		layer.camera_z_far = z_far;
+		layer.plane = candidate.plane;
+		// The receiving volume, from the instance's local space (its AABB) to [-1, 1].
+		const AABB local_bounds = candidate.instance->aabb;
+		Transform3D bounds_to_unit;
+		bounds_to_unit.basis.scale(Vector3(2.0, 2.0, 2.0) / local_bounds.size.maxf(1e-4));
+		bounds_to_unit.origin = bounds_to_unit.basis.xform(-local_bounds.get_center());
+		layer.receiver_transform = bounds_to_unit * candidate.instance->transform.affine_inverse();
+		layer.intensity = planar_reflection->intensity;
+		layer.distortion = planar_reflection->distortion;
+		layer.normal_fade = planar_reflection->normal_fade;
+		layer.edge_fade = planar_reflection->edge_fade;
+		layer.reflection_mask = planar_reflection->reflection_mask;
+
+		RENDER_TIMESTAMP("Render Planar Reflection " + itos(i));
+		scene_render->planar_reflection_begin_layer(p_render_buffers, i, layer);
+		planar_reflection_rendering = true;
+		const bool use_shadows = planar_reflection->shadows;
+		_render_scene(&camera_data, pass_buffers, p_environment, p_camera_attributes, RID(), cull_mask, p_scenario->self, p_viewport, use_shadows ? p_shadow_atlas : RID(), RID(), -1, planar_reflection->mesh_lod_threshold, p_window_output_max_value, use_shadows, nullptr, &unclipped);
+		planar_reflection_rendering = false;
+		scene_render->planar_reflection_end_layer(p_render_buffers, i);
+	}
+
+	RENDER_TIMESTAMP("< Render Planar Reflections");
 }
 
 RID RendererSceneCull::_render_get_environment(RID p_camera, RID p_scenario) {
@@ -5707,6 +5975,13 @@ bool RendererSceneCull::free(RID p_rid) {
 
 	if (camera_owner.owns(p_rid)) {
 		camera_owner.free(p_rid);
+
+	} else if (planar_reflection_owner.owns(p_rid)) {
+		PlanarReflection *planar_reflection = planar_reflection_owner.get_or_null(p_rid);
+		while (!planar_reflection->instances.is_empty()) {
+			instance_set_base((*planar_reflection->instances.begin())->self, RID());
+		}
+		planar_reflection_owner.free(p_rid);
 
 	} else if (scenario_owner.owns(p_rid)) {
 		Scenario *scenario = scenario_owner.get_or_null(p_rid);
