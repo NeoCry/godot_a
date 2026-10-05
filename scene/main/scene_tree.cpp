@@ -792,6 +792,13 @@ bool SceneTree::process(double p_time) {
 
 void SceneTree::process_timers(double p_delta, bool p_physics_frame) {
 	_THREAD_SAFE_METHOD_
+	if (processing_timers) {
+		// Nested in a frame that a timeout handler runs itself (see
+		// processing_timers): the outer walk ticks the timers.
+		return;
+	}
+	processing_timers = true;
+
 	const List<Ref<SceneTreeTimer>>::Element *L = timers.back(); // Last element.
 	const double unscaled_delta = Engine::get_singleton()->get_process_step();
 
@@ -820,10 +827,19 @@ void SceneTree::process_timers(double p_delta, bool p_physics_frame) {
 		}
 		E = N;
 	}
+
+	processing_timers = false;
 }
 
 void SceneTree::process_tweens(double p_delta, bool p_physics) {
 	_THREAD_SAFE_METHOD_
+	if (processing_tweens) {
+		// Nested in a frame that a tween's callback runs itself (see
+		// processing_tweens): the outer walk steps the tweens.
+		return;
+	}
+	processing_tweens = true;
+
 	// This methods works similarly to how SceneTreeTimers are handled.
 	const List<Ref<Tween>>::Element *L = tweens.back();
 	const double unscaled_delta = Engine::get_singleton()->get_process_step();
@@ -850,6 +866,8 @@ void SceneTree::process_tweens(double p_delta, bool p_physics) {
 		}
 		E = N;
 	}
+
+	processing_tweens = false;
 }
 
 void SceneTree::finalize() {
