@@ -906,7 +906,7 @@ EditorPlugin::AfterGUIInput FoliagePainter3DEditorPlugin::forward_3d_gui_input(C
 
 FoliagePainter3DEditorPlugin::FoliagePainter3DEditorPlugin() {
 	// The LODs of a FoliageLayer are edited in a window of their own, opened
-	// from the inspector (see EditorInspectorPluginFoliagePainter3D).
+	// from the inspector (see EditorInspectorPluginFoliage).
 	FoliageLODsDialog *lods_dialog = memnew(FoliageLODsDialog);
 	EditorInterface::get_singleton()->get_base_control()->add_child(lods_dialog);
 

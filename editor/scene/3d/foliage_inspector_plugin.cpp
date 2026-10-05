@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  foliage_painter_3d_inspector_plugin.cpp                               */
+/*  foliage_inspector_plugin.cpp                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "foliage_painter_3d_inspector_plugin.h"
+#include "foliage_inspector_plugin.h"
 
 #include "core/core_string_names.h"
 #include "core/io/resource_loader.h"
@@ -43,6 +43,7 @@
 #include "editor/inspector/editor_resource_picker.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/foliage_painter_3d.h"
+#include "scene/3d/foliage_spawner_3d.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/check_box.h"
@@ -111,18 +112,38 @@ String FoliageLODsDialog::get_lod_name(int p_index) {
 	return vformat("LOD_%d", p_index);
 }
 
-void FoliageLODsDialog::edit(const Ref<FoliageLayer> &p_layer) {
-	if (layer.is_valid() && layer->is_connected(CoreStringName(changed), callable_mp(this, &FoliageLODsDialog::_layer_changed))) {
-		layer->disconnect(CoreStringName(changed), callable_mp(this, &FoliageLODsDialog::_layer_changed));
-	}
-	layer = p_layer;
-	if (layer.is_null()) {
-		return;
-	}
-	layer->connect(CoreStringName(changed), callable_mp(this, &FoliageLODsDialog::_layer_changed));
+Object *FoliageLODsDialog::_get_owner() const {
+	return ObjectDB::get_instance(owner_id);
+}
 
-	const String layer_name = layer->get_layer_name().is_empty() ? String("FoliageLayer") : layer->get_layer_name();
-	set_title(vformat(TTR("LODs: %s"), layer_name));
+TypedArray<FoliageLODLevel> FoliageLODsDialog::_get_levels() const {
+	const Object *owner = _get_owner();
+	if (owner == nullptr) {
+		return TypedArray<FoliageLODLevel>();
+	}
+	return owner->get(SNAME("lod_levels"));
+}
+
+void FoliageLODsDialog::edit(Object *p_owner) {
+	ERR_FAIL_NULL(p_owner);
+	owner_id = p_owner->get_instance_id();
+
+	String owner_name;
+	if (const FoliageLayer *owner_layer = Object::cast_to<FoliageLayer>(p_owner)) {
+		owner_name = owner_layer->get_layer_name().is_empty() ? String("FoliageLayer") : owner_layer->get_layer_name();
+	} else if (const Node *owner_node = Object::cast_to<Node>(p_owner)) {
+		owner_name = owner_node->get_name();
+	} else {
+		owner_name = p_owner->get_class();
+	}
+	set_title(vformat(TTR("LODs: %s"), owner_name));
+
+	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
+	if (!ur->is_connected(SNAME("history_changed"), callable_mp(this, &FoliageLODsDialog::_history_changed))) {
+		ur->connect(SNAME("history_changed"), callable_mp(this, &FoliageLODsDialog::_history_changed));
+		ur->connect(SNAME("version_changed"), callable_mp(this, &FoliageLODsDialog::_history_changed));
+	}
+
 	_rebuild_rows();
 	popup_centered(Size2(900, 0) * EDSCALE);
 }
@@ -131,19 +152,22 @@ void FoliageLODsDialog::_visibility_changed() {
 	if (is_visible()) {
 		return;
 	}
-	// Let go of the layer once the window is closed, so it is not kept alive
-	// (or listened to) by a window nobody is looking at.
+	// Stop following edits once the window is closed: nobody is looking.
 	fade_popup->hide();
 	rendering_popup->hide();
-	if (layer.is_valid() && layer->is_connected(CoreStringName(changed), callable_mp(this, &FoliageLODsDialog::_layer_changed))) {
-		layer->disconnect(CoreStringName(changed), callable_mp(this, &FoliageLODsDialog::_layer_changed));
+	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
+	if (ur->is_connected(SNAME("history_changed"), callable_mp(this, &FoliageLODsDialog::_history_changed))) {
+		ur->disconnect(SNAME("history_changed"), callable_mp(this, &FoliageLODsDialog::_history_changed));
+		ur->disconnect(SNAME("version_changed"), callable_mp(this, &FoliageLODsDialog::_history_changed));
 	}
-	layer.unref();
+	owner_id = ObjectID();
 	popup_row = -1;
+	// The rows hold on to the LODs; they are not needed until the next edit().
+	_rebuild_rows();
 }
 
-void FoliageLODsDialog::_layer_changed() {
-	if (layer.is_null() || refresh_queued) {
+void FoliageLODsDialog::_history_changed() {
+	if (refresh_queued) {
 		return;
 	}
 	// The rows may be rebuilt, and it may be one of their own controls that
@@ -155,6 +179,11 @@ void FoliageLODsDialog::_layer_changed() {
 
 void FoliageLODsDialog::_refresh() {
 	refresh_queued = false;
+	if (_get_owner() == nullptr && is_visible()) {
+		// Deleted while the window was open.
+		hide();
+		return;
+	}
 	if (_rows_match()) {
 		_update_rows();
 	} else {
@@ -163,10 +192,7 @@ void FoliageLODsDialog::_refresh() {
 }
 
 bool FoliageLODsDialog::_rows_match() const {
-	if (layer.is_null()) {
-		return rows.is_empty();
-	}
-	const TypedArray<FoliageLODLevel> levels = layer->get_lod_levels();
+	const TypedArray<FoliageLODLevel> levels = _get_levels();
 	if ((int)rows.size() != levels.size()) {
 		return false;
 	}
@@ -188,11 +214,7 @@ void FoliageLODsDialog::_rebuild_rows() {
 	}
 	rows.clear();
 
-	if (layer.is_null()) {
-		return;
-	}
-
-	const TypedArray<FoliageLODLevel> levels = layer->get_lod_levels();
+	const TypedArray<FoliageLODLevel> levels = _get_levels();
 	for (int i = 0; i < levels.size(); i++) {
 		Row row;
 		row.level = levels[i];
@@ -398,17 +420,18 @@ void FoliageLODsDialog::_cast_shadows_toggled(bool p_pressed) {
 }
 
 void FoliageLODsDialog::_add_lod() {
-	if (layer.is_null()) {
+	Object *owner = _get_owner();
+	if (owner == nullptr) {
 		return;
 	}
-	const TypedArray<FoliageLODLevel> old_levels = layer->get_lod_levels();
+	const TypedArray<FoliageLODLevel> old_levels = _get_levels();
 	TypedArray<FoliageLODLevel> new_levels = old_levels.duplicate();
 
 	Ref<FoliageLODLevel> level;
 	level.instantiate();
 
 	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
-	ur->create_action(TTR("Add LOD"), UndoRedo::MERGE_DISABLE, layer.ptr());
+	ur->create_action(TTR("Add LOD"), UndoRedo::MERGE_DISABLE, owner);
 
 	// The new LOD takes over where the last one ends, fading in across the
 	// same margin the last one fades out across.
@@ -435,16 +458,17 @@ void FoliageLODsDialog::_add_lod() {
 	}
 	new_levels.push_back(level);
 
-	ur->add_do_property(layer.ptr(), "lod_levels", new_levels);
-	ur->add_undo_property(layer.ptr(), "lod_levels", old_levels);
+	ur->add_do_property(owner, "lod_levels", new_levels);
+	ur->add_undo_property(owner, "lod_levels", old_levels);
 	ur->commit_action();
 }
 
 void FoliageLODsDialog::_remove_lod(int p_row) {
-	if (layer.is_null()) {
+	Object *owner = _get_owner();
+	if (owner == nullptr) {
 		return;
 	}
-	const TypedArray<FoliageLODLevel> old_levels = layer->get_lod_levels();
+	const TypedArray<FoliageLODLevel> old_levels = _get_levels();
 	if (p_row < 0 || p_row >= old_levels.size()) {
 		return;
 	}
@@ -452,9 +476,9 @@ void FoliageLODsDialog::_remove_lod(int p_row) {
 	new_levels.remove_at(p_row);
 
 	EditorUndoRedoManager *ur = EditorUndoRedoManager::get_singleton();
-	ur->create_action(vformat(TTR("Remove %s"), get_lod_name(p_row)), UndoRedo::MERGE_DISABLE, layer.ptr());
-	ur->add_do_property(layer.ptr(), "lod_levels", new_levels);
-	ur->add_undo_property(layer.ptr(), "lod_levels", old_levels);
+	ur->create_action(vformat(TTR("Remove %s"), get_lod_name(p_row)), UndoRedo::MERGE_DISABLE, owner);
+	ur->add_do_property(owner, "lod_levels", new_levels);
+	ur->add_undo_property(owner, "lod_levels", old_levels);
 	ur->commit_action();
 }
 
@@ -478,7 +502,7 @@ FoliageLODsDialog::FoliageLODsDialog() {
 	add_child(vbox);
 
 	hint_label = memnew(Label);
-	hint_label->set_text(TTR("Every LOD draws the same painted instances; at any camera distance, the LOD whose Visibility Range covers it is drawn. An End of 0 draws a LOD out to any distance."));
+	hint_label->set_text(TTR("Every LOD draws the same instances, painted or generated; at any camera distance, the LOD whose Visibility Range covers it is drawn. An End of 0 draws a LOD out to any distance."));
 	hint_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	hint_label->set_custom_minimum_size(Size2(600, 0) * EDSCALE);
 	vbox->add_child(hint_label);
@@ -537,7 +561,7 @@ FoliageLODsDialog::FoliageLODsDialog() {
 	fade_mode_option->add_item(TTR("Disabled"), GeometryInstance3D::VISIBILITY_RANGE_FADE_DISABLED);
 	fade_mode_option->add_item(TTR("Self"), GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
 	fade_mode_option->add_item(TTR("Dependencies"), GeometryInstance3D::VISIBILITY_RANGE_FADE_DEPENDENCIES);
-	fade_mode_option->set_tooltip_text(TTR("Self cross-fades this LOD with its neighbors across the margins. Ignored with the FoliagePainter3D's GPU Culling, which switches LODs without a fade."));
+	fade_mode_option->set_tooltip_text(TTR("Self cross-fades this LOD with its neighbors across the margins. Ignored with GPU Culling, which switches LODs without a fade."));
 	fade_mode_option->connect(SceneStringName(item_selected), callable_mp(this, &FoliageLODsDialog::_fade_mode_selected));
 	fade_grid->add_child(fade_mode_option);
 
@@ -569,7 +593,7 @@ FoliageLODsDialog::FoliageLODsDialog() {
 String EditorPropertyFoliageLODs::_make_summary() const {
 	const Array levels = get_edited_property_value();
 	if (levels.is_empty()) {
-		return TTR("No LODs: this FoliageLayer draws nothing.");
+		return TTR("No LODs: nothing is drawn.");
 	}
 	PackedStringArray lines;
 	for (int i = 0; i < levels.size(); i++) {
@@ -584,9 +608,8 @@ String EditorPropertyFoliageLODs::_make_summary() const {
 }
 
 void EditorPropertyFoliageLODs::_edit_pressed() {
-	FoliageLayer *layer = Object::cast_to<FoliageLayer>(get_edited_object());
-	if (dialog != nullptr && layer != nullptr) {
-		dialog->edit(Ref<FoliageLayer>(layer));
+	if (dialog != nullptr && get_edited_object() != nullptr) {
+		dialog->edit(get_edited_object());
 	}
 }
 
@@ -616,7 +639,7 @@ EditorPropertyFoliageLODs::EditorPropertyFoliageLODs(FoliageLODsDialog *p_dialog
 	edit_button = memnew(Button);
 	edit_button->set_h_size_flags(SIZE_EXPAND_FILL);
 	edit_button->set_clip_text(true);
-	edit_button->set_tooltip_text(TTR("Open the LODs of this FoliageLayer in a window: the mesh each one draws, the distances it is drawn across, and how it renders."));
+	edit_button->set_tooltip_text(TTR("Open the LODs in a window: the mesh each one draws, the distances it is drawn across, and how it renders."));
 	edit_button->set_disabled(dialog == nullptr);
 	edit_button->connect(SceneStringName(pressed), callable_mp(this, &EditorPropertyFoliageLODs::_edit_pressed));
 	add_child(edit_button);
@@ -1117,18 +1140,18 @@ EditorPropertyFoliageLayers::EditorPropertyFoliageLayers() {
 }
 
 ////////////////////////////////////////////////////////////////////////////
-// EditorInspectorPluginFoliagePainter3D
+// EditorInspectorPluginFoliage
 
-bool EditorInspectorPluginFoliagePainter3D::can_handle(Object *p_object) {
-	return Object::cast_to<FoliagePainter3D>(p_object) != nullptr || Object::cast_to<FoliageLayer>(p_object) != nullptr;
+bool EditorInspectorPluginFoliage::can_handle(Object *p_object) {
+	return Object::cast_to<FoliagePainter3D>(p_object) != nullptr || Object::cast_to<FoliageLayer>(p_object) != nullptr || Object::cast_to<FoliageSpawner3D>(p_object) != nullptr;
 }
 
-bool EditorInspectorPluginFoliagePainter3D::parse_property(Object *p_object, const Variant::Type p_type, const String &p_path, const PropertyHint p_hint, const String &p_hint_text, const BitField<PropertyUsageFlags> p_usage, const bool p_wide) {
+bool EditorInspectorPluginFoliage::parse_property(Object *p_object, const Variant::Type p_type, const String &p_path, const PropertyHint p_hint, const String &p_hint_text, const BitField<PropertyUsageFlags> p_usage, const bool p_wide) {
 	if (Object::cast_to<FoliagePainter3D>(p_object) != nullptr && p_path == "foliage_layers") {
 		add_property_editor(p_path, memnew(EditorPropertyFoliageLayers), false, "FoliageLayers");
 		return true;
 	}
-	if (Object::cast_to<FoliageLayer>(p_object) != nullptr && p_path == "lod_levels") {
+	if ((Object::cast_to<FoliageLayer>(p_object) != nullptr || Object::cast_to<FoliageSpawner3D>(p_object) != nullptr) && p_path == "lod_levels") {
 		add_property_editor(p_path, memnew(EditorPropertyFoliageLODs(lods_dialog)), false, TTR("LODs"));
 		return true;
 	}

@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  foliage_painter_3d_inspector_plugin.h                                 */
+/*  foliage_inspector_plugin.h                                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -48,10 +48,12 @@ class PanelContainer;
 class PopupPanel;
 class VBoxContainer;
 
-// Edits the LODs of one FoliageLayer in a window of their own, one row per
+// Edits the LODs of a FoliageLayer or a FoliageSpawner3D (anything with a
+// lod_levels array of FoliageLODLevels) in a window of their own, one row per
 // LOD: its mesh, the distances it is drawn across, and how it renders. This
-// takes the LODs out of the inspector, where a layer inside a FoliagePainter3D
-// would otherwise nest them two levels deeper still.
+// takes the LODs out of the inspector, where each would otherwise be one more
+// resource to open, and a layer inside a FoliagePainter3D nests them two
+// levels deeper still.
 class FoliageLODsDialog : public AcceptDialog {
 	GDCLASS(FoliageLODsDialog, AcceptDialog);
 
@@ -66,7 +68,9 @@ class FoliageLODsDialog : public AcceptDialog {
 		Button *remove_button = nullptr;
 	};
 
-	Ref<FoliageLayer> layer;
+	// What the LODs belong to. By ID, since a FoliageSpawner3D is a node that
+	// can be deleted while the window is open.
+	ObjectID owner_id;
 
 	Label *hint_label = nullptr;
 	GridContainer *grid = nullptr;
@@ -88,7 +92,11 @@ class FoliageLODsDialog : public AcceptDialog {
 	EditorResourcePicker *material_picker = nullptr;
 	CheckBox *cast_shadows_check = nullptr;
 
-	void _layer_changed();
+	Object *_get_owner() const;
+	TypedArray<FoliageLODLevel> _get_levels() const;
+	// The LODs are only ever changed through undo/redo (here, or in the
+	// inspector), so its history changing is when the rows may be out of date.
+	void _history_changed();
 	void _refresh();
 	bool _rows_match() const;
 	void _rebuild_rows();
@@ -120,17 +128,17 @@ protected:
 	void _notification(int p_what);
 
 public:
-	// Opens the window on p_layer's LODs.
-	void edit(const Ref<FoliageLayer> &p_layer);
-	Ref<FoliageLayer> get_edited_layer() const { return layer; }
+	// Opens the window on the LODs of p_owner, a FoliageLayer or a FoliageSpawner3D.
+	void edit(Object *p_owner);
 
 	static String get_lod_name(int p_index);
 
 	FoliageLODsDialog();
 };
 
-// FoliageLayer::lod_levels in the inspector: a button that opens
-// FoliageLODsDialog, over a line per LOD saying what it draws and where.
+// FoliageLayer::lod_levels and FoliageSpawner3D::lod_levels in the inspector:
+// a button that opens FoliageLODsDialog, over a line per LOD saying what it
+// draws and where.
 class EditorPropertyFoliageLODs : public EditorProperty {
 	GDCLASS(EditorPropertyFoliageLODs, EditorProperty);
 
@@ -232,8 +240,10 @@ public:
 	EditorPropertyFoliageLayers();
 };
 
-class EditorInspectorPluginFoliagePainter3D : public EditorInspectorPlugin {
-	GDCLASS(EditorInspectorPluginFoliagePainter3D, EditorInspectorPlugin);
+// The inspector editors above, for FoliagePainter3D, its FoliageLayers, and
+// FoliageSpawner3D.
+class EditorInspectorPluginFoliage : public EditorInspectorPlugin {
+	GDCLASS(EditorInspectorPluginFoliage, EditorInspectorPlugin);
 
 	FoliageLODsDialog *lods_dialog = nullptr;
 

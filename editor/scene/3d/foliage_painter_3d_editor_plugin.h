@@ -35,7 +35,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "editor/plugins/editor_plugin.h"
-#include "editor/scene/3d/foliage_painter_3d_inspector_plugin.h"
+#include "editor/scene/3d/foliage_inspector_plugin.h"
 #include "scene/3d/foliage_painter_3d.h"
 
 class HBoxContainer;
@@ -77,7 +77,7 @@ private:
 
 	FoliagePainter3D *painter = nullptr;
 
-	Ref<EditorInspectorPluginFoliagePainter3D> inspector_plugin;
+	Ref<EditorInspectorPluginFoliage> inspector_plugin;
 
 	// Toolbar.
 	HBoxContainer *topmenu_bar = nullptr;
