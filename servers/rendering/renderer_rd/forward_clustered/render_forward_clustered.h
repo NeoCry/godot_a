@@ -36,6 +36,7 @@
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
+#include "servers/rendering/renderer_rd/effects/ssgi.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
 #include "servers/rendering/renderer_rd/effects/xegtao.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
@@ -107,13 +108,9 @@ public:
 		ClusterBuilderRD *cluster_builder = nullptr;
 
 		struct SSEffectsData {
-			Projection ssil_last_frame_projections[RendererSceneRender::MAX_RENDER_VIEWS];
-			Transform3D ssil_last_frame_transform;
-
 			Projection ssr_last_frame_projections[RendererSceneRender::MAX_RENDER_VIEWS];
 			Transform3D ssr_last_frame_transform;
 
-			RendererRD::SSEffects::SSILRenderBuffers ssil;
 			RendererRD::SSEffects::SSRRenderBuffers ssr;
 			RendererRD::SSEffects::SSCSRenderBuffers sscs;
 		} ss_effects_data;
@@ -121,6 +118,8 @@ public:
 		// XeGTAO is a separate, self-contained effect (effects/xegtao.h) with its own depth prefilter and
 		// denoiser, so its buffers live outside SSEffectsData rather than alongside it.
 		RendererRD::XeGTAO::RenderBuffers xegtao_data;
+		// So is SSGI (effects/ssgi.h), with its own temporal history and denoiser.
+		RendererRD::SSGI::RenderBuffers ssgi_data;
 
 		enum DepthFrameBufferType {
 			DEPTH_FB,
@@ -319,7 +318,7 @@ private:
 	// When changing any of these enums, remember to change the corresponding enums in the shader files as well.
 	enum {
 		SCREEN_SPACE_EFFECTS_FLAGS_USE_XEGTAO = (1 << 0),
-		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL = (1 << 1),
+		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSGI = (1 << 1),
 		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSR = (1 << 2),
 		SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR = (1 << 3),
 		SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS = (1 << 4),
@@ -802,6 +801,7 @@ private:
 	RendererRD::FSR2Effect *fsr2_effect = nullptr;
 	RendererRD::SSEffects *ss_effects = nullptr;
 	RendererRD::XeGTAO *xegtao = nullptr;
+	RendererRD::SSGI *ssgi = nullptr;
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	RendererRD::MFXTemporalEffect *mfx_temporal_effect = nullptr;
@@ -906,11 +906,11 @@ private:
 
 	/* Render Scene */
 	void _process_xegtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
-	void _process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
+	void _process_ssgi(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
 	void _process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform);
 	void _process_sscs(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection *p_projections, const Transform3D &p_transform, const LocalVector<RID> &p_contact_shadow_lights, const RID *p_exclusion_depth_textures, RID p_environment, float p_taa_frame_count);
-	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssil, bool p_use_ssr);
-	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_xegtao, bool p_use_ssil, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
+	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers);
+	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_xegtao, bool p_use_ssgi, bool p_use_ssr, bool p_use_sscs, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
 
 	/* Debug */
@@ -923,7 +923,7 @@ protected:
 	virtual RID _render_buffers_get_velocity_texture(Ref<RenderSceneBuffersRD> p_render_buffers) override;
 
 	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) override;
-	virtual void environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) override;
+	virtual void environment_set_ssgi_quality(RSE::EnvironmentSSGIQuality p_quality, bool p_half_size, int p_denoise_passes, int p_history_frames) override;
 	virtual void environment_set_ssr_half_size(bool p_half_size) override;
 	virtual void environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) override;
 

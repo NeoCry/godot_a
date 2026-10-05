@@ -198,7 +198,7 @@ layout(set = 0, binding = 2) uniform sampler shadow_sampler;
 #define INSTANCE_FLAGS_PARTICLE_TRAIL_MASK 0xFF
 
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_XEGTAO (1 << 0)
-#define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL (1 << 1)
+#define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSGI (1 << 1)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSR (1 << 2)
 #define SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR (1 << 3)
 #define SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS (1 << 4)
@@ -504,14 +504,16 @@ voxel_gi_instances;
 layout(set = 1, binding = 33) uniform texture3D volumetric_fog_texture;
 
 #ifdef USE_MULTIVIEW
-layout(set = 1, binding = 34) uniform texture2DArray ssil_buffer;
+// SSGI's light (effects/ssgi.h): rgb what its rays found on screen, alpha how much of the ambient light it replaces.
+layout(set = 1, binding = 34) uniform texture2DArray ssgi_buffer;
 layout(set = 1, binding = 35) uniform texture2DArray ssr_buffer;
 layout(set = 1, binding = 36) uniform texture2DArray ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2DArray sscs_buffer;
 // XeGTAO's view space bent normals (effects/xegtao.h), encoded as normal * 0.5 + 0.5.
 layout(set = 1, binding = 40) uniform texture2DArray xegtao_bent_normal_buffer;
 #else
-layout(set = 1, binding = 34) uniform texture2D ssil_buffer;
+// SSGI's light (effects/ssgi.h): rgb what its rays found on screen, alpha how much of the ambient light it replaces.
+layout(set = 1, binding = 34) uniform texture2D ssgi_buffer;
 layout(set = 1, binding = 35) uniform texture2D ssr_buffer;
 layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2DArray sscs_buffer;

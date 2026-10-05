@@ -927,8 +927,8 @@ public:
 
 	FUNC4(environment_set_sscs, RID, bool, RSE::ScreenSpaceContactShadowsLength, float)
 
-	FUNC6(environment_set_ssil, RID, bool, float, float, float, float)
-	FUNC6(environment_set_ssil_quality, RSE::EnvironmentSSILQuality, bool, float, int, float, float)
+	FUNC6(environment_set_ssgi, RID, bool, float, float, float, float)
+	FUNC4(environment_set_ssgi_quality, RSE::EnvironmentSSGIQuality, bool, int, int)
 
 	FUNC13(environment_set_glow, RID, bool, Vector<float>, float, float, float, float, RSE::EnvironmentGlowBlendMode, float, float, float, float, RID)
 	FUNC1(environment_glow_set_use_bicubic_upscale, bool)

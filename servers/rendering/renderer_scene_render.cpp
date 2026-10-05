@@ -594,30 +594,30 @@ float RendererSceneRender::environment_get_sscs_surface_thickness(RID p_env) con
 	return environment_storage.environment_get_sscs_surface_thickness(p_env);
 }
 
-// SSIL
+// SSGI
 
-void RendererSceneRender::environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection) {
-	environment_storage.environment_set_ssil(p_env, p_enable, p_radius, p_intensity, p_sharpness, p_normal_rejection);
+void RendererSceneRender::environment_set_ssgi(RID p_env, bool p_enable, float p_intensity, float p_max_distance, float p_thickness, float p_occlusion) {
+	environment_storage.environment_set_ssgi(p_env, p_enable, p_intensity, p_max_distance, p_thickness, p_occlusion);
 }
 
-bool RendererSceneRender::environment_get_ssil_enabled(RID p_env) const {
-	return environment_storage.environment_get_ssil_enabled(p_env);
+bool RendererSceneRender::environment_get_ssgi_enabled(RID p_env) const {
+	return environment_storage.environment_get_ssgi_enabled(p_env);
 }
 
-float RendererSceneRender::environment_get_ssil_radius(RID p_env) const {
-	return environment_storage.environment_get_ssil_radius(p_env);
+float RendererSceneRender::environment_get_ssgi_intensity(RID p_env) const {
+	return environment_storage.environment_get_ssgi_intensity(p_env);
 }
 
-float RendererSceneRender::environment_get_ssil_intensity(RID p_env) const {
-	return environment_storage.environment_get_ssil_intensity(p_env);
+float RendererSceneRender::environment_get_ssgi_max_distance(RID p_env) const {
+	return environment_storage.environment_get_ssgi_max_distance(p_env);
 }
 
-float RendererSceneRender::environment_get_ssil_sharpness(RID p_env) const {
-	return environment_storage.environment_get_ssil_sharpness(p_env);
+float RendererSceneRender::environment_get_ssgi_thickness(RID p_env) const {
+	return environment_storage.environment_get_ssgi_thickness(p_env);
 }
 
-float RendererSceneRender::environment_get_ssil_normal_rejection(RID p_env) const {
-	return environment_storage.environment_get_ssil_normal_rejection(p_env);
+float RendererSceneRender::environment_get_ssgi_occlusion(RID p_env) const {
+	return environment_storage.environment_get_ssgi_occlusion(p_env);
 }
 
 // SDFGI

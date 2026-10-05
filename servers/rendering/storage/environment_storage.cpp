@@ -932,51 +932,51 @@ float RendererEnvironmentStorage::environment_get_sscs_surface_thickness(RID p_e
 	return env->sscs_surface_thickness;
 }
 
-// SSIL
+// SSGI
 
-void RendererEnvironmentStorage::environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection) {
+void RendererEnvironmentStorage::environment_set_ssgi(RID p_env, bool p_enable, float p_intensity, float p_max_distance, float p_thickness, float p_occlusion) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 #ifdef DEBUG_ENABLED
 	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
-		WARN_PRINT_ONCE_ED("Screen-space indirect lighting (SSIL) is only available when using the Forward+ renderer.");
+		WARN_PRINT_ONCE_ED("Screen-space global illumination (SSGI) is only available when using the Forward+ renderer.");
 	}
 #endif
-	env->ssil_enabled = p_enable;
-	env->ssil_radius = p_radius;
-	env->ssil_intensity = p_intensity;
-	env->ssil_sharpness = p_sharpness;
-	env->ssil_normal_rejection = p_normal_rejection;
+	env->ssgi_enabled = p_enable;
+	env->ssgi_intensity = p_intensity;
+	env->ssgi_max_distance = p_max_distance;
+	env->ssgi_thickness = p_thickness;
+	env->ssgi_occlusion = p_occlusion;
 }
 
-bool RendererEnvironmentStorage::environment_get_ssil_enabled(RID p_env) const {
+bool RendererEnvironmentStorage::environment_get_ssgi_enabled(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, false);
-	return env->ssil_enabled;
+	return env->ssgi_enabled;
 }
 
-float RendererEnvironmentStorage::environment_get_ssil_radius(RID p_env) const {
-	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 5.0);
-	return env->ssil_radius;
-}
-
-float RendererEnvironmentStorage::environment_get_ssil_intensity(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_ssgi_intensity(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 1.0);
-	return env->ssil_intensity;
+	return env->ssgi_intensity;
 }
 
-float RendererEnvironmentStorage::environment_get_ssil_sharpness(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_ssgi_max_distance(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
-	ERR_FAIL_NULL_V(env, 0.98);
-	return env->ssil_sharpness;
+	ERR_FAIL_NULL_V(env, 4.0);
+	return env->ssgi_max_distance;
 }
 
-float RendererEnvironmentStorage::environment_get_ssil_normal_rejection(RID p_env) const {
+float RendererEnvironmentStorage::environment_get_ssgi_thickness(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.5);
+	return env->ssgi_thickness;
+}
+
+float RendererEnvironmentStorage::environment_get_ssgi_occlusion(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, 1.0);
-	return env->ssil_normal_rejection;
+	return env->ssgi_occlusion;
 }
 
 // SDFGI

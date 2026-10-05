@@ -744,61 +744,61 @@ void Environment::_update_sscs() {
 			sscs_surface_thickness);
 }
 
-// SSIL
+// SSGI
 
-void Environment::set_ssil_enabled(bool p_enabled) {
-	ssil_enabled = p_enabled;
-	_update_ssil();
+void Environment::set_ssgi_enabled(bool p_enabled) {
+	ssgi_enabled = p_enabled;
+	_update_ssgi();
 }
 
-bool Environment::is_ssil_enabled() const {
-	return ssil_enabled;
+bool Environment::is_ssgi_enabled() const {
+	return ssgi_enabled;
 }
 
-void Environment::set_ssil_radius(float p_radius) {
-	ssil_radius = p_radius;
-	_update_ssil();
+void Environment::set_ssgi_intensity(float p_intensity) {
+	ssgi_intensity = p_intensity;
+	_update_ssgi();
 }
 
-float Environment::get_ssil_radius() const {
-	return ssil_radius;
+float Environment::get_ssgi_intensity() const {
+	return ssgi_intensity;
 }
 
-void Environment::set_ssil_intensity(float p_intensity) {
-	ssil_intensity = p_intensity;
-	_update_ssil();
+void Environment::set_ssgi_max_distance(float p_distance) {
+	ssgi_max_distance = p_distance;
+	_update_ssgi();
 }
 
-float Environment::get_ssil_intensity() const {
-	return ssil_intensity;
+float Environment::get_ssgi_max_distance() const {
+	return ssgi_max_distance;
 }
 
-void Environment::set_ssil_sharpness(float p_sharpness) {
-	ssil_sharpness = p_sharpness;
-	_update_ssil();
+void Environment::set_ssgi_thickness(float p_thickness) {
+	ssgi_thickness = p_thickness;
+	_update_ssgi();
 }
 
-float Environment::get_ssil_sharpness() const {
-	return ssil_sharpness;
+float Environment::get_ssgi_thickness() const {
+	return ssgi_thickness;
 }
 
-void Environment::set_ssil_normal_rejection(float p_normal_rejection) {
-	ssil_normal_rejection = p_normal_rejection;
-	_update_ssil();
+void Environment::set_ssgi_occlusion(float p_occlusion) {
+	ssgi_occlusion = p_occlusion;
+	_update_ssgi();
 }
 
-float Environment::get_ssil_normal_rejection() const {
-	return ssil_normal_rejection;
+float Environment::get_ssgi_occlusion() const {
+	return ssgi_occlusion;
 }
 
-void Environment::_update_ssil() {
-	RS::get_singleton()->environment_set_ssil(
+void Environment::_update_ssgi() {
+	RS::get_singleton()->environment_set_ssgi(
 			environment,
-			ssil_enabled,
-			ssil_radius,
-			ssil_intensity,
-			ssil_sharpness,
-			ssil_normal_rejection);
+			ssgi_enabled,
+			ssgi_intensity,
+			ssgi_max_distance,
+			ssgi_thickness,
+			ssgi_occlusion);
 }
 
 // SDFGI
@@ -1803,24 +1803,24 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sscs_length", PROPERTY_HINT_ENUM, "Short (Fast),Medium (Average),Long (Slow)"), "set_sscs_length", "get_sscs_length");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sscs_surface_thickness", PROPERTY_HINT_RANGE, "0.001,0.1,0.001"), "set_sscs_surface_thickness", "get_sscs_surface_thickness");
 
-	// SSIL
-	ClassDB::bind_method(D_METHOD("set_ssil_enabled", "enabled"), &Environment::set_ssil_enabled);
-	ClassDB::bind_method(D_METHOD("is_ssil_enabled"), &Environment::is_ssil_enabled);
-	ClassDB::bind_method(D_METHOD("set_ssil_radius", "radius"), &Environment::set_ssil_radius);
-	ClassDB::bind_method(D_METHOD("get_ssil_radius"), &Environment::get_ssil_radius);
-	ClassDB::bind_method(D_METHOD("set_ssil_intensity", "intensity"), &Environment::set_ssil_intensity);
-	ClassDB::bind_method(D_METHOD("get_ssil_intensity"), &Environment::get_ssil_intensity);
-	ClassDB::bind_method(D_METHOD("set_ssil_sharpness", "sharpness"), &Environment::set_ssil_sharpness);
-	ClassDB::bind_method(D_METHOD("get_ssil_sharpness"), &Environment::get_ssil_sharpness);
-	ClassDB::bind_method(D_METHOD("set_ssil_normal_rejection", "normal_rejection"), &Environment::set_ssil_normal_rejection);
-	ClassDB::bind_method(D_METHOD("get_ssil_normal_rejection"), &Environment::get_ssil_normal_rejection);
+	// SSGI
+	ClassDB::bind_method(D_METHOD("set_ssgi_enabled", "enabled"), &Environment::set_ssgi_enabled);
+	ClassDB::bind_method(D_METHOD("is_ssgi_enabled"), &Environment::is_ssgi_enabled);
+	ClassDB::bind_method(D_METHOD("set_ssgi_intensity", "intensity"), &Environment::set_ssgi_intensity);
+	ClassDB::bind_method(D_METHOD("get_ssgi_intensity"), &Environment::get_ssgi_intensity);
+	ClassDB::bind_method(D_METHOD("set_ssgi_max_distance", "distance"), &Environment::set_ssgi_max_distance);
+	ClassDB::bind_method(D_METHOD("get_ssgi_max_distance"), &Environment::get_ssgi_max_distance);
+	ClassDB::bind_method(D_METHOD("set_ssgi_thickness", "thickness"), &Environment::set_ssgi_thickness);
+	ClassDB::bind_method(D_METHOD("get_ssgi_thickness"), &Environment::get_ssgi_thickness);
+	ClassDB::bind_method(D_METHOD("set_ssgi_occlusion", "occlusion"), &Environment::set_ssgi_occlusion);
+	ClassDB::bind_method(D_METHOD("get_ssgi_occlusion"), &Environment::get_ssgi_occlusion);
 
-	ADD_GROUP("SSIL", "ssil_");
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ssil_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ssil_enabled", "is_ssil_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_radius", PROPERTY_HINT_RANGE, "0.01,16,0.01,or_greater,suffix:m"), "set_ssil_radius", "get_ssil_radius");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ssil_intensity", "get_ssil_intensity");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_sharpness", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssil_sharpness", "get_ssil_sharpness");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssil_normal_rejection", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssil_normal_rejection", "get_ssil_normal_rejection");
+	ADD_GROUP("SSGI", "ssgi_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ssgi_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ssgi_enabled", "is_ssgi_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssgi_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ssgi_intensity", "get_ssgi_intensity");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssgi_max_distance", PROPERTY_HINT_RANGE, "0.1,64,0.01,or_greater,suffix:m"), "set_ssgi_max_distance", "get_ssgi_max_distance");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssgi_thickness", PROPERTY_HINT_RANGE, "0.01,4,0.01,or_greater,suffix:m"), "set_ssgi_thickness", "get_ssgi_thickness");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssgi_occlusion", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ssgi_occlusion", "get_ssgi_occlusion");
 
 	// SDFGI
 
@@ -2121,7 +2121,7 @@ Environment::Environment() {
 	_update_motion_blur();
 	_update_atmosphere();
 	_update_sscs();
-	_update_ssil();
+	_update_ssgi();
 	_update_sdfgi();
 	_update_glow();
 	_update_fog();

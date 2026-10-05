@@ -278,15 +278,15 @@ public:
 	RSE::ScreenSpaceContactShadowsLength environment_get_sscs_length(RID p_env) const;
 	float environment_get_sscs_surface_thickness(RID p_env) const;
 
-	// SSIL
-	void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection);
-	bool environment_get_ssil_enabled(RID p_env) const;
-	float environment_get_ssil_radius(RID p_env) const;
-	float environment_get_ssil_intensity(RID p_env) const;
-	float environment_get_ssil_sharpness(RID p_env) const;
-	float environment_get_ssil_normal_rejection(RID p_env) const;
+	// SSGI
+	void environment_set_ssgi(RID p_env, bool p_enable, float p_intensity, float p_max_distance, float p_thickness, float p_occlusion);
+	bool environment_get_ssgi_enabled(RID p_env) const;
+	float environment_get_ssgi_intensity(RID p_env) const;
+	float environment_get_ssgi_max_distance(RID p_env) const;
+	float environment_get_ssgi_thickness(RID p_env) const;
+	float environment_get_ssgi_occlusion(RID p_env) const;
 
-	virtual void environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) = 0;
+	virtual void environment_set_ssgi_quality(RSE::EnvironmentSSGIQuality p_quality, bool p_half_size, int p_denoise_passes, int p_history_frames) = 0;
 
 	// SDFGI
 	void environment_set_sdfgi(RID p_env, bool p_enable, int p_cascades, float p_min_cell_size, RSE::EnvironmentSDFGIYScale p_y_scale, bool p_use_occlusion, float p_bounce_feedback, bool p_read_sky, float p_energy, float p_normal_bias, float p_probe_bias);

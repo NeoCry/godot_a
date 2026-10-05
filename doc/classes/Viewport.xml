@@ -703,8 +703,8 @@
 			Draws the view-space bent normals computed by XeGTAO instead of the scene, encoded the same way as [constant DEBUG_DRAW_NORMAL_BUFFER]. In order for this display mode to work, you must have [member Environment.xegtao_enabled] and [member Environment.xegtao_bent_normals] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="DEBUG_DRAW_SSIL" value="14" enum="DebugDraw">
-			Draws the screen-space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].
+		<constant name="DEBUG_DRAW_SSGI" value="14" enum="DebugDraw">
+			Draws the light screen-space global illumination finds instead of the scene, before it is multiplied by the albedo of the surfaces, so that you can clearly see what it contributes. In order for this display mode to work, you must have [member Environment.ssgi_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="DEBUG_DRAW_PSSM_SPLITS" value="15" enum="DebugDraw">
