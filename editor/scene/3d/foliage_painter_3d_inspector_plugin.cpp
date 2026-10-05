@@ -459,13 +459,16 @@ void FoliageLODsDialog::_notification(int p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_theme();
 		} break;
+
+		case NOTIFICATION_VISIBILITY_CHANGED: {
+			_visibility_changed();
+		} break;
 	}
 }
 
 FoliageLODsDialog::FoliageLODsDialog() {
 	set_title(TTR("LODs"));
 	set_ok_button_text(TTR("Close"));
-	connect(SceneStringName(visibility_changed), callable_mp(this, &FoliageLODsDialog::_visibility_changed));
 
 	VBoxContainer *vbox = memnew(VBoxContainer);
 	add_child(vbox);
@@ -645,8 +648,8 @@ String EditorPropertyFoliageLayers::_get_fold_key(int p_index) const {
 
 bool EditorPropertyFoliageLayers::_is_layer_unfolded(int p_index) const {
 	// The fold state is kept on the edited object, as the inspector does its own sections'.
-	Object *object = const_cast<EditorPropertyFoliageLayers *>(this)->get_edited_object();
-	return object != nullptr && object->editor_is_section_unfolded(_get_fold_key(p_index));
+	Object *edited = const_cast<EditorPropertyFoliageLayers *>(this)->get_edited_object();
+	return edited != nullptr && edited->editor_is_section_unfolded(_get_fold_key(p_index));
 }
 
 Vector<bool> EditorPropertyFoliageLayers::_get_unfolded() const {
@@ -908,10 +911,10 @@ void EditorPropertyFoliageLayers::_fold_pressed(int p_index) {
 }
 
 void EditorPropertyFoliageLayers::_commit_layers(const TypedArray<FoliageLayer> &p_layers, const Vector<bool> &p_unfolded) {
-	Object *object = get_edited_object();
+	Object *edited = get_edited_object();
 	const int count = MAX(p_unfolded.size(), _get_layers().size());
 	for (int i = 0; i < count; i++) {
-		object->editor_set_section_unfold(_get_fold_key(i), i < p_unfolded.size() && p_unfolded[i]);
+		edited->editor_set_section_unfold(_get_fold_key(i), i < p_unfolded.size() && p_unfolded[i]);
 	}
 	emit_changed(get_edited_property(), p_layers);
 }
