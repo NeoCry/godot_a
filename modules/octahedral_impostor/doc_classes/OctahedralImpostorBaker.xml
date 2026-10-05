@@ -25,8 +25,9 @@
 		        baker.save("res://billboards/%s.tres" % bush.name.to_snake_case())
 		[/codeblock]
 		The baked geometry is the one of the [MeshInstance3D], [MultiMeshInstance3D] and root [CSGShape3D] nodes, with their materials (including [ShaderMaterial]s), material overrides and overlays, blend shapes and instance shader parameters. Hidden nodes, geometry that only casts shadows, far levels of detail ([member GeometryInstance3D.visibility_range_begin] greater than [code]0[/code]), impostors and baked billboards are skipped. The views are rendered with the renderer of the editor, the views of a region of the textures in a single draw, and supersampled.
-		The albedo is the unshaded color of the materials. With the Forward+ renderer, the normals and the depth are read from the buffers of the renderer, so they include the normal maps and the custom shaders of all the materials. With the other renderers, and for the ORM textures, the materials are replaced by materials with their parameters: all the parameters of [BaseMaterial3D], and the usual parameter names of [ShaderMaterial]s ([code]albedo[/code], [code]texture_albedo[/code], [code]alpha_scissor_threshold[/code], [code]texture_normal[/code], [code]roughness[/code], [code]metallic[/code]...).
-		The empty pixels of each view are filled with the colors of their neighbors, so that filtering and mipmaps don't bring in the background.
+		The albedo is the unshaded color of the materials. With the Forward+ renderer, the normals and the depth are read from the buffers of the renderer, so they include the normal maps and the custom shaders of all the materials. The other data (ORM and translucency, and the normals with the other renderers) is captured with the shaders of the materials themselves: their code is changed to write the ambient occlusion, roughness and metallic ([code]AO[/code], [code]ROUGHNESS[/code], [code]METALLIC[/code]), the backlight ([code]BACKLIGHT[/code]) or the normal ([code]NORMAL[/code] and [code]NORMAL_MAP[/code]) as their unshaded color, with the parameters of the materials. It is the data of the real materials, [BaseMaterial3D]s ([ORMMaterial3D] included), [ShaderMaterial]s and visual shaders alike. The rare shaders that can't be changed (e.g. with a [code]return[/code] in their [code]fragment()[/code] function) are replaced by a material with their parameters: all the parameters of [BaseMaterial3D], and the usual parameter names of [ShaderMaterial]s ([code]albedo[/code], [code]texture_albedo[/code], [code]alpha_scissor_threshold[/code], [code]texture_normal[/code], [code]roughness[/code], [code]metallic[/code], [code]backlight[/code]...).
+		With [member bake_ambient_occlusion], the ambient occlusion of the ORM textures also includes the ambient occlusion of the geometry on itself (e.g. inside the foliage of a tree): the geometry is rendered from 64 directions spread over the sphere, and each pixel of the views is lit by the directions of the hemisphere of its normal that the geometry doesn't block.
+		The textures are powers of two. The frames of an impostor fill its atlas, so they may begin and end between pixels when [member atlas_size] isn't a multiple of [member frames]. The empty pixels of each view are filled with the colors of their neighbors, so that filtering and mipmaps don't bring in the background.
 	</description>
 	<tutorials>
 	</tutorials>
@@ -60,7 +61,7 @@
 		<method name="get_frame_size" qualifiers="const">
 			<return type="int" />
 			<description>
-				Returns the size in pixels of a frame of the atlas of an octahedral impostor with the current settings: [member atlas_size] divided by [member frames], rounded down to a multiple of 4 (the size of the blocks of the compressed texture formats). The atlas is [member frames] times this size.
+				Returns the size in pixels of a frame of the atlas of an octahedral impostor with the current settings: [member atlas_size] divided by [member frames], rounded down. The frames fill the atlas: they are [code]atlas_size / frames[/code] pixels large, and may begin and end between pixels.
 			</description>
 		</method>
 		<method name="get_normal_depth_image" qualifiers="const">
@@ -87,24 +88,37 @@
 				Returns the radius of the bounding sphere of the last bake. For an octahedral impostor, it contains the geometry with a margin of a few pixels in each frame.
 			</description>
 		</method>
+		<method name="get_translucency_image" qualifiers="const">
+			<return type="Image" />
+			<description>
+				Returns the translucency atlas or texture of the last bake: the backlight of the materials (in linear space), see [member bake_translucency]. Returns [code]null[/code] when it wasn't baked.
+			</description>
+		</method>
 		<method name="save">
 			<return type="Mesh" />
 			<param index="0" name="path" type="String" />
 			<description>
 				Saves the result of the last bake. Returns the mesh, or [code]null[/code] on error.
-				For an octahedral impostor: the atlases next to [param path] as [code]&lt;name&gt;_albedo.png[/code], [code]&lt;name&gt;_normal_depth.png[/code] and [code]&lt;name&gt;_orm.png[/code], and a [QuadMesh] with an [OctahedralImpostorMaterial3D] at [param path].
-				For a billboard: the textures next to [param path] as [code]&lt;name&gt;_albedo.png[/code], [code]&lt;name&gt;_normal.png[/code] (imported as a normal map) and [code]&lt;name&gt;_orm.png[/code], and at [param path] a [QuadMesh] fitted to the view (or an [ArrayMesh] with the crossed planes of [constant BILLBOARD_CROSS]) with a [StandardMaterial3D]: alpha scissor, no backface culling, the billboard mode of [member billboard_mode] with [member BaseMaterial3D.billboard_keep_scale], the normal map, and the ORM texture or the mean roughness and metallic of the materials.
-				The textures are imported as compressed textures with mipmaps. When the mesh is already loaded (e.g. baked again), it is updated in place, so the scenes that use it show the new result, and the settings of its material that aren't baked (e.g. the alpha scissor threshold, or the backlight of a billboard) are kept. The import settings of the textures changed after a previous bake are kept too.
+				For an octahedral impostor: the atlases next to [param path] as [code]&lt;name&gt;_albedo.png[/code], [code]&lt;name&gt;_normal_depth.png[/code], [code]&lt;name&gt;_orm.png[/code] and [code]&lt;name&gt;_translucency.png[/code], and a [QuadMesh] with an [OctahedralImpostorMaterial3D] at [param path]. With a translucency atlas, the backlight of the material is enabled.
+				For a billboard: the textures next to [param path] as [code]&lt;name&gt;_albedo.png[/code], [code]&lt;name&gt;_normal.png[/code] (imported as a normal map), [code]&lt;name&gt;_orm.png[/code] and [code]&lt;name&gt;_translucency.png[/code], and at [param path] a [QuadMesh] fitted to the view (or an [ArrayMesh] with the crossed planes of [constant BILLBOARD_CROSS]) with a [StandardMaterial3D]: alpha scissor, no backface culling, the billboard mode of [member billboard_mode] with [member BaseMaterial3D.billboard_keep_scale], the normal map, the ORM texture or the mean roughness and metallic of the materials, and the translucency texture as the backlight texture.
+				The textures are imported as compressed textures with mipmaps. When the mesh is already loaded (e.g. baked again), it is updated in place, so the scenes that use it show the new result, and the settings of its material that aren't baked (e.g. the alpha scissor threshold, or the backlight color, which is added to the translucency texture) are kept. The import settings of the textures changed after a previous bake are kept too.
 			</description>
 		</method>
 	</methods>
 	<members>
 		<member name="atlas_size" type="int" setter="set_atlas_size" getter="get_atlas_size" default="2048">
-			The size in pixels of the atlases of an octahedral impostor. It's rounded down to a multiple of the [member frames], see [method get_frame_size].
-			For a billboard, the size of the longest side of its textures. The other side fits the shape of the object (the sides are multiples of 4 pixels).
+			The size in pixels of the atlases of an octahedral impostor, which the frames fill (see [method get_frame_size]).
+			For a billboard, the size of the longest side of its textures. The other side is the smallest power of two that fits the shape of the object, with a wider border.
+			It's rounded to the closest power of two.
+		</member>
+		<member name="bake_ambient_occlusion" type="bool" setter="set_bake_ambient_occlusion" getter="is_baking_ambient_occlusion" default="true">
+			If [code]true[/code], the ambient occlusion of the ORM atlas or texture also includes the ambient occlusion of the geometry on itself, multiplied with the one of the materials. Only with [member bake_orm].
 		</member>
 		<member name="bake_orm" type="bool" setter="set_bake_orm" getter="is_baking_orm" default="false">
-			If [code]true[/code], also bakes the ORM atlas or texture (ambient occlusion, roughness and metallic). Otherwise the impostor or billboard uses the mean roughness and metallic of the materials.
+			If [code]true[/code], also bakes the ORM atlas or texture (ambient occlusion, roughness and metallic). Otherwise the impostor or billboard uses the mean roughness and metallic of the materials, as rendered in the views.
+		</member>
+		<member name="bake_translucency" type="bool" setter="set_bake_translucency" getter="is_baking_translucency" default="true">
+			If [code]true[/code] and the materials have a backlight (e.g. the leaves of trees, see [member BaseMaterial3D.backlight]), also bakes their backlight into a translucency atlas or texture, used as the backlight of the result ([member OctahedralImpostorMaterial3D.backlight_texture], [member BaseMaterial3D.backlight_texture]).
 		</member>
 		<member name="billboard_mode" type="int" setter="set_billboard_mode" getter="get_billboard_mode" enum="OctahedralImpostorBaker.BillboardMode" default="0">
 			The kind of billboard baked with [constant TYPE_BILLBOARD].

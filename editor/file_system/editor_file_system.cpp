@@ -1767,6 +1767,12 @@ void EditorFileSystem::_notification(int p_what) {
 				if (prevent_recursive_process_hack) {
 					break;
 				}
+				// The progress dialog of an import (e.g. of the files a tool just saved, see
+				// reimport_files()) processes frames: the results of a scan that ends meanwhile
+				// would start another import inside of it. They're handled once it's done.
+				if (importing) {
+					break;
+				}
 
 				prevent_recursive_process_hack = true;
 
@@ -1892,7 +1898,8 @@ bool EditorFileSystem::_find_file(const String &p_file, EditorFileSystemDirector
 	const String file_lower = file.to_lower();
 	path.resize(path.size() - 1);
 
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	// The paths of the directories are in res://.
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_RESOURCES);
 	EditorFileSystemDirectory *fs = filesystem;
 
 	for (const String &path_bit : path) {

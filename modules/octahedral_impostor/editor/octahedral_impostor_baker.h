@@ -51,13 +51,22 @@ class ShaderMaterial;
 //   - Albedo: sRGB color and coverage (alpha).
 //   - Normal and depth: object space normal in RGB, depth in A from the front (0) to the back (1)
 //     of the bounding sphere along the view.
-//   - ORM (optional): ambient occlusion, roughness and metallic.
+//   - ORM (optional): ambient occlusion (of the materials, and of the geometry on itself),
+//     roughness and metallic.
+//   - Translucency (optional, when the materials have a backlight): the backlight of the
+//     materials (linear RGB).
 // - The textures of a billboard: a quad that turns toward the camera with a single view of the
 //   object, or crossed planes with a view each (side by side in the textures), drawn with a
 //   StandardMaterial3D:
 //   - Albedo: sRGB color and coverage (alpha).
 //   - Normal: tangent space normal map of the quad (RGB).
-//   - ORM (optional): ambient occlusion, roughness and metallic.
+//   - ORM and translucency (optional): as for an impostor.
+//
+// The data the renderer doesn't keep (ORM, backlight, and the normals without the normal and
+// roughness buffer of Forward+) is captured with the shaders of the materials themselves, changed
+// to write it as their unshaded color, so it's right for any material (BaseMaterial3D, custom and
+// visual shaders). Materials whose shader can't be changed are replaced by a material with the
+// usual parameters of BaseMaterial3D.
 class OctahedralImpostorBaker : public RefCounted {
 	GDCLASS(OctahedralImpostorBaker, RefCounted);
 
@@ -84,6 +93,10 @@ public:
 	static constexpr int FRAME_PADDING = 2;
 	// Largest viewport rendered at once, the atlas is rendered in several regions above it.
 	static constexpr int MAX_REGION_SIZE = 2048;
+	// The ambient occlusion of the geometry is computed from views of its depth from
+	// OCCLUSION_GRID x OCCLUSION_GRID directions spread over the sphere.
+	static constexpr int OCCLUSION_GRID = 8;
+	static constexpr int OCCLUSION_VIEW_SIZE = 256;
 
 	struct Geometry {
 		ObjectID node;
@@ -103,7 +116,8 @@ public:
 	struct View {
 		Basis basis; // Columns: right and up in the image, toward the viewer.
 		Vector3 center; // Point of the space of the node at the center of the view.
-		Rect2i rect; // Pixels of the view in the atlas.
+		Rect2i rect; // Pixels of the view in the atlas (whose centers are in the view).
+		Vector2 pixel_center; // Position of the center in the atlas, in pixels (may be between pixels).
 	};
 
 private:
@@ -111,7 +125,15 @@ private:
 		PASS_ALBEDO,
 		PASS_GEOMETRY,
 		PASS_ORM,
+		PASS_TRANSLUCENCY,
 		PASS_MAX
+	};
+
+	// Data written by the materials that capture the passes the renderer doesn't keep.
+	enum CaptureMode {
+		CAPTURE_NORMAL_DEPTH,
+		CAPTURE_ORM,
+		CAPTURE_BACKLIGHT,
 	};
 
 	// Settings.
@@ -123,11 +145,14 @@ private:
 	int atlas_size = 2048;
 	int supersampling = 2;
 	bool bake_orm = false;
+	bool bake_ambient_occlusion = true;
+	bool bake_translucency = true;
 
 	// Results.
 	Ref<Image> albedo_image;
 	Ref<Image> normal_depth_image;
 	Ref<Image> orm_image;
+	Ref<Image> translucency_image;
 	Vector3 sphere_center;
 	float sphere_radius = 0.0;
 	float source_roughness = 1.0;
@@ -148,6 +173,8 @@ private:
 	// State of a bake.
 	struct BakeState {
 		bool billboard = false; // Normals of the views (normal map) instead of the object, no depth.
+		bool ambient_occlusion = false; // Of the geometry, in the ORM atlas.
+		bool translucency = false;
 		Size2i atlas_size;
 		real_t texel_world = 0.0; // Size of a pixel of the atlas in the space of the node.
 		int supersampling = 1;
@@ -166,16 +193,44 @@ private:
 		RID capture_instance;
 		Ref<Mesh> capture_mesh;
 		Ref<ShaderMaterial> capture_material;
+		// Materials that capture the data of the materials of the geometry (see CaptureMode).
+		HashMap<RID, RID> capture_shaders; // Shader of a material: shader that captures its data, or invalid.
+		HashMap<ObjectID, RID> capture_materials; // Material of the geometry: material that captures its data.
+		RID default_capture_material; // Geometry without material.
+		LocalVector<RID> capture_material_list;
+		LocalVector<RID> owned_rids; // Capture shaders and materials, freed with the state.
 		Ref<Shader> override_shaders[3]; // By cull mode.
 		HashMap<ObjectID, Ref<ShaderMaterial>> override_materials;
-		Ref<ShaderMaterial> default_override_material;
 		LocalVector<Pair<RID, int>> instances; // Instance and index of its geometry.
 		// Rendered albedo of the current region, weights the other maps.
 		Ref<Image> region_albedo;
-		// Pixels of the atlases with coverage, geometry data and ORM data, for the dilation.
+		// Pixels of the atlases with coverage, geometry data, ORM data and translucency data, for
+		// the dilation.
 		Vector<uint8_t> coverage_mask;
 		Vector<uint8_t> geometry_mask;
 		Vector<uint8_t> orm_mask;
+		Vector<uint8_t> translucency_mask;
+		// Mean of the ORM data over the views, for the material without ORM atlas.
+		double orm_sum[3] = {};
+		double orm_weight = 0.0;
+		// Ambient occlusion of the geometry on itself: views of its depth from many directions
+		// (height of the front of the geometry toward each direction, -INF where empty), and the
+		// result for each pixel of the atlas.
+		LocalVector<View> occlusion_views;
+		real_t occlusion_texel = 0.0;
+		int occlusion_width = 0;
+		Vector<float> occlusion_heights;
+		Vector<uint8_t> occlusion;
+	};
+
+	// Ambient occlusion of the pixels of a region (one task per row).
+	struct OcclusionTask {
+		const BakeState *state = nullptr;
+		Rect2i rect; // Of the region, in the atlas.
+		const Vector3 *positions = nullptr; // In the space of the node, per pixel of the region.
+		const Vector3 *normals = nullptr; // In the space of the node, zero without geometry.
+		uint8_t *occlusion = nullptr; // Of the atlas.
+		void compute_row(uint32_t p_row, void *p_unused);
 	};
 
 	static bool _is_baked_geometry(const Geometry &p_geometry);
@@ -187,13 +242,19 @@ private:
 	Error _setup_billboard_views(BakeState &p_state, const Vector3 &p_center, float p_radius);
 	static void _setup_regions(BakeState &p_state, int p_region_size);
 
+	static bool _material_uses_backlight(const Ref<Material> &p_material);
+
 	Ref<ShaderMaterial> _get_override_material(BakeState &p_state, const Ref<Material> &p_material);
-	void _setup_instances(BakeState &p_state, const Region &p_region);
-	void _setup_camera(BakeState &p_state, const Region &p_region);
+	RID _get_capture_shader(BakeState &p_state, RID p_shader);
+	RID _get_capture_material(BakeState &p_state, const Ref<Material> &p_material);
+	void _setup_instances(BakeState &p_state, const LocalVector<View> &p_views, const Region &p_region, real_t p_texel);
+	void _setup_camera(BakeState &p_state, const Size2i &p_size, real_t p_texel, int p_supersampling);
 	void _set_pass(BakeState &p_state, Pass p_pass);
 	void _free_instances(BakeState &p_state);
 	void _draw(BakeState &p_state);
 	bool _is_output_srgb(BakeState &p_state, Pass p_pass);
+	Ref<Image> _get_render(BakeState &p_state, Pass p_pass);
+	void _render_occlusion_views(BakeState &p_state);
 	void _read_region(BakeState &p_state, Pass p_pass, const Region &p_region);
 	void _cleanup(BakeState &p_state);
 	static void _dilate(Ref<Image> &p_image, const Vector<uint8_t> &p_mask, const LocalVector<View> &p_views, bool p_keep_alpha);
@@ -232,8 +293,15 @@ public:
 	void set_bake_orm(bool p_enable);
 	bool is_baking_orm() const;
 
+	void set_bake_ambient_occlusion(bool p_enable);
+	bool is_baking_ambient_occlusion() const;
+
+	void set_bake_translucency(bool p_enable);
+	bool is_baking_translucency() const;
+
 	// Size of a frame and of the atlas of an octahedral impostor that is baked with the current
-	// settings (the atlas is rounded down to a multiple of the frames).
+	// settings. The frames fill the atlas (a power of two): their size is atlas_size / frames,
+	// rounded down here.
 	int get_frame_size() const;
 	int get_baked_atlas_size() const;
 
@@ -242,10 +310,16 @@ public:
 	// (visibility range begin > 0), impostors and baked billboards are skipped.
 	static LocalVector<Geometry> collect_geometry(Node3D *p_node);
 	static bool has_geometry(Node3D *p_node);
+	// Whether the materials of the geometry have a backlight, baked into a translucency texture.
+	static bool has_translucency(const LocalVector<Geometry> &p_geometry);
+	// The shader code of a spatial material changed to write the data of the capture modes as its
+	// unshaded color (selected by the "impostor_bake_mode" uniform), or an empty string if it can't
+	// be changed (e.g. a return in its fragment function).
+	static String make_capture_shader_code(const String &p_code);
 	// Sphere centered on the bounds of the geometry, through its farthest vertex.
 	static bool compute_bounding_sphere(const LocalVector<Geometry> &p_geometry, Vector3 &r_center, float &r_radius);
 	// Views of a billboard of the geometry, fitted to its vertices, and the size of its textures
-	// (the longest side is at most p_size) and of their pixels in the space of the node.
+	// (powers of two, the longest side is p_size) and of their pixels in the space of the node.
 	static bool compute_billboard_views(const LocalVector<Geometry> &p_geometry, BillboardMode p_mode, int p_cross_planes, int p_size, LocalVector<View> &r_views, Size2i &r_atlas_size, real_t &r_texel_size);
 
 	Error bake(Node3D *p_node, bool p_show_progress = false);
@@ -253,6 +327,7 @@ public:
 	Ref<Image> get_albedo_image() const { return albedo_image; }
 	Ref<Image> get_normal_depth_image() const { return normal_depth_image; }
 	Ref<Image> get_orm_image() const { return orm_image; }
+	Ref<Image> get_translucency_image() const { return translucency_image; }
 	Vector3 get_sphere_center() const { return sphere_center; }
 	float get_sphere_radius() const { return sphere_radius; }
 	Type get_baked_type() const { return baked_type; }
