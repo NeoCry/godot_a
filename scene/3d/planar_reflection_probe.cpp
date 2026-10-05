@@ -32,6 +32,7 @@
 
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+#include "servers/rendering/rendering_server.h"
 
 void PlanarReflectionProbe::set_size(const Vector2 &p_size) {
 	size = p_size.maxf(0.0);
