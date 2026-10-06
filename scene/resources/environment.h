@@ -189,14 +189,13 @@ private:
 	float sscs_surface_thickness = 0.01;
 	void _update_sscs();
 
-	// SSIL
-	bool ssil_enabled = false;
-	float ssil_radius = 5.0;
-	float ssil_intensity = 1.0;
-	float ssil_sharpness = 0.98;
-	float ssil_normal_rejection = 1.0;
-
-	void _update_ssil();
+	// SSGI
+	bool ssgi_enabled = false;
+	float ssgi_intensity = 1.0;
+	float ssgi_max_distance = 4.0;
+	float ssgi_thickness = 0.5;
+	float ssgi_occlusion = 1.0;
+	void _update_ssgi();
 
 	// SDFGI
 	bool sdfgi_enabled = false;
@@ -432,17 +431,17 @@ public:
 	void set_sscs_surface_thickness(float p_surface_thickness);
 	float get_sscs_surface_thickness() const;
 
-	// SSIL
-	void set_ssil_enabled(bool p_enabled);
-	bool is_ssil_enabled() const;
-	void set_ssil_radius(float p_radius);
-	float get_ssil_radius() const;
-	void set_ssil_intensity(float p_intensity);
-	float get_ssil_intensity() const;
-	void set_ssil_sharpness(float p_sharpness);
-	float get_ssil_sharpness() const;
-	void set_ssil_normal_rejection(float p_normal_rejection);
-	float get_ssil_normal_rejection() const;
+	// SSGI
+	void set_ssgi_enabled(bool p_enabled);
+	bool is_ssgi_enabled() const;
+	void set_ssgi_intensity(float p_intensity);
+	float get_ssgi_intensity() const;
+	void set_ssgi_max_distance(float p_distance);
+	float get_ssgi_max_distance() const;
+	void set_ssgi_thickness(float p_thickness);
+	float get_ssgi_thickness() const;
+	void set_ssgi_occlusion(float p_occlusion);
+	float get_ssgi_occlusion() const;
 
 	// SDFGI
 	void set_sdfgi_enabled(bool p_enabled);

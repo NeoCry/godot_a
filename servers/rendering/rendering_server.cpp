@@ -3046,7 +3046,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SCENE_LUMINANCE);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_XEGTAO);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_XEGTAO_BENT_NORMALS);
-	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SSIL);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SSGI);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_DECAL_ATLAS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_DEBUG_DRAW_SDFGI);
@@ -3131,6 +3131,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_xegtao", "env", "enable", "radius", "intensity", "power", "falloff_range", "sample_distribution_power", "thin_occluder_compensation", "bent_normals", "light_affect", "ao_channel_affect"), &RenderingServer::environment_set_xegtao);
 	ClassDB::bind_method(D_METHOD("environment_set_motion_blur", "env", "enable", "intensity", "reference_fps", "max_radius", "camera_rotation_scale", "camera_movement_scale", "object_scale"), &RenderingServer::environment_set_motion_blur);
 	ClassDB::bind_method(D_METHOD("environment_set_sscs", "env", "enable", "length", "surface_thickness"), &RenderingServer::environment_set_sscs);
+	ClassDB::bind_method(D_METHOD("environment_set_ssgi", "env", "enable", "intensity", "max_distance", "thickness", "occlusion"), &RenderingServer::environment_set_ssgi);
 	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RSE::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_fog_depth", "env", "curve", "begin", "end"), &RenderingServer::environment_set_fog_depth);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi", "env", "enable", "cascades", "min_cell_size", "y_scale", "use_occlusion", "bounce_feedback", "read_sky", "energy", "normal_bias", "probe_bias"), &RenderingServer::environment_set_sdfgi);
@@ -3145,7 +3146,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_rayleigh", "env", "scattering", "scattering_scale", "exponential_distribution"), &RenderingServer::environment_set_atmosphere_rayleigh);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_mie", "env", "scattering", "scattering_scale", "absorption", "absorption_scale", "anisotropy", "exponential_distribution"), &RenderingServer::environment_set_atmosphere_mie);
 	ClassDB::bind_method(D_METHOD("environment_set_atmosphere_ozone", "env", "absorption", "absorption_scale", "tip_altitude", "width"), &RenderingServer::environment_set_atmosphere_ozone);
-	ClassDB::bind_method(D_METHOD("environment_set_ssil_quality", "quality", "half_size", "adaptive_target", "blur_passes", "fadeout_from", "fadeout_to"), &RenderingServer::environment_set_ssil_quality);
+	ClassDB::bind_method(D_METHOD("environment_set_ssgi_quality", "quality", "half_size", "denoise_passes", "history_frames"), &RenderingServer::environment_set_ssgi_quality);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_ray_count", "ray_count"), &RenderingServer::environment_set_sdfgi_ray_count);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_frames_to_converge", "frames"), &RenderingServer::environment_set_sdfgi_frames_to_converge);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi_frames_to_update_light", "frames"), &RenderingServer::environment_set_sdfgi_frames_to_update_light);
@@ -3212,11 +3213,12 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_MEDIUM);
 	BIND_ENUM_CONSTANT(RSE::SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_LONG);
 
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_VERY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_LOW);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_MEDIUM);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_HIGH);
-	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_ULTRA);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSGI_QUALITY_VERY_LOW);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSGI_QUALITY_LOW);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSGI_QUALITY_MEDIUM);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSGI_QUALITY_HIGH);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSGI_QUALITY_ULTRA);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSGI_QUALITY_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::ENV_SDFGI_Y_SCALE_50_PERCENT);
 	BIND_ENUM_CONSTANT(RSE::ENV_SDFGI_Y_SCALE_75_PERCENT);
@@ -3815,8 +3817,10 @@ void RenderingServer::init() {
 	// the visible effect is that indirect light catches up over a few frames instead of
 	// snapping. 0 relights the whole probe in one frame.
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/relight_cells_per_frame", PROPERTY_HINT_RANGE, "0,4194304,1"), 0);
-	GLOBAL_DEF_RST("rendering/global_illumination/voxel_gi/screen_probes", false);
-	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/screen_probe_history_frames", PROPERTY_HINT_RANGE, "4,64,1"), 24);
+	GLOBAL_DEF("rendering/global_illumination/voxel_gi/screen_probes", false);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/screen_probe_history_frames", PROPERTY_HINT_RANGE, "4,64,1"), 24);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/voxel_gi/screen_probe_trace_distance", PROPERTY_HINT_RANGE, "0,64,0.1,or_greater,suffix:m"), 4.0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/screen_probe_trace_steps", PROPERTY_HINT_RANGE, "0,64,1"), 16);
 
 	GLOBAL_DEF_RST("rendering/shading/overrides/force_vertex_shading", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley", false);
@@ -3840,12 +3844,10 @@ void RenderingServer::init() {
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/motion_blur/quality", PROPERTY_HINT_ENUM, "Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 2);
 
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
-	GLOBAL_DEF("rendering/environment/ssil/half_size", true);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssil/adaptive_target", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), 0.5);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/blur_passes", PROPERTY_HINT_RANGE, "0,6"), 4);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssil/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssil/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssgi/quality", PROPERTY_HINT_ENUM, "Very Low (Fastest),Low (Fast),Medium (Average),High (Slow),Ultra (Slowest)"), 2);
+	GLOBAL_DEF("rendering/environment/ssgi/half_size", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssgi/denoise_passes", PROPERTY_HINT_RANGE, "0,5,1"), 4);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssgi/history_frames", PROPERTY_HINT_RANGE, "1,64,1"), 24);
 
 	// Move the project setting definitions here so they are available when we init the rendering internals.
 	GLOBAL_DEF_BASIC("rendering/viewport/hdr_2d", false);

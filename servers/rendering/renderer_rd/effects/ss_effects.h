@@ -30,7 +30,8 @@
 
 #pragma once
 
-// Ambient occlusion (XeGTAO) lives in its own dedicated effects/xegtao.h/.cpp, not here — see that file for why.
+// Ambient occlusion (XeGTAO) and global illumination (SSGI) live in their own dedicated effects/xegtao.h/.cpp and
+// effects/ssgi.h/.cpp, not here.
 
 #include "servers/rendering/renderer_rd/pipeline_deferred_rd.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_contact_shadows.glsl.gen.h"
@@ -39,27 +40,14 @@
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_reflection_filter.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_reflection_hiz.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/screen_space_reflection_resolve.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssil.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssil_blur.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssil_importance_map.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/ssil_interleave.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/effects/subsurface_scattering.glsl.gen.h"
 
 #define RB_SCOPE_SSLF SNAME("rb_sslf")
-#define RB_SCOPE_SSDS SNAME("rb_ssds")
-#define RB_SCOPE_SSIL SNAME("rb_ssil")
 #define RB_SCOPE_SSR SNAME("rb_ssr")
 #define RB_SCOPE_SSCS SNAME("rb_sscs")
 
-#define RB_LINEAR_DEPTH SNAME("linear_depth")
 #define RB_FINAL SNAME("final")
 #define RB_LAST_FRAME SNAME("last_frame")
-#define RB_DEINTERLEAVED SNAME("deinterleaved")
-#define RB_DEINTERLEAVED_PONG SNAME("deinterleaved_pong")
-#define RB_EDGES SNAME("edges")
-#define RB_IMPORTANCE_MAP SNAME("importance_map")
-#define RB_IMPORTANCE_PONG SNAME("importance_pong")
 
 #define RB_NORMAL_ROUGHNESS SNAME("normal_roughness")
 #define RB_HIZ SNAME("hiz")
@@ -86,35 +74,10 @@ public:
 
 	/* Last Frame */
 
-	void allocate_last_frame_buffer(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssil, bool p_use_ssr);
+	// The previous frame's image, which SSR, SSGI and the screen probes of SDFGI and VoxelGI take the light
+	// they find on screen from. p_use_mipmaps gives it the mipmaps SSGI and the screen probes filter it with.
+	void allocate_last_frame_buffer(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_mipmaps, bool p_use_ssr);
 	void copy_internal_texture_to_last_frame(Ref<RenderSceneBuffersRD> p_render_buffers, CopyEffects &p_copy_effects);
-
-	/* SS Downsampler */
-
-	void downsample_depth(Ref<RenderSceneBuffersRD> p_render_buffers, uint32_t p_view, const Projection &p_projection);
-
-	/* SSIL */
-	void ssil_set_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to);
-
-	struct SSILRenderBuffers {
-		bool half_size = false;
-		int buffer_width;
-		int buffer_height;
-		int half_buffer_width;
-		int half_buffer_height;
-	};
-
-	struct SSILSettings {
-		float radius = 1.0;
-		float intensity = 2.0;
-		float sharpness = 0.98;
-		float normal_rejection = 1.0;
-
-		Size2i full_screen_size;
-	};
-
-	void ssil_allocate_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, SSILRenderBuffers &p_ssil_buffers, const SSILSettings &p_settings);
-	void screen_space_indirect_lighting(Ref<RenderSceneBuffersRD> p_render_buffers, SSILRenderBuffers &p_ssil_buffers, uint32_t p_view, RID p_normal_buffer, const Projection &p_projection, const Projection &p_last_projection, const SSILSettings &p_settings);
 
 	/* Screen Space Reflection */
 	void ssr_set_half_size(bool p_half_size);
@@ -162,158 +125,11 @@ public:
 private:
 	/* Settings */
 
-	RSE::EnvironmentSSILQuality ssil_quality = RSE::ENV_SSIL_QUALITY_MEDIUM;
-	bool ssil_half_size = false;
-	float ssil_adaptive_target = 0.5;
-	int ssil_blur_passes = 4;
-	float ssil_fadeout_from = 50.0;
-	float ssil_fadeout_to = 300.0;
-
 	bool ssr_half_size = false;
 
 	RSE::SubSurfaceScatteringQuality sss_quality = RSE::SUB_SURFACE_SCATTERING_QUALITY_MEDIUM;
 	float sss_scale = 0.05;
 	float sss_depth_scale = 0.01;
-
-	/* SS Downsampler */
-
-	struct SSEffectsDownsamplePushConstant {
-		float pixel_size[2];
-		float z_far;
-		float z_near;
-		uint32_t orthogonal;
-		float radius_sq;
-		uint32_t pad[2];
-	};
-
-	enum SSEffectsMode {
-		SS_EFFECTS_DOWNSAMPLE,
-		SS_EFFECTS_DOWNSAMPLE_HALF_RES,
-		SS_EFFECTS_DOWNSAMPLE_MIPMAP,
-		SS_EFFECTS_DOWNSAMPLE_MIPMAP_HALF_RES,
-		SS_EFFECTS_DOWNSAMPLE_HALF,
-		SS_EFFECTS_DOWNSAMPLE_HALF_RES_HALF,
-		SS_EFFECTS_DOWNSAMPLE_FULL_MIPS,
-		SS_EFFECTS_MAX
-	};
-
-	struct SSEffectsGatherConstants {
-		float rotation_matrices[80]; //5 vec4s * 4
-	};
-
-	struct SSEffectsShader {
-		SSEffectsDownsamplePushConstant downsample_push_constant;
-		SsEffectsDownsampleShaderRD downsample_shader;
-		RID downsample_shader_version;
-		bool used_half_size_last_frame = false;
-		bool used_mips_last_frame = false;
-		bool used_full_mips_last_frame = false;
-
-		RID gather_constants_buffer;
-
-		RID mirror_sampler;
-
-		PipelineDeferredRD pipelines[SS_EFFECTS_MAX];
-	} ss_effects;
-
-	/* SSIL */
-
-	enum SSILMode {
-		SSIL_GATHER,
-		SSIL_GATHER_BASE,
-		SSIL_GATHER_ADAPTIVE,
-		SSIL_GENERATE_IMPORTANCE_MAP,
-		SSIL_PROCESS_IMPORTANCE_MAPA,
-		SSIL_PROCESS_IMPORTANCE_MAPB,
-		SSIL_BLUR_PASS,
-		SSIL_BLUR_PASS_SMART,
-		SSIL_BLUR_PASS_WIDE,
-		SSIL_INTERLEAVE,
-		SSIL_INTERLEAVE_SMART,
-		SSIL_INTERLEAVE_HALF,
-		SSIL_MAX
-	};
-
-	struct SSILGatherPushConstant {
-		int32_t screen_size[2];
-		int pass;
-		int quality;
-
-		float half_screen_pixel_size[2];
-		float half_screen_pixel_size_x025[2];
-
-		float NDC_to_view_mul[2];
-		float NDC_to_view_add[2];
-
-		float pad2[2];
-		float z_near;
-		float z_far;
-
-		float radius;
-		float intensity;
-		int size_multiplier;
-		int pad;
-
-		float fade_out_mul;
-		float fade_out_add;
-		float normal_rejection_amount;
-		float inv_radius_near_limit;
-
-		uint32_t is_orthogonal;
-		float neg_inv_radius;
-		float load_counter_avg_div;
-		float adaptive_sample_limit;
-
-		int32_t pass_coord_offset[2];
-		float pass_uv_offset[2];
-	};
-
-	struct SSILImportanceMapPushConstant {
-		float half_screen_pixel_size[2];
-		float intensity;
-		float pad;
-	};
-
-	struct SSILBlurPushConstant {
-		float edge_sharpness;
-		float pad;
-		float half_screen_pixel_size[2];
-	};
-
-	struct SSILInterleavePushConstant {
-		float inv_sharpness;
-		uint32_t size_modifier;
-		float pixel_size[2];
-	};
-
-	struct SSILProjectionUniforms {
-		float inv_last_frame_projection_matrix[16];
-	};
-
-	struct SSIL {
-		SSILGatherPushConstant gather_push_constant;
-		SsilShaderRD gather_shader;
-		RID gather_shader_version;
-		RID projection_uniform_buffer;
-
-		SSILImportanceMapPushConstant importance_map_push_constant;
-		SsilImportanceMapShaderRD importance_map_shader;
-		RID importance_map_shader_version;
-		RID importance_map_load_counter;
-		RID counter_uniform_set;
-
-		SSILBlurPushConstant blur_push_constant;
-		SsilBlurShaderRD blur_shader;
-		RID blur_shader_version;
-
-		SSILInterleavePushConstant interleave_push_constant;
-		SsilInterleaveShaderRD interleave_shader;
-		RID interleave_shader_version;
-
-		PipelineDeferredRD pipelines[SSIL_MAX];
-	} ssil;
-
-	void gather_ssil(RD::ComputeListID p_compute_list, const RID *p_ssil_slices, const RID *p_edges_slices, const SSILSettings &p_settings, bool p_adaptive_base_pass, RID p_gather_uniform_set, RID p_importance_map_uniform_set, RID p_projection_uniform_set);
 
 	/* Screen Space Reflection */
 

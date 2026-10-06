@@ -167,7 +167,8 @@ layout(rgba16f, set = 0, binding = 33) uniform restrict image2D screen_probe_nor
 layout(rgba16f, set = 0, binding = 34) uniform restrict image2D screen_probe_sh;
 layout(rgba16f, set = 0, binding = 35) uniform restrict image2D screen_probe_sh_filtered;
 // The previous frame's image, before tonemapping, which the probes' screen traces take the light
-// they hit from (see SCREEN_PROBE_FLAG_SCREEN_TRACES).
+// they hit from (see SCREEN_PROBE_FLAG_SCREEN_TRACES), with mipmaps for the wide rays of the probes
+// on VoxelGI.
 layout(set = 0, binding = 36) uniform texture2D screen_probe_last_frame;
 // Adaptive screen probes (see MODE_SCREEN_PROBE_ADAPT): for each tile of half, and a quarter, the
 // uniform probes' size, the index of its adaptive probe, or -1 for none. The probes themselves
@@ -206,6 +207,13 @@ layout(push_constant, std430) uniform Params {
 
 	uint screen_probe_flags;
 	uint screen_probe_pass; // Which probes a screen probe pass works on (see the passes).
+	// How far the rays of the probes on VoxelGI are traced against the depth buffer, and in how many
+	// samples (see screen_probe_voxel_gi_screen_trace()).
+	float screen_probe_trace_distance;
+	uint screen_probe_trace_steps;
+
+	float screen_probe_last_frame_lod; // The last mipmap of screen_probe_last_frame.
+	float pixel_size; // World size of a pixel one unit from the camera (or anywhere, orthogonal).
 	uint pad3;
 	uint pad4;
 }
@@ -708,9 +716,10 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 // probe grid.
 //
 // VoxelGI (rendering/global_illumination/voxel_gi/screen_probes) works the same way, with probes on
-// what the VoxelGI instances of their pixel cover: past the depth buffer, each ray is a cone traced
-// through those instances, as narrow as the solid angle the ray stands for, rather than the four to
-// six wide cones a pixel traces on its own. Where the cone leaves an instance with light left to
+// what the VoxelGI instances of their pixel cover: each ray is traced against the depth buffer for a
+// few meters (see screen_probe_voxel_gi_screen_trace()), and from as far as it got, as a cone through
+// those instances, as narrow as the solid angle the ray stands for, rather than the four to six wide
+// cones a pixel traces on its own. Where the cone leaves an instance with light left to
 // find, that light comes from the SDFGI probes when SDFGI is there too, or from the environment
 // (the sky, or the ambient color), as it does for the pixels, through the alpha of the ambient light.
 
@@ -1157,6 +1166,92 @@ bool screen_probe_screen_trace(vec3 p_from, vec3 p_dir, float p_length, float p_
 	return false;
 }
 
+// The screen traces of the probes on VoxelGI go much further: up to screen_probe_trace_distance
+// (rendering/global_illumination/voxel_gi/screen_probe_trace_distance), a few meters by default, rather
+// than a few voxels. VoxelGI's voxels are coarse, it is mostly baked, and what the screen shows is often
+// all there is of what is near: objects too small or thin for the voxels, objects that move, contact
+// between them, and the light on them as it is this frame (light that bounced once more the frame before,
+// and shadows the voxels don't know of). Where a ray finds nothing on screen, the cone traced through the
+// voxels takes over from as far as it got, so that the voxels only add what lies beyond what the screen
+// showed to be empty.
+//
+// Samples are packed towards the start of the ray. The ray hits what is drawn where it gets behind it,
+// unless it gets further behind it than its thickness without having been in front of it at the sample
+// before: it passes behind it then. A hit takes the light the previous frame drew there, from a mipmap as
+// wide as the ray's cone (p_tan_half_angle) is there, so that the 64 rays of a probe add up to all of the
+// light of what they hit between them, rather than to a few pixels of it.
+//
+// Traces p_dir (view space) from p_from (view space), with its samples offset by p_jitter (0 to 1) of a
+// step. Returns true on a hit, with its light in r_light. Otherwise returns false, with how far the ray is
+// known to be clear in r_clear: to where it left the screen, passed behind something, or ended.
+#define SCREEN_PROBE_VOXEL_GI_THICKNESS 0.1
+#define SCREEN_PROBE_VOXEL_GI_THICKNESS_DEPTH 0.05
+#define SCREEN_PROBE_VOXEL_GI_THICKNESS_RAY 0.1
+bool screen_probe_voxel_gi_screen_trace(vec3 p_from, vec3 p_dir, float p_jitter, float p_tan_half_angle, out vec3 r_light, out float r_clear) {
+	r_light = vec3(0.0);
+	r_clear = 0.0;
+
+	float ray_length = params.screen_probe_trace_distance;
+	if (!params.orthogonal && p_dir.z > 0.0) {
+		// Stop short of the near plane, through which the ray would project to the other side.
+		ray_length = min(ray_length, (-params.z_near * 1.001 - p_from.z) / p_dir.z);
+	}
+	if (ray_length <= 0.0 || params.screen_probe_trace_steps == 0) {
+		return false;
+	}
+
+	float prev_t = 0.0;
+	float prev_depth = -p_from.z;
+	for (uint i = 0; i < params.screen_probe_trace_steps; i++) {
+		float f = (float(i) + p_jitter) / float(params.screen_probe_trace_steps);
+		float t = ray_length * f * f;
+		vec3 q = p_from + p_dir * t;
+		ivec2 pixel = ivec2(round(screen_probe_project(q)));
+		if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, scene_data.screen_size))) {
+			r_clear = prev_t;
+			return false;
+		}
+
+		float ray_depth = -q.z;
+		vec3 surface = reconstruct_position(pixel);
+		float scene_depth = -surface.z;
+		float epsilon = scene_depth * 0.002;
+		if (ray_depth <= scene_depth + epsilon) {
+			prev_t = t;
+			prev_depth = ray_depth;
+			continue; // Still in front of what is drawn there.
+		}
+
+		float thickness = max(SCREEN_PROBE_VOXEL_GI_THICKNESS, scene_depth * SCREEN_PROBE_VOXEL_GI_THICKNESS_DEPTH) + t * SCREEN_PROBE_VOXEL_GI_THICKNESS_RAY;
+		bool crossed = prev_depth <= scene_depth + epsilon;
+		// Passing behind it, or hitting its back, which the screen doesn't show: the voxels go on from here.
+		if ((ray_depth - scene_depth > thickness && !crossed) || dot(fetch_normal_and_roughness(pixel).xyz, p_dir) >= 0.0) {
+			r_clear = prev_t;
+			return false;
+		}
+
+		// Where that was on the previous frame's image.
+		vec4 prev_clip = scene_data.reprojection * vec4(surface, 1.0);
+		if (prev_clip.w <= 1e-6) {
+			r_clear = prev_t;
+			return false;
+		}
+		vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5 + 0.5 / vec2(scene_data.screen_size);
+		if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0)))) {
+			r_clear = prev_t;
+			return false;
+		}
+		// The ray's cone is this many pixels wide there.
+		float cone_pixels = 2.0 * p_tan_half_angle * t / (params.pixel_size * (params.orthogonal ? 1.0 : scene_depth));
+		float lod = clamp(log2(max(cone_pixels, 1.0)), 0.0, params.screen_probe_last_frame_lod);
+		r_light = textureLod(sampler2D(screen_probe_last_frame, linear_sampler_with_mipmaps), prev_uv, lod).rgb;
+		return true;
+	}
+
+	r_clear = ray_length;
+	return false;
+}
+
 // The alpha sdfgi_process() gives the ambient light at p_vertex (camera-relative): 1 inside the
 // cascades, fading out across the outer edge of the last one.
 float sdfgi_ambient_alpha(vec3 p_vertex) {
@@ -1396,21 +1491,26 @@ float voxel_gi_cell_size(uint p_index) {
 
 // The light a screen probe's ray from p_vertex (camera-relative), on a surface facing p_normal, finds
 // going along p_dir (unit length) in VoxelGI instance p_index: a cone of p_tan_half_angle, as wide as
-// the solid angle the ray stands for, traced as voxel_gi_compute() traces its own. rgb is the light it
-// finds, premultiplied by how much of the cone that blocks (alpha), as for the pixels; all of it is
-// blocked where the instance does not blend with the environment (VoxelGIData.interior).
-vec4 voxel_gi_trace_ray(uint p_index, vec3 p_vertex, vec3 p_normal, vec3 p_dir, float p_tan_half_angle) {
+// the solid angle the ray stands for, traced as voxel_gi_compute() traces its own, from p_start (in
+// world units) along the ray, where its screen trace left off, or the instance's bias if that is further.
+// rgb is the light it finds, premultiplied by how much of the cone that blocks (alpha), as for the
+// pixels; all of it is blocked where the instance does not blend with the environment
+// (VoxelGIData.interior).
+vec4 voxel_gi_trace_ray(uint p_index, vec3 p_vertex, vec3 p_normal, vec3 p_dir, float p_tan_half_angle, float p_start) {
 	vec4 light = vec4(0.0);
 	// Index the texture arrays with the loop counter, as process_gi() does (see screen_probe_march()).
 	for (uint i = 0; i < params.max_voxel_gi_instances; i++) {
 		if (i == p_index) {
 			vec3 position = (voxel_gi_instances.data[i].xform * vec4(p_vertex, 1.0)).xyz;
 			vec3 normal = normalize((voxel_gi_instances.data[i].xform * vec4(p_normal, 0.0)).xyz);
-			vec3 dir = normalize((voxel_gi_instances.data[i].xform * vec4(p_dir, 0.0)).xyz);
+			vec3 cell_dir = (voxel_gi_instances.data[i].xform * vec4(p_dir, 0.0)).xyz;
+			float cells_per_unit = length(cell_dir);
+			vec3 dir = cell_dir / cells_per_unit;
 			position += normal * voxel_gi_instances.data[i].normal_bias;
 			float max_distance = length(voxel_gi_instances.data[i].bounds);
 			vec3 cell_size = 1.0 / voxel_gi_instances.data[i].bounds;
-			light = voxel_cone_trace(voxel_gi_textures[i], i, voxel_gi_instances.data[i].anisotropic_strength, cell_size, position, dir, p_tan_half_angle, 1.0, max_distance, voxel_gi_instances.data[i].bias);
+			float start = max(voxel_gi_instances.data[i].bias, p_start * cells_per_unit);
+			light = voxel_cone_trace(voxel_gi_textures[i], i, voxel_gi_instances.data[i].anisotropic_strength, cell_size, position, dir, p_tan_half_angle, 1.0, max_distance, start);
 			light.rgb *= voxel_gi_instances.data[i].dynamic_range * voxel_gi_instances.data[i].exposure_normalization;
 			if (!voxel_gi_instances.data[i].blend_ambient) {
 				light.a = 1.0;
@@ -1898,28 +1998,34 @@ void main() {
 	// energy, so that switching the probes on does not change the brightness of a single bounce. In
 	// alpha, how much of the light the ray leaves to the environment (see the pass's main()).
 	float sdfgi_scale = SDFGI_PROBE_MAP_SCALE * sdfgi.energy;
+	// A cone as wide as the solid angle the ray stands for, but never so narrow that it takes longer to
+	// trace through the voxels than the light it finds is worth (only for the probes on VoxelGI).
+	float cos_half_angle = 1.0 - weight / (2.0 * M_PI);
+	float tan_half_angle = max(sqrt(max(1.0 - cos_half_angle * cos_half_angle, 0.0)) / cos_half_angle, SCREEN_PROBE_VOXEL_GI_MIN_TAN);
 	vec4 light = vec4(0.0);
 	bool hit = false;
+	// How far along the ray its screen trace found it clear, from where the voxels take over.
+	float voxel_start = 0.0;
 	if (bool(params.screen_probe_flags & SCREEN_PROBE_FLAG_SCREEN_TRACES)) {
 		vec3 view_vertex = position.xyz * mat3(scene_data.cam_transform);
 		vec3 screen_from = params.orthogonal ? view_vertex + vec3(0.0, 0.0, position.w * SCREEN_PROBE_SCREEN_BIAS) : view_vertex * (1.0 - SCREEN_PROBE_SCREEN_BIAS);
 		float screen_jitter = float(screen_probe_hash(seed + ray + 64u) & 0xFFFFu) / 65536.0;
 		vec3 screen_light;
-		hit = screen_probe_screen_trace(screen_from, ray_dir * mat3(scene_data.cam_transform), SCREEN_PROBE_SCREEN_TRACE_CELLS * cell_size, screen_jitter, screen_light);
+		if (probe_on_voxel_gi) {
+			hit = screen_probe_voxel_gi_screen_trace(screen_from, ray_dir * mat3(scene_data.cam_transform), screen_jitter, tan_half_angle, screen_light, voxel_start);
+		} else {
+			hit = screen_probe_screen_trace(screen_from, ray_dir * mat3(scene_data.cam_transform), SCREEN_PROBE_SCREEN_TRACE_CELLS * cell_size, screen_jitter, screen_light);
+		}
 		if (hit) {
 			light.rgb = screen_light * (probe_on_voxel_gi ? 1.0 : sdfgi_scale);
 		}
 	}
 
 	if (!hit && probe_on_voxel_gi) {
-		// A cone as wide as the solid angle the ray stands for, but never so narrow that it takes
-		// longer to trace than the light it finds is worth.
-		float cos_half_angle = 1.0 - weight / (2.0 * M_PI);
-		float tan_half_angle = max(sqrt(max(1.0 - cos_half_angle * cos_half_angle, 0.0)) / cos_half_angle, SCREEN_PROBE_VOXEL_GI_MIN_TAN);
 		vec4 voxel_light = vec4(0.0);
 		for (uint i = 0; i < 2; i++) {
 			if (probe_blend[i] > 0.0) {
-				voxel_light += voxel_gi_trace_ray(probe_voxel_gi[i], position.xyz, normal, ray_dir, tan_half_angle) * probe_blend[i];
+				voxel_light += voxel_gi_trace_ray(probe_voxel_gi[i], position.xyz, normal, ray_dir, tan_half_angle, voxel_start) * probe_blend[i];
 			}
 		}
 		voxel_light /= probe_blend_sum;

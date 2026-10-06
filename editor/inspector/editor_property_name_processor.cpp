@@ -292,8 +292,8 @@ EditorPropertyNameProcessor::EditorPropertyNameProcessor() {
 	capitalize_string_remaps["smaa"] = "SMAA";
 	capitalize_string_remaps["sms"] = "SMS";
 	capitalize_string_remaps["srgb"] = "sRGB";
+	capitalize_string_remaps["ssgi"] = "SSGI";
 	capitalize_string_remaps["ssh"] = "SSH";
-	capitalize_string_remaps["ssil"] = "SSIL";
 	capitalize_string_remaps["ssl"] = "SSL";
 	capitalize_string_remaps["sss"] = "SSS";
 	capitalize_string_remaps["stderr"] = "stderr";

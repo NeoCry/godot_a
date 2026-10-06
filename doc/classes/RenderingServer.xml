@@ -1551,16 +1551,26 @@
 				Sets whether screen-space shadows are force-enabled for this [param env], overriding [member ProjectSettings.rendering/lights_and_shadows/contact_shadow/enabled], along with the ray length and assumed surface thickness to use for them. See [Environment] for more details.
 			</description>
 		</method>
-		<method name="environment_set_ssil_quality">
+		<method name="environment_set_ssgi">
 			<return type="void" />
-			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentSSILQuality" />
-			<param index="1" name="half_size" type="bool" />
-			<param index="2" name="adaptive_target" type="float" />
-			<param index="3" name="blur_passes" type="int" />
-			<param index="4" name="fadeout_from" type="float" />
-			<param index="5" name="fadeout_to" type="float" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="intensity" type="float" />
+			<param index="3" name="max_distance" type="float" />
+			<param index="4" name="thickness" type="float" />
+			<param index="5" name="occlusion" type="float" />
 			<description>
-				Sets the quality level of the screen-space indirect lighting (SSIL) post-process effect. See [Environment] for more details.
+				Sets the variables to be used with the screen-space global illumination (SSGI) post-process effect. See [Environment] for more details.
+			</description>
+		</method>
+		<method name="environment_set_ssgi_quality">
+			<return type="void" />
+			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentSSGIQuality" />
+			<param index="1" name="half_size" type="bool" />
+			<param index="2" name="denoise_passes" type="int" />
+			<param index="3" name="history_frames" type="int" />
+			<description>
+				Sets the quality of the screen-space global illumination (SSGI) post-process effect: how many rays each pixel traces and how many times each ray samples the depth buffer ([param quality]), whether to trace at half resolution ([param half_size]), how many levels of spatial filtering to run ([param denoise_passes], from [code]0[/code] to [code]5[/code]), and over how many frames to average the result at most ([param history_frames], from [code]1[/code] to [code]64[/code]). See [member ProjectSettings.rendering/environment/ssgi/quality] and the settings next to it for more details.
 			</description>
 		</method>
 		<method name="environment_set_ssr">
@@ -5976,8 +5986,8 @@
 			Draws the view-space bent normals computed by XeGTAO instead of the scene, encoded the same way as [constant VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER]. In order for this display mode to work, you must have [member Environment.xegtao_enabled] and [member Environment.xegtao_bent_normals] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
-		<constant name="VIEWPORT_DEBUG_DRAW_SSIL" value="14" enum="ViewportDebugDraw">
-			Draws the screen space indirect lighting texture instead of the scene so that you can clearly see how it is affecting objects. In order for this display mode to work, you must have [member Environment.ssil_enabled] set in your [WorldEnvironment].
+		<constant name="VIEWPORT_DEBUG_DRAW_SSGI" value="14" enum="ViewportDebugDraw">
+			Draws the light screen-space global illumination finds instead of the scene, before it is multiplied by the albedo of the surfaces, so that you can clearly see what it contributes. In order for this display mode to work, you must have [member Environment.ssgi_enabled] set in your [WorldEnvironment].
 			[b]Note:[/b] Only supported when using the Forward+ rendering method.
 		</constant>
 		<constant name="VIEWPORT_DEBUG_DRAW_PSSM_SPLITS" value="15" enum="ViewportDebugDraw">
@@ -6244,20 +6254,23 @@
 		<constant name="SCREEN_SPACE_CONTACT_SHADOWS_LENGTH_LONG" value="2" enum="ScreenSpaceContactShadowsLength">
 			Cast longer screen-space shadow rays. Slowest option, but the effect will be able to reach further.
 		</constant>
-		<constant name="ENV_SSIL_QUALITY_VERY_LOW" value="0" enum="EnvironmentSSILQuality">
-			Lowest quality of screen-space indirect lighting.
+		<constant name="ENV_SSGI_QUALITY_VERY_LOW" value="0" enum="EnvironmentSSGIQuality">
+			Lowest quality of screen-space global illumination: 1 ray per pixel, sampling the depth buffer 12 times.
 		</constant>
-		<constant name="ENV_SSIL_QUALITY_LOW" value="1" enum="EnvironmentSSILQuality">
-			Low quality screen-space indirect lighting.
+		<constant name="ENV_SSGI_QUALITY_LOW" value="1" enum="EnvironmentSSGIQuality">
+			Low quality screen-space global illumination: 1 ray per pixel, sampling the depth buffer 20 times.
 		</constant>
-		<constant name="ENV_SSIL_QUALITY_MEDIUM" value="2" enum="EnvironmentSSILQuality">
-			High quality screen-space indirect lighting.
+		<constant name="ENV_SSGI_QUALITY_MEDIUM" value="2" enum="EnvironmentSSGIQuality">
+			Medium quality screen-space global illumination: 2 rays per pixel, sampling the depth buffer 24 times each.
 		</constant>
-		<constant name="ENV_SSIL_QUALITY_HIGH" value="3" enum="EnvironmentSSILQuality">
-			High quality screen-space indirect lighting.
+		<constant name="ENV_SSGI_QUALITY_HIGH" value="3" enum="EnvironmentSSGIQuality">
+			High quality screen-space global illumination: 3 rays per pixel, sampling the depth buffer 32 times each.
 		</constant>
-		<constant name="ENV_SSIL_QUALITY_ULTRA" value="4" enum="EnvironmentSSILQuality">
-			Highest quality screen-space indirect lighting. Uses the adaptive target setting which can be dynamically adjusted to smoothly balance performance and visual quality.
+		<constant name="ENV_SSGI_QUALITY_ULTRA" value="4" enum="EnvironmentSSGIQuality">
+			Highest quality screen-space global illumination: 4 rays per pixel, sampling the depth buffer 48 times each.
+		</constant>
+		<constant name="ENV_SSGI_QUALITY_MAX" value="5" enum="EnvironmentSSGIQuality">
+			Represents the size of the [enum EnvironmentSSGIQuality] enum.
 		</constant>
 		<constant name="ENV_SDFGI_Y_SCALE_50_PERCENT" value="0" enum="EnvironmentSDFGIYScale">
 			Use 50% scale for SDFGI on the Y (vertical) axis. SDFGI cells will be twice as short as they are wide. This allows providing increased GI detail and reduced light leaking with thin floors and ceilings. This is usually the best choice for scenes that don't feature much verticality.

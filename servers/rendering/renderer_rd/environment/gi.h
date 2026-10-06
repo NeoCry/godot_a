@@ -712,10 +712,13 @@ public:
 
 	RSE::VoxelGIQuality voxel_gi_quality = RSE::VOXEL_GI_QUALITY_LOW;
 	// Screen probes on VoxelGI (rendering/global_illumination/voxel_gi/screen_probes): the same
-	// probes SDFGI's screen probes are (see sdfgi_screen_probes), with their rays cone traced through
-	// the VoxelGI instances they are in.
+	// probes SDFGI's screen probes are (see sdfgi_screen_probes), with their rays traced against the
+	// depth buffer for up to voxel_gi_screen_probe_trace_distance, in voxel_gi_screen_probe_trace_steps
+	// samples, then cone traced through the VoxelGI instances they are in.
 	bool voxel_gi_screen_probes = false;
 	uint32_t voxel_gi_screen_probe_history_frames = 24;
+	float voxel_gi_screen_probe_trace_distance = 4.0;
+	uint32_t voxel_gi_screen_probe_trace_steps = 16;
 
 	/* SDFGI */
 
@@ -1051,9 +1054,16 @@ public:
 
 		uint32_t screen_probe_flags; // SCREEN_PROBE_FLAG_*
 		uint32_t screen_probe_pass; // Which probes a screen probe pass works on (see gi.glsl).
+		float screen_probe_trace_distance; // How far the probes on VoxelGI trace their rays on screen.
+		uint32_t screen_probe_trace_steps; // In how many samples.
+
+		float screen_probe_last_frame_lod; // The last mipmap of the previous frame's image.
+		float pixel_size; // World size of a pixel one unit from the camera (or anywhere, orthogonal).
 		uint32_t pad3;
 		uint32_t pad4;
 	};
+
+	static_assert(sizeof(PushConstant) <= 128, "Push constants are only guaranteed up to 128 bytes.");
 
 	RID sdfgi_ubo;
 

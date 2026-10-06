@@ -162,15 +162,6 @@ Copyright: 2014-2015, NVIDIA CORPORATION
  2017 Simon Rodriguez
 License: BSD-3-clause and Expat
 
-Files: servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl
- servers/rendering/renderer_rd/shaders/effects/ssil_blur.glsl
- servers/rendering/renderer_rd/shaders/effects/ssil_importance_map.glsl
- servers/rendering/renderer_rd/shaders/effects/ssil_interleave.glsl
- servers/rendering/renderer_rd/shaders/effects/ssil.glsl
-Comment: Intel ASSAO and related files
-Copyright: 2016, Intel Corporation
-License: Expat
-
 Files: servers/rendering/renderer_rd/shaders/effects/xegtao.glsl
  servers/rendering/renderer_rd/shaders/effects/xegtao_denoise.glsl
  servers/rendering/renderer_rd/shaders/effects/xegtao_inc.glsl

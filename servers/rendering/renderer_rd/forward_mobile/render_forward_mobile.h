@@ -435,7 +435,7 @@ protected:
 	virtual RID _render_buffers_get_velocity_texture(Ref<RenderSceneBuffersRD> p_render_buffers) override;
 
 	virtual void environment_set_xegtao_quality(RSE::EnvironmentXeGTAOQuality p_quality, int p_denoise_passes, bool p_half_size, float p_fadeout_from, float p_fadeout_to) override {}
-	virtual void environment_set_ssil_quality(RSE::EnvironmentSSILQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) override {}
+	virtual void environment_set_ssgi_quality(RSE::EnvironmentSSGIQuality p_quality, bool p_half_size, int p_denoise_passes, int p_history_frames) override {}
 	virtual void environment_set_ssr_half_size(bool p_half_size) override {}
 	virtual void environment_set_ssr_roughness_quality(RSE::EnvironmentSSRRoughnessQuality p_quality) override {}
 
