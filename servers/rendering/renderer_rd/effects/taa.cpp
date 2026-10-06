@@ -37,19 +37,42 @@
 
 using namespace RendererRD;
 
+// Steepest falloff of the jitter weighting, in powers of two per squared pixel. At the top of
+// the setting's range a sample in the pixel's corner (half a squared pixel away from the
+// centre) then counts 1/256 of a centred one.
+static constexpr float TAA_JITTER_FALLOFF_MAX = 16.0f;
+
+// Average of 2^(-p_falloff * |j|^2) over jitter offsets j spread evenly across the pixel,
+// [-0.5, 0.5]^2. The weight is separable, so this is the square of the 1D average.
+static float _taa_mean_sample_weight(float p_falloff) {
+	if (p_falloff <= 0.0f) {
+		return 1.0f;
+	}
+	const double a = double(p_falloff) * Math::LN2;
+	const double mean_1d = Math::sqrt(Math::PI / a) * std::erf(0.5 * Math::sqrt(a));
+	return float(mean_1d * mean_1d);
+}
+
 TAA::TAA() {
 	Vector<String> taa_modes;
 	taa_modes.push_back("\n#define MODE_TAA_RESOLVE");
 	taa_shader.initialize(taa_modes);
 	shader_version = taa_shader.version_create();
 	pipeline = RD::get_singleton()->compute_pipeline_create(taa_shader.version_get_shader(shader_version, 0));
+
+	Vector<String> sharpen_modes;
+	sharpen_modes.push_back("\n");
+	sharpen_shader.initialize(sharpen_modes);
+	sharpen_shader_version = sharpen_shader.version_create();
+	sharpen_pipeline = RD::get_singleton()->compute_pipeline_create(sharpen_shader.version_get_shader(sharpen_shader_version, 0));
 }
 
 TAA::~TAA() {
 	taa_shader.version_free(shader_version);
+	sharpen_shader.version_free(sharpen_shader_version);
 }
 
-void TAA::resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_prev_velocity, RID p_history, Size2 p_resolution, float p_z_near, float p_z_far) {
+void TAA::resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_prev_velocity, RID p_history, Size2 p_resolution, float p_z_near, float p_z_far, const Vector2 &p_jitter) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	ERR_FAIL_NULL(uniform_set_cache);
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
@@ -74,10 +97,23 @@ void TAA::resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_pr
 	// Reprojection is less reliable under motion, so the box narrows - but never collapses.
 	push_constant.motion_clamp_scale = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_motion_clamp_scale");
 	push_constant.rejection_sensitivity = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_history_rejection_sensitivity");
+
+	// Every frame samples the scene at its jitter offset rather than at the pixel centre, and
+	// an average in which every offset counts the same converges to the scene filtered by a
+	// box one pixel wide: the softness TAA shows even on a still image. Counting a sample by
+	// how close it landed to the centre narrows that filter. The jitter is the same for every
+	// pixel, so this frame's weight is a single value.
+	float jitter_weighting = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_jitter_weighting");
+	float falloff = TAA_JITTER_FALLOFF_MAX * CLAMP(jitter_weighting, 0.0f, 1.0f);
+	push_constant.sample_weight = Math::exp(-falloff * float(Math::LN2) * p_jitter.length_squared());
+
 	// Bound through a local: MAX() expands its arguments twice, and GLOBAL_GET_CACHED expands
-	// to a lambda with its own static cache each time it appears.
+	// to a lambda with its own static cache each time it appears. The accumulation is bounded
+	// in units of weight, so the bound is scaled by the average weight a frame contributes:
+	// the history then spans as many frames as the setting says, and reacts as quickly to the
+	// changes that the history clamp does not catch.
 	int max_accumulated_frames = GLOBAL_GET_CACHED(int, "rendering/anti_aliasing/quality/taa_max_accumulated_frames");
-	push_constant.max_accumulated_frames = float(MAX(1, max_accumulated_frames));
+	push_constant.max_accumulated_weight = float(MAX(1, max_accumulated_frames)) * _taa_mean_sample_weight(falloff);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
@@ -95,7 +131,34 @@ void TAA::resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_pr
 	RD::get_singleton()->compute_list_end();
 }
 
-void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far) {
+void TAA::sharpen(RID p_source, RID p_destination, Size2i p_resolution, float p_sharpness) {
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+	ERR_FAIL_NULL(uniform_set_cache);
+
+	RID shader = sharpen_shader.version_get_shader(sharpen_shader_version, 0);
+	ERR_FAIL_COND(shader.is_null());
+
+	TAASharpenPushConstant push_constant;
+	memset(&push_constant, 0, sizeof(TAASharpenPushConstant));
+	push_constant.resolution[0] = p_resolution.width;
+	push_constant.resolution[1] = p_resolution.height;
+	// RCAS takes its strength in stops below the maximum, so the linear setting maps 1 to the
+	// maximum and approaches no sharpening at all towards 0.
+	push_constant.sharpness = -Math::log2(p_sharpness);
+
+	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, sharpen_pipeline);
+
+	RD::Uniform u_source(RD::UNIFORM_TYPE_IMAGE, 0, { p_source });
+	RD::Uniform u_destination(RD::UNIFORM_TYPE_IMAGE, 1, { p_destination });
+
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_source, u_destination), 0);
+	RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(TAASharpenPushConstant));
+	RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_resolution.width, p_resolution.height, 1);
+	RD::get_singleton()->compute_list_end();
+}
+
+void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far, const Vector2 &p_jitter) {
 	CopyEffects *copy_effects = CopyEffects::get_singleton();
 
 	uint32_t view_count = p_render_buffers->get_view_count();
@@ -106,10 +169,10 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 	if (!p_render_buffers->has_texture(SNAME("taa"), SNAME("history"))) {
 		uint32_t usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
 
-		// The history's alpha carries the per-pixel sample counter, so it has to start from a
-		// known zero (meaning "no samples yet") rather than from whatever the colour buffer's
-		// alpha happens to be - which is the viewport's own alpha, and is 0 on a transparent
-		// background. A zeroed counter makes the first resolve fall back to the current frame.
+		// The history's alpha carries the per-pixel accumulated sample weight, so it has to start
+		// from a known zero (meaning "no samples yet") rather than from whatever the colour
+		// buffer's alpha happens to be - which is the viewport's own alpha, and is 0 on a
+		// transparent background. A zero weight makes the first resolve fall back to the current frame.
 		RID history = p_render_buffers->create_texture(SNAME("taa"), SNAME("history"), p_format, usage_bits | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT);
 		p_render_buffers->create_texture(SNAME("taa"), SNAME("temp"), p_format, usage_bits);
 
@@ -119,6 +182,10 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 
 		just_allocated = true;
 	}
+
+	// Read through a local, as GLOBAL_GET_CACHED expands to its own cache wherever it appears.
+	float sharpness = GLOBAL_GET_CACHED(float, "rendering/anti_aliasing/quality/taa_sharpness");
+	sharpness = CLAMP(sharpness, 0.0f, 1.0f);
 
 	RD::get_singleton()->draw_command_begin_label("TAA");
 
@@ -132,12 +199,18 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 		if (!just_allocated) {
 			RID depth_texture = p_render_buffers->get_depth_texture(v);
 			RID taa_temp = p_render_buffers->get_texture_slice(SNAME("taa"), SNAME("temp"), v, 0);
-			resolve(internal_texture, taa_temp, depth_texture, velocity_buffer, taa_prev_velocity, taa_history, Size2(internal_size.x, internal_size.y), p_z_near, p_z_far);
+			resolve(internal_texture, taa_temp, depth_texture, velocity_buffer, taa_prev_velocity, taa_history, Size2(internal_size.x, internal_size.y), p_z_near, p_z_far, p_jitter);
 
-			// The resolve writes the sample counter to alpha. It goes to the history as-is, since
-			// that is where the next frame reads it from, but the colour buffer gets alpha forced
-			// to one: its alpha belongs to the viewport and is passed through to the render target.
-			copy_effects->copy_to_rect(taa_temp, internal_texture, Rect2(0, 0, internal_size.x, internal_size.y), false, false, false, false, true);
+			// The resolve writes the accumulated weight to alpha. It goes to the history as-is,
+			// since that is where the next frame reads it from, but the colour buffer gets alpha
+			// forced to one: its alpha belongs to the viewport and is passed through to the render
+			// target. Sharpening goes to the colour buffer only, in place of the plain copy: fed
+			// back through the history it would compound every frame.
+			if (sharpness > 0.0f) {
+				sharpen(taa_temp, internal_texture, internal_size, sharpness);
+			} else {
+				copy_effects->copy_to_rect(taa_temp, internal_texture, Rect2(0, 0, internal_size.x, internal_size.y), false, false, false, false, true);
+			}
 			copy_effects->copy_to_rect(taa_temp, taa_history, Rect2(0, 0, internal_size.x, internal_size.y));
 		}
 

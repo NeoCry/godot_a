@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  taa.h                                                                 */
+/*  taa_sharpen.glsl                                                      */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,56 +28,66 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#[compute]
 
-#include "servers/rendering/renderer_rd/shaders/effects/taa_resolve.glsl.gen.h"
-#include "servers/rendering/renderer_rd/shaders/effects/taa_sharpen.glsl.gen.h"
-#include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
+#version 450
 
-namespace RendererRD {
+#VERSION_DEFINES
 
-class TAA {
-public:
-	TAA();
-	~TAA();
+// Sharpens the TAA resolve with AMD's Robust Contrast Adaptive Sharpening (RCAS), from
+// FidelityFX FSR 1. It writes the colour buffer only: the history keeps the unsharpened
+// resolve, since sharpening fed back into the accumulation would compound every frame.
 
-	// p_jitter is this frame's sub-pixel offset, in pixels of the internal resolution.
-	void process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far, const Vector2 &p_jitter);
+#define A_GPU
+#define A_GLSL
 
-private:
-	struct TAAResolvePushConstant {
-		float resolution_width;
-		float resolution_height;
-		float disocclusion_threshold;
-		float disocclusion_scale;
+#include "thirdparty/amd-fsr/ffx_a.h"
 
-		float clamp_scale;
-		float clamp_scale_chroma;
-		float motion_clamp_scale;
-		float rejection_sensitivity;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-		float max_accumulated_weight;
-		float sample_weight;
-		float pad0;
-		float pad1;
-	};
+layout(rgba16f, set = 0, binding = 0) uniform restrict readonly image2D source_image;
+layout(rgba16f, set = 0, binding = 1) uniform restrict writeonly image2D dest_image;
 
-	struct TAASharpenPushConstant {
-		int32_t resolution[2];
-		float sharpness;
-		float pad;
-	};
+layout(push_constant, std430) uniform Params {
+	ivec2 resolution;
+	float sharpness; // In stops below full strength, as FsrRcasCon() takes it: 0 is the strongest.
+	float pad;
+}
+params;
 
-	TaaResolveShaderRD taa_shader;
-	RID shader_version;
-	RID pipeline;
+#define FSR_RCAS_F
+// The resolve still carries some of the noise that screen-space effects leave for TAA to
+// average out; this keeps RCAS from picking it out again, as FSR 2 does with the same pass.
+#define FSR_RCAS_DENOISE
 
-	TaaSharpenShaderRD sharpen_shader;
-	RID sharpen_shader_version;
-	RID sharpen_pipeline;
+AF4 FsrRcasLoadF(ASU2 p) {
+	return imageLoad(source_image, clamp(p, ASU2(0), params.resolution - ASU2(1)));
+}
 
-	void resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_prev_velocity, RID p_history, Size2 p_resolution, float p_z_near, float p_z_far, const Vector2 &p_jitter);
-	void sharpen(RID p_source, RID p_destination, Size2i p_resolution, float p_sharpness);
-};
+// RCAS bounds its lobe so that the result stays within [0, 1], which the HDR resolve is not.
+// This is the forward half of FSR's simple reversible tonemapper (FsrSrtmF(), which is only
+// declared after this callback is needed); main() applies the inverse to the result.
+void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {
+	AF1 scale = ARcpF1(AMax3F1(r, g, b) + AF1_(1.0));
+	r *= scale;
+	g *= scale;
+	b *= scale;
+}
 
-} // namespace RendererRD
+#include "thirdparty/amd-fsr/ffx_fsr1.h"
+
+void main() {
+	if (any(greaterThanEqual(ivec2(gl_GlobalInvocationID.xy), params.resolution))) {
+		return;
+	}
+
+	AU4 con;
+	FsrRcasCon(con, params.sharpness);
+
+	AF3 color;
+	FsrRcasF(color.r, color.g, color.b, gl_GlobalInvocationID.xy, con);
+	FsrSrtmInvF(color);
+
+	// Alpha is forced to one, as the plain copy this pass replaces does.
+	imageStore(dest_image, ivec2(gl_GlobalInvocationID.xy), AF4(color, AF1_(1.0)));
+}

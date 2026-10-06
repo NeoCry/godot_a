@@ -19,6 +19,8 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ///////////////////////////////////////////////////////////////////////////////////
 // File changes (yyyy-mm-dd)
+// 2026-10-06: Jitter-weighted accumulation: each frame's sample counts by how close its
+//             jitter lands to the pixel centre, instead of every frame counting the same.
 // 2026-09-21: Confidence-driven accumulation, tonemapped YCoCg history clamping and
 //             thin-feature detection, replacing the fixed 1/16 blend and the two
 //             luminance/velocity heuristics that surrounded it.
@@ -60,10 +62,10 @@ layout(push_constant, std430) uniform Params {
 	float motion_clamp_scale; // How far the box narrows at high velocities.
 	float rejection_sensitivity; // How sharply clamped history loses its accumulated samples.
 
-	float max_accumulated_frames; // Upper bound of the per-pixel sample counter.
+	float max_accumulated_weight; // Upper bound of the per-pixel accumulated sample weight.
+	float sample_weight; // Weight of this frame's sample, from how far its jitter lands off the pixel centre.
 	float pad0;
 	float pad1;
-	float pad2;
 }
 params;
 
@@ -353,7 +355,7 @@ float get_factor_disocclusion(vec2 uv_reprojected, vec2 velocity) {
 	return clamp(disocclusion * params.disocclusion_scale, 0.0, 1.0);
 }
 
-vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_screen, vec2 uv, sampler2D tex_history, out float accumulated_frames) {
+vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_screen, vec2 uv, sampler2D tex_history, out float accumulated_weight) {
 	// Get the velocity of the current pixel
 	vec2 velocity = imageLoad(velocity_buffer, ivec2(pos_screen)).xy;
 
@@ -409,13 +411,21 @@ vec3 temporal_antialiasing(uvec2 pos_group_top_left, uvec2 pos_group, uvec2 pos_
 		trust = 0.0f;
 	}
 
-	// The sample counter rides in the history's alpha. It grows by one per frame where the
-	// history held up and falls back towards one where it did not, so blend = 1/n converges in
-	// a single frame after a disocclusion yet keeps averaging far longer than a fixed 1/16 once
-	// a pixel is stable - which is what sub-pixel geometry needs to resolve at all.
-	float frames_previous = textureLod(tex_history, uv_reprojected, 0.0f).a * params.max_accumulated_frames;
-	accumulated_frames = clamp(1.0f + frames_previous * trust, 1.0f, params.max_accumulated_frames);
-	float blend_factor = 1.0f / accumulated_frames;
+	// The accumulated sample weight rides in the history's alpha. It grows by this frame's
+	// weight where the history held up and falls back towards it where it did not, so
+	// blend = weight / total converges in a single frame after a disocclusion yet keeps
+	// averaging far longer than a fixed 1/16 once a pixel is stable - which is what sub-pixel
+	// geometry needs to resolve at all.
+	//
+	// The weight is what keeps a still image sharp. This frame's sample was taken at the jitter
+	// offset, not at the pixel centre, and an average in which every offset counts the same
+	// converges to the scene filtered by a box one pixel wide. Counting a sample by how close
+	// it landed to the centre narrows that filter, and every pixel shares the same jitter, so
+	// the weight is a single value per frame. The max() keeps blend at or below one when the
+	// bound is smaller than the weight itself.
+	float weight_previous = textureLod(tex_history, uv_reprojected, 0.0f).a * params.max_accumulated_weight;
+	accumulated_weight = max(min(params.sample_weight + weight_previous * trust, params.max_accumulated_weight), params.sample_weight);
+	float blend_factor = params.sample_weight / accumulated_weight;
 
 	return from_working_space(mix(color_clipped, color_input, blend_factor));
 }
@@ -433,13 +443,13 @@ void main() {
 	const uvec2 pos_screen = gl_GlobalInvocationID.xy;
 	const vec2 uv = (gl_GlobalInvocationID.xy + 0.5f) / params.resolution;
 
-	float accumulated_frames = 1.0f;
-	vec3 result = temporal_antialiasing(pos_group_top_left, pos_group, pos_screen, uv, history_buffer, accumulated_frames);
+	float accumulated_weight = 1.0f;
+	vec3 result = temporal_antialiasing(pos_group_top_left, pos_group, pos_screen, uv, history_buffer, accumulated_weight);
 
 	// Clamp to prevent NaNs
 	result = clamp(result, vec3(0.0f), vec3(FLT_MAX));
 
-	// Alpha carries the sample counter into the next frame: TAA::process() copies this texture
-	// to the history buffer as-is, and to the colour buffer with alpha forced to one.
-	imageStore(output_buffer, ivec2(gl_GlobalInvocationID.xy), vec4(result, accumulated_frames / params.max_accumulated_frames));
+	// Alpha carries the accumulated weight into the next frame: TAA::process() copies this
+	// texture to the history buffer as-is, and to the colour buffer with alpha forced to one.
+	imageStore(output_buffer, ivec2(gl_GlobalInvocationID.xy), vec4(result, accumulated_weight / params.max_accumulated_weight));
 }
