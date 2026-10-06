@@ -2999,13 +2999,21 @@
 			How sharply a pixel loses its accumulated samples when TAA has to clamp its history. Higher values converge to the current frame faster after a disocclusion or a lighting change, at the cost of temporal stability; lower values keep accumulating through larger disagreements, which is more stable but ghosts for longer.
 			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
 		</member>
+		<member name="rendering/anti_aliasing/quality/taa_jitter_weighting" type="float" setter="" getter="" default="0.5">
+			How strongly TAA favors the samples whose jitter lands near the center of the pixel. Every frame renders the scene at a slightly different sub-pixel offset, and averaging all of those offsets equally gives the result of a filter one pixel wide, which is why TAA looks soft even on a still image. Higher values let samples taken close to the center count for more, which keeps textures and fine detail sharper and also reduces shimmering on a still image, at the cost of slightly less smooth edges. At [code]0.0[/code], every sample counts the same. At [code]1.0[/code], a sample in a corner of the pixel counts 1/256 as much as one at its center; at the default of [code]0.5[/code], 1/16 as much.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
 		<member name="rendering/anti_aliasing/quality/taa_max_accumulated_frames" type="int" setter="" getter="" default="32">
-			Upper bound on how many frames TAA averages over a pixel that stays stable. Higher values resolve sub-pixel detail better, because more distinct jittered samples contribute to the result, but make the image slower to respond to changes that the history clamp does not catch. Values above the viewport's jitter phase count bring no additional sample positions.
+			Upper bound on how many frames TAA averages over a pixel that stays stable. Higher values resolve sub-pixel detail better, because more distinct jittered samples contribute to the result, but make the image slower to respond to changes that the history clamp does not catch. Values above the viewport's jitter phase count bring no additional sample positions. With [member rendering/anti_aliasing/quality/taa_jitter_weighting] above [code]0.0[/code], the bound applies to the total weight of the accumulated samples instead, scaled so that it still corresponds to this many frames on average.
 			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
 		</member>
 		<member name="rendering/anti_aliasing/quality/taa_motion_clamp_scale" type="float" setter="" getter="" default="0.6">
 			Multiplier applied to TAA's history color range on pixels moving fast across the screen, where reprojection is least reliable. Lower values suppress ghosting behind fast motion at the cost of blurring it; [code]1.0[/code] disables the narrowing entirely. The range never collapses to zero, which would force the history onto the average of the current frame and reduce moving pixels to a blur.
 			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa].
+		</member>
+		<member name="rendering/anti_aliasing/quality/taa_sharpness" type="float" setter="" getter="" default="0.5">
+			Strength of the sharpening applied to the image after TAA, using AMD FidelityFX Robust Contrast Adaptive Sharpening (RCAS). It restores detail that temporal accumulation softens, and adapts to local contrast to limit halos around edges and avoid amplifying noise. Higher values give a crisper image, but can make residual aliasing and shimmering more noticeable. [code]0.0[/code] disables sharpening, and [code]1.0[/code] is the strongest setting. The sharpening only affects the displayed image, not the history TAA accumulates, so it never builds up over time.
+			[b]Note:[/b] Only used when TAA is enabled, see [member rendering/anti_aliasing/quality/use_taa]. FSR 2 has its own sharpening, see [member rendering/scaling_3d/fsr_sharpness].
 		</member>
 		<member name="rendering/anti_aliasing/quality/use_debanding" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], uses a fast dithering filter just before transforming floating point color values to integer color values to make banding significantly less visible. Debanding is applied at different steps of the rendering process depending on the rendering method and [member rendering/viewport/hdr_2d] setting.

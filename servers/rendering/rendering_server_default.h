@@ -60,6 +60,12 @@ class RenderingServerDefault : public RenderingServer {
 	};
 
 	static int changes;
+	// Bumped by every server call, through WRITE_ACTION, but not by the redraws the renderer
+	// requests for itself through redraw_request(). An effect that converges over several frames
+	// compares it between frames to tell a change it has to converge after from its own follow-up
+	// frames. Like `changes`, it is written without synchronization: readers only compare it with
+	// a value they read earlier.
+	static uint64_t change_version;
 	RID test_cube;
 
 	List<Callable> frame_drawn_callbacks;
@@ -113,7 +119,13 @@ public:
 	}
 #endif
 
-#define WRITE_ACTION redraw_request();
+	_FORCE_INLINE_ static uint64_t get_change_version() {
+		return change_version;
+	}
+
+#define WRITE_ACTION \
+	redraw_request(); \
+	change_version++;
 #define ASYNC_COND_PUSH (Thread::get_caller_id() != server_thread)
 #define ASYNC_COND_PUSH_AND_RET (Thread::get_caller_id() != server_thread)
 #define ASYNC_COND_PUSH_AND_SYNC (Thread::get_caller_id() != server_thread)

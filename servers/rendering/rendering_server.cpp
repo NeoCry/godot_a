@@ -3869,6 +3869,8 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_motion_clamp_scale", PROPERTY_HINT_RANGE, "0.1,1.0,0.05"), 0.6);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_history_rejection_sensitivity", PROPERTY_HINT_RANGE, "0.5,12.0,0.1"), 3.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/anti_aliasing/quality/taa_max_accumulated_frames", PROPERTY_HINT_RANGE, "2,64,1"), 32);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_jitter_weighting", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), 0.5);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/anti_aliasing/quality/taa_sharpness", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), 0.5);
 
 	GLOBAL_DEF("rendering/anti_aliasing/quality/use_debanding", false);
 
