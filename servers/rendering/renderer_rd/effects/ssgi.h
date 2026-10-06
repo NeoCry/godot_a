@@ -41,10 +41,11 @@
 // miss, and leaves the light from that direction to the ambient light (sky, ambient color, ReflectionProbe,
 // VoxelGI, SDFGI, LightmapGI).
 //
-// The noisy result is then accumulated over frames (reprojected with the camera, rejected across
-// disocclusions, and shortened where it falls behind changing light), filtered spatially with an edge-aware
-// a-trous filter guided by its variance (after SVGF, Schied et al. 2017), and resolved to full resolution
-// (bilaterally, when running at half resolution).
+// The noisy result is shared between the pixels around on the same surface (a pre-blur, so that the few hits
+// on a small bright spot don't stay single bright pixels), accumulated over frames (reprojected with the
+// camera, rejected across disocclusions, and shortened where it clearly falls behind changing light), freed
+// of fireflies, filtered spatially with an edge-aware a-trous filter guided by its variance (after SVGF,
+// Schied et al. 2017), and resolved to full resolution (bilaterally, when running at half resolution).
 //
 // Output, at full resolution:
 // - RB_SSGI_FINAL: rgb, the light the rays found on screen (already scaled by the intensity), as the lighting
@@ -126,6 +127,7 @@ private:
 
 	enum Mode {
 		MODE_TRACE,
+		MODE_PREBLUR,
 		MODE_TEMPORAL,
 		MODE_DENOISE,
 		MODE_APPLY,

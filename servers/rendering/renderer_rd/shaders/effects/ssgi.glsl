@@ -31,6 +31,7 @@
 // Screen-space global illumination: stochastic screen-space ray traced diffuse indirect light (see
 // effects/ssgi.h). The passes, one variant each:
 // - MODE_TRACE: traces this frame's rays from every working pixel.
+// - MODE_PREBLUR: shares them with the pixels around, on the same surface.
 // - MODE_TEMPORAL: accumulates them with what the previous frames found there.
 // - MODE_DENOISE: one level of the edge-aware a-trous filter.
 // - MODE_APPLY: resolves the result to the full resolution buffer the lighting pass reads, bilaterally with
@@ -334,6 +335,69 @@ void main() {
 	imageStore(trace_output, pos, vec4(light * inv_ray_count, hits * inv_ray_count));
 }
 
+#elif defined(MODE_PREBLUR)
+
+// Before they are accumulated over frames, each pixel averages its rays with those of the pixels around it on
+// its own surface, in a disk a few pixels wide, turned every frame. Diffuse light varies slowly along a
+// surface, and where it comes from a small bright spot that only a few rays find (a lamp, a patch of
+// sunlight in a dark room), this shares each of those hits between the pixels around rather than leaving
+// them as single bright pixels, which neither the accumulation nor the a-trous filter can tell from light
+// that changed. It also gives the accumulation a frame's estimate quiet enough to tell when the light did.
+
+layout(set = 0, binding = 1) uniform sampler2D trace_input;
+layout(set = 0, binding = 2) uniform sampler2D surface_input;
+
+layout(rgba16f, set = 0, binding = 3) uniform restrict writeonly image2D preblur_output;
+
+#define SSGI_PREBLUR_TAPS 8
+// In full resolution pixels.
+#define SSGI_PREBLUR_RADIUS 8.0
+// How far off the plane of the pixel (relative to its depth, per working pixel away) a neighbor may be, and how
+// closely their normals must agree.
+#define SSGI_PREBLUR_PLANE_TOLERANCE 0.01
+#define SSGI_PREBLUR_NORMAL_POWER 16.0
+
+void main() {
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(pos, params.working_size))) {
+		return;
+	}
+
+	vec4 surface = texelFetch(surface_input, pos, 0);
+	vec4 sum = texelFetch(trace_input, pos, 0);
+	if (surface.x <= 0.0) {
+		imageStore(preblur_output, pos, vec4(0.0));
+		return;
+	}
+
+	vec3 vertex = mat3(scene_data.view_to_world) * view_position(full_pixel_uv(working_to_full(pos)), surface.x);
+	float radius = SSGI_PREBLUR_RADIUS / float(params.scale);
+	float plane_scale = 1.0 / (surface.x * SSGI_PREBLUR_PLANE_TOLERANCE * radius);
+	// A Vogel disk, turned by an amount that varies smoothly from pixel to pixel and changes every frame.
+	float turn = 2.0 * M_PI * fract(52.9829189 * fract(dot(vec2(pos) + float(params.frame % 64u) * 5.588238, vec2(0.06711056, 0.00583715))));
+
+	float weight_sum = 1.0;
+	for (int i = 0; i < SSGI_PREBLUR_TAPS; i++) {
+		float r = radius * sqrt((float(i) + 0.5) / float(SSGI_PREBLUR_TAPS));
+		float angle = float(i) * 2.39996323 + turn;
+		ivec2 q = pos + ivec2(round(r * vec2(cos(angle), sin(angle))));
+		if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, params.working_size)) || q == pos) {
+			continue;
+		}
+		vec4 q_surface = texelFetch(surface_input, q, 0);
+		if (q_surface.x <= 0.0) {
+			continue;
+		}
+		vec3 q_vertex = mat3(scene_data.view_to_world) * view_position(full_pixel_uv(working_to_full(q)), q_surface.x);
+		float weight = exp(-abs(dot(q_vertex - vertex, surface.yzw)) * plane_scale);
+		weight *= pow(max(dot(q_surface.yzw, surface.yzw), 0.0), SSGI_PREBLUR_NORMAL_POWER);
+		sum += texelFetch(trace_input, q, 0) * weight;
+		weight_sum += weight;
+	}
+
+	imageStore(preblur_output, pos, sum / weight_sum);
+}
+
 #elif defined(MODE_TEMPORAL)
 
 layout(set = 0, binding = 1) uniform sampler2D trace_input;
@@ -355,9 +419,13 @@ layout(r32f, set = 0, binding = 8) uniform restrict writeonly image2D variance_o
 #define SSGI_VARIANCE_FRAMES 4.0
 // A history that is further from what the pixels around find in this frame than this many standard errors
 // of their average no longer stands for the light there (it changed, or something moved through it): it is
-// cut down to SSGI_ANTILAG_FRAMES, so that it catches up within a few frames.
+// cut down to SSGI_ANTILAG_FRAMES, so that it catches up within a few frames. For the light, it must also be
+// off by a factor of SSGI_ANTILAG_RATIO at least: where few rays find what lights a surface (a small bright
+// spot, as in dim scenes), a frame's few hits look just like light switching on, and cutting the history
+// short for them is what makes it flicker.
 #define SSGI_ANTILAG_SIGMAS 4.0
 #define SSGI_ANTILAG_MARGIN 0.15
+#define SSGI_ANTILAG_RATIO 2.0
 #define SSGI_ANTILAG_FRAMES 3.0
 
 void main() {
@@ -442,17 +510,18 @@ void main() {
 		meta /= history_weight;
 		frames = min(floor(meta.x + 0.5) + 1.0, params.max_history);
 
-		// Anti-lag. The noise of what this frame finds around the pixel is estimated from how much the rays
-		// vary at the pixel over time (its variance per frame): a single frame's neighborhood often has no hit
-		// at all where few rays hit, which says little.
+		// Anti-lag. The noise of what this frame finds around the pixel is estimated both from how much the rays
+		// vary at the pixel over time (its variance per frame), as a single frame's neighborhood often has no hit
+		// at all where few rays hit, and from how much they vary around it in this frame, as a single hit in the
+		// neighborhood stands out from the rest by as much as it raises its average.
 		if (meta.x >= SSGI_VARIANCE_FRAMES) {
 			float hit_share = clamp(history.a, 0.0, 1.0);
 			float hit_error = sqrt(hit_share * (1.0 - hit_share) / (float(params.ray_count) * neighbors));
-			float luminance_error = sqrt(max(meta.z - meta.y * meta.y, 0.0) / neighbors);
+			float luminance_error = sqrt(max(max(meta.z - meta.y * meta.y, 0.0), spatial_variance) / neighbors);
 			float history_luminance = luminance(history.rgb);
 			float neighborhood_luminance = luminance(neighborhood.rgb);
 			bool lagging = abs(history.a - neighborhood.a) > SSGI_ANTILAG_SIGMAS * hit_error + SSGI_ANTILAG_MARGIN;
-			lagging = lagging || abs(history_luminance - neighborhood_luminance) > SSGI_ANTILAG_SIGMAS * luminance_error + SSGI_ANTILAG_MARGIN * max(history_luminance, neighborhood_luminance) + 1e-4;
+			lagging = lagging || (abs(history_luminance - neighborhood_luminance) > SSGI_ANTILAG_SIGMAS * luminance_error && max(history_luminance, neighborhood_luminance) > SSGI_ANTILAG_RATIO * min(history_luminance, neighborhood_luminance));
 			if (lagging) {
 				frames = min(frames, SSGI_ANTILAG_FRAMES);
 			}
@@ -507,6 +576,28 @@ void main() {
 
 	vec3 vertex = mat3(scene_data.view_to_world) * view_position(full_pixel_uv(working_to_full(pos)), surface.x);
 	float center_luminance = luminance(center.rgb);
+
+	if (params.step_size == 1) {
+		// Anti-firefly: no pixel is brighter than the brightest of the pixels around it on its surface. Light
+		// that is really there covers more than a pixel; a pixel alone that is brighter than all of those
+		// around it is one that a rare ray hit something much brighter than the rest from, which the
+		// accumulation would otherwise keep for many frames.
+		float neighbor_max = -1.0;
+		for (int i = 0; i < 9; i++) {
+			ivec2 q = pos + ivec2(i % 3, i / 3) - 1;
+			if (i == 4 || any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, params.working_size))) {
+				continue;
+			}
+			if (abs(texelFetch(surface_input, q, 0).x - surface.x) > surface.x * 0.05) {
+				continue;
+			}
+			neighbor_max = max(neighbor_max, luminance(texelFetch(color_input, q, 0).rgb));
+		}
+		if (neighbor_max >= 0.0 && center_luminance > neighbor_max) {
+			center.rgb *= neighbor_max / center_luminance;
+			center_luminance = neighbor_max;
+		}
+	}
 
 	// The variance is noisy itself: blur it a little before using it to tell noise from detail.
 	float blurred_variance = 0.0;

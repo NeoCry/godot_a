@@ -61,6 +61,7 @@ SSGI::SSGI() {
 	{
 		Vector<String> modes;
 		modes.push_back("\n#define MODE_TRACE\n"); // MODE_TRACE
+		modes.push_back("\n#define MODE_PREBLUR\n"); // MODE_PREBLUR
 		modes.push_back("\n#define MODE_TEMPORAL\n"); // MODE_TEMPORAL
 		modes.push_back("\n#define MODE_DENOISE\n"); // MODE_DENOISE
 		modes.push_back("\n#define MODE_APPLY\n"); // MODE_APPLY
@@ -249,12 +250,30 @@ void SSGI::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 			RD::get_singleton()->draw_command_end_label();
 		}
 
-		/* PASS 2: temporal accumulation */
+		/* PASS 2: share the rays between the pixels around, into the first denoise texture (free until the
+		spatial filter) */
+		{
+			RD::get_singleton()->draw_command_begin_label("Pre-blur");
+			RID shader_rid = shader.version_get_shader(shader_version, MODE_PREBLUR);
+
+			RD::Uniform u_trace(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>({ nearest_sampler, trace }));
+			RD::Uniform u_surface(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, Vector<RID>({ nearest_sampler, surface[write] }));
+			RD::Uniform u_preblur(RD::UNIFORM_TYPE_IMAGE, 3, Vector<RID>({ denoise[0] }));
+
+			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipelines[MODE_PREBLUR].get_rid());
+			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader_rid, 0, u_scene_data, u_trace, u_surface, u_preblur), 0);
+			RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(PushConstant));
+			RD::get_singleton()->compute_list_dispatch_threads(compute_list, working_size.x, working_size.y, 1);
+			RD::get_singleton()->compute_list_add_barrier(compute_list);
+			RD::get_singleton()->draw_command_end_label();
+		}
+
+		/* PASS 3: temporal accumulation */
 		{
 			RD::get_singleton()->draw_command_begin_label("Temporal Accumulation");
 			RID shader_rid = shader.version_get_shader(shader_version, MODE_TEMPORAL);
 
-			RD::Uniform u_trace(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>({ nearest_sampler, trace }));
+			RD::Uniform u_trace(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>({ nearest_sampler, denoise[0] }));
 			RD::Uniform u_surface(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, Vector<RID>({ nearest_sampler, surface[write] }));
 			RD::Uniform u_prev_surface(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, Vector<RID>({ nearest_sampler, surface[read] }));
 			RD::Uniform u_prev_history(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 4, Vector<RID>({ nearest_sampler, history[read] }));
@@ -271,7 +290,7 @@ void SSGI::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 			RD::get_singleton()->draw_command_end_label();
 		}
 
-		/* PASS 3: spatial filter, a pass per level, each twice as wide as the one before */
+		/* PASS 4: spatial filter, a pass per level, each twice as wide as the one before */
 		RID filtered = history[write];
 		{
 			RD::get_singleton()->draw_command_begin_label("Denoise");
@@ -303,7 +322,7 @@ void SSGI::generate(Ref<RenderSceneBuffersRD> p_render_buffers, RenderBuffers &p
 			RD::get_singleton()->draw_command_end_label();
 		}
 
-		/* PASS 4: resolve to full resolution, apply intensity and occlusion */
+		/* PASS 5: resolve to full resolution, apply intensity and occlusion */
 		{
 			// draw_command_begin_label() takes a Span<char>, which a string literal converts to, but not the
 			// const char * a ternary between two decays to.
