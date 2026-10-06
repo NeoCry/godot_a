@@ -76,6 +76,11 @@ private:
 	RID sharpen_shader_version;
 	RID sharpen_pipeline;
 
+	// The last scene change seen, and the frame until which TAA keeps requesting redraws to
+	// converge after it. See process().
+	uint64_t converge_change_version = 0;
+	uint64_t converge_until_frame = 0;
+
 	void resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_prev_velocity, RID p_history, Size2 p_resolution, float p_z_near, float p_z_far, const Vector2 &p_jitter);
 	void sharpen(RID p_source, RID p_destination, Size2i p_resolution, float p_sharpness);
 };

@@ -34,6 +34,8 @@
 #include "servers/rendering/renderer_rd/effects/copy_effects.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
+#include "servers/rendering/rendering_server_default.h"
+#include "servers/rendering/rendering_server_globals.h"
 
 using namespace RendererRD;
 
@@ -181,6 +183,24 @@ void TAA::process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_f
 		RD::get_singleton()->texture_clear(history, Color(0, 0, 0, 0), 0, 1, 0, view_count);
 
 		just_allocated = true;
+	}
+
+	// Converging takes frames, and where redraws only follow changes - as in the editor, or with
+	// low processor mode - nothing asks for them: the last frame of a camera move would stay on
+	// screen, with the history still blurred by the move, until something else changed. So every
+	// change buys the frames to converge after it. What is left of the old history decays
+	// exponentially, about once per history length, so several lengths bring it to a few percent.
+	// The version only counts changes from outside the renderer, which is what lets the redraws
+	// requested here run out.
+	int max_accumulated_frames = GLOBAL_GET_CACHED(int, "rendering/anti_aliasing/quality/taa_max_accumulated_frames");
+	uint64_t frame = RSG::rasterizer->get_frame_number();
+	uint64_t change_version = RenderingServerDefault::get_change_version();
+	if (just_allocated || change_version != converge_change_version) {
+		converge_change_version = change_version;
+		converge_until_frame = frame + 4 * uint64_t(MAX(1, max_accumulated_frames));
+	}
+	if (frame < converge_until_frame) {
+		RenderingServerDefault::redraw_request();
 	}
 
 	// Read through a local, as GLOBAL_GET_CACHED expands to its own cache wherever it appears.
